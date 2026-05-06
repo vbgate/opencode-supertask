@@ -1,18 +1,27 @@
 import { Database } from 'bun:sqlite';
 import { drizzle } from 'drizzle-orm/bun-sqlite';
+import { migrate } from 'drizzle-orm/bun-sqlite/migrator';
 import * as schema from './schema';
 import { existsSync, mkdirSync } from 'fs';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
 export const DB_FILE_PATH = join(homedir(), '.local/share/opencode/tasks.db');
 export { schema };
 
 let _sqlite: Database | null = null;
 let _db: ReturnType<typeof drizzle> | null = null;
+let _migrationRan = false;
+
+function getMigrationsFolder(): string {
+    const __dirname = dirname(fileURLToPath(import.meta.url));
+    return join(__dirname, '../../drizzle');
+}
 
 function initDb() {
     const dataDir = dirname(DB_FILE_PATH);
+    const dbExisted = existsSync(DB_FILE_PATH);
     if (!existsSync(dataDir)) {
         mkdirSync(dataDir, { recursive: true });
     }
@@ -28,6 +37,16 @@ function initDb() {
         );
     `);
     _db = drizzle(_sqlite, { schema });
+
+    if (!_migrationRan) {
+        _migrationRan = true;
+        try {
+            migrate(_db, { migrationsFolder: getMigrationsFolder() });
+        } catch (err) {
+            console.error('[supertask] migration failed:', err instanceof Error ? err.message : String(err));
+        }
+    }
+
     return _db;
 }
 
