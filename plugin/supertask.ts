@@ -6,12 +6,62 @@
  * [定位]: 通过 supertask_* 工具管理 AI Agent 任务队列
  */
 
-import { type Plugin, tool } from "@opencode-ai/plugin";
+import { type Plugin, type Hooks, tool } from "@opencode-ai/plugin";
 import { TaskService } from "@core/services/task.service";
 import { TaskTemplateService } from "@core/services/task-template.service";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const RUNNER_PROMPT = readFileSync(join(__dirname, "..", "agents", "supertask-runner.md"), "utf-8");
+
+const SYSTEM_INSTRUCTION = `
+## SuperTask 任务队列系统
+
+当前环境已安装 SuperTask 任务队列插件。你可以通过以下工具管理任务：
+
+### 核心工作流
+
+1. **创建任务**: 用 \`supertask_add\` 创建任务到队列，Gateway 会自动调度执行
+2. **查看状态**: 用 \`supertask_status\` 查看队列统计，\`supertask_list\` 查看任务列表
+3. **重试/管理**: 用 \`supertask_retry\` 重试失败任务，\`supertask_get\` 查看详情
+
+### 何时使用
+
+- 当用户说"帮我创建一个任务"、"把这个做成定时任务"时，使用 \`supertask_add\` 或 \`supertask_schedule\`
+- 当用户问"任务进展如何"时，用 \`supertask_status\` 和 \`supertask_list\`
+- 当用户说"重试失败的任务"时，用 \`supertask_retry\`
+
+### 调度模板
+
+用 \`supertask_schedule\` 可创建三种定时任务：
+- \`cron\`: cron 表达式（如 "0 9 * * 1-5" = 工作日 9 点）
+- \`recurring\`: 固定间隔循环（如每 6 小时）
+- \`delayed\`: 一次性定时执行
+`;
 
 export const SuperTaskPlugin: Plugin = async () => {
     return {
+        async config(cfg) {
+            cfg.agent = cfg.agent ?? {};
+            cfg.agent["supertask-runner"] = {
+                description: "SuperTask 任务执行器 - 从任务队列获取任务并派发给子 Agent 执行",
+                mode: "all",
+                hidden: true,
+                prompt: RUNNER_PROMPT,
+                temperature: 0.3,
+                permission: {
+                    bash: "allow",
+                },
+            };
+        },
+
+        async "experimental.chat.system.transform"(input, output) {
+            output.system.push(SYSTEM_INSTRUCTION);
+        },
+
         tool: {
             // 创建任务
             supertask_add: tool({

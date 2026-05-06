@@ -6,3 +6,4 @@ dist/
 *.db-shm
 .env
 .env.*
+.factory/
