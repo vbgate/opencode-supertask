@@ -142,4 +142,8 @@ async function main() {
     });
 }
 
-main();
+export { main };
+
+if (import.meta.main) {
+    main();
+}

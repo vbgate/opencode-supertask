@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/bun run /path/to/supertask/src/gateway/index.ts
+ExecStart=/path/to/bun run /path/to/supertask/dist/cli/index.js gateway
 Restart=always
 RestartSec=5
 TimeoutStopSec=1800

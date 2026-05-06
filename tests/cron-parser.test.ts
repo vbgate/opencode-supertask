@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { getNextCronRun, isValidCronExpr } from '../src/gateway/scheduler/cron-parser';
+import { getNextCronRun, isValidCronExpr } from '../src/core/cron-parser';
 
 describe('isValidCronExpr', () => {
     test('valid expressions', () => {

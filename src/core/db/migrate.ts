@@ -1,19 +1,19 @@
-// 数据库迁移脚本
-// 运行: bun run db:migrate
-
 import { migrate } from 'drizzle-orm/bun-sqlite/migrator';
-import { db, closeDb } from './index';
+import { getDb, closeDb } from './index';
+import { join, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-import { join } from 'path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const migrationsFolder = join(__dirname, '../../drizzle');
 
-console.log('🔄 开始数据库迁移...');
+console.log('Starting database migration...');
 
 try {
-    const migrationsFolder = join(process.cwd(), 'drizzle');
+    const db = getDb();
     migrate(db, { migrationsFolder });
-    console.log('✅ 数据库迁移完成');
+    console.log('Database migration completed');
 } catch (error) {
-    console.error('❌ 迁移失败:', error);
+    console.error('Migration failed:', error);
     process.exit(1);
 } finally {
     closeDb();

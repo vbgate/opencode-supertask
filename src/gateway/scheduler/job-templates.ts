@@ -2,6 +2,7 @@ import { db, schema } from '@core/db';
 import { eq, and, sql } from 'drizzle-orm';
 import { TaskService } from '@core/services/task.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
+import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
 import type { ScheduleType } from '@core/db/schema';
 
 const { taskTemplates } = schema;

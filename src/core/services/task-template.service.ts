@@ -1,7 +1,7 @@
 import { db, schema } from '@core/db';
 import { eq, desc } from 'drizzle-orm';
 import type { TaskTemplate, NewTaskTemplate, ScheduleType } from '@core/db/schema';
-import { getNextCronRun, isValidCronExpr } from '@gateway/scheduler/cron-parser';
+import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
 
 const { taskTemplates } = schema;
 

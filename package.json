@@ -1,7 +1,7 @@
 {
     "name": "opencode-supertask",
     "version": "0.1.0",
-    "description": "通用任务管理系统 - AI Agent 任务调度器插件",
+    "description": "AI Agent 任务调度系统 — OpenCode 插件 + CLI + Gateway 常驻进程",
     "type": "module",
     "main": "dist/plugin/supertask.js",
     "types": "dist/plugin/supertask.d.ts",
@@ -9,24 +9,30 @@
         ".": {
             "import": "./dist/plugin/supertask.js",
             "types": "./dist/plugin/supertask.d.ts"
+        },
+        "./server": {
+            "import": "./dist/plugin/supertask.js",
+            "types": "./dist/plugin/supertask.d.ts"
         }
     },
     "files": [
         "dist",
+        "drizzle",
         "README.md",
         "LICENSE"
     ],
     "scripts": {
         "dev": "bun run src/cli/index.ts",
-        "build": "tsc",
+        "build": "tsup",
         "db:generate": "drizzle-kit generate",
         "db:migrate": "bun run src/core/db/migrate.ts",
         "ui": "bun run src/web/index.tsx",
-        "worker": "bun run src/worker/index.ts",
-        "gateway": "bun run src/gateway/index.ts"
+        "gateway": "bun run src/gateway/index.ts",
+        "test": "bun test",
+        "typecheck": "tsc --noEmit"
     },
     "bin": {
-        "supertask": "./src/cli/index.ts"
+        "supertask": "./dist/cli/index.js"
     },
     "keywords": [
         "opencode",
@@ -40,7 +46,6 @@
     "author": "javazys",
     "license": "MIT",
     "dependencies": {
-        "@opencode-ai/plugin": "^1.1.42",
         "commander": "^13.1.0",
         "cron-parser": "^5.5.0",
         "drizzle-orm": "^0.39.1",
@@ -48,15 +53,22 @@
         "hono": "^4.7.4"
     },
     "devDependencies": {
+        "@opencode-ai/plugin": "^1.1.42",
         "@types/bun": "latest",
         "@types/node": "^25.1.0",
         "drizzle-kit": "^0.30.4",
+        "tsup": "^8.5.1",
         "typescript": "^5.9.3"
     },
     "peerDependencies": {
         "@opencode-ai/plugin": "^1.1.0"
     },
+    "peerDependenciesMeta": {
+        "@opencode-ai/plugin": {
+            "optional": false
+        }
+    },
     "engines": {
-        "node": ">=18.0.0"
+        "bun": ">=1.0.0"
     }
 }
