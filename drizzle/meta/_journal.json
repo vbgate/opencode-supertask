@@ -22,6 +22,13 @@
       "when": 1769887991634,
       "tag": "0002_round_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1778052887048,
+      "tag": "0003_giant_polaris",
+      "breakpoints": true
     }
   ]
 }

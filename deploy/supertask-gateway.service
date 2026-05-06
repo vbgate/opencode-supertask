@@ -1,0 +1,15 @@
+[Unit]
+Description=SuperTask Gateway
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/path/to/bun run /path/to/src/gateway/index.ts
+Restart=always
+RestartSec=5
+TimeoutStopSec=1800
+KillMode=mixed
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target

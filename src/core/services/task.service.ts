@@ -1,17 +1,14 @@
 // 任务服务层
 // 封装所有任务相关的 CRUD 操作
 
-import { db, schema, closeDb } from '@core/db';
-import { eq, and, desc, asc, sql, lt, isNull, or } from 'drizzle-orm';
+import { db, schema } from '@core/db';
+import { eq, and, desc, asc, sql, isNull, or } from 'drizzle-orm';
 import type { Task, NewTask, TaskStatus } from '@core/db/schema';
+import { computeBackoff } from '@core/backoff';
 
 const { tasks } = schema;
 
 export class TaskService {
-    /**
-     * 任务作用域
-     * - cwd: 以提交任务时记录的 cwd 作为“项目”隔离键
-     */
     private static buildScopeWhere(scope?: { cwd?: string }) {
         const conditions: Array<ReturnType<typeof eq>> = [];
         if (scope?.cwd !== undefined) {
@@ -20,58 +17,60 @@ export class TaskService {
         return conditions;
     }
 
-    /**
-     * 创建新任务
-     */
     static async add(data: NewTask): Promise<Task> {
         const result = await db.insert(tasks).values(data).returning();
         return result[0];
     }
 
-    /**
-     * 获取下一个待执行的任务
-     * 优先级顺序：failed（可重试）→ pending
-     * 按 createdAt 升序（先进先出 FIFO）
-     * 会检查依赖任务是否已完成
-     */
-    static async next(scope: { cwd?: string } = {}): Promise<Task | null> {
+    static async next(
+        scope: { cwd?: string; excludedBatchIds?: string[] } = {},
+    ): Promise<Task | null> {
         const baseConditions = [...this.buildScopeWhere(scope)];
+        const nowMs = Date.now();
+        const retryAfterFilter = or(
+            isNull(tasks.retryAfter),
+            sql`${tasks.retryAfter} <= ${nowMs}`,
+        );
 
-        // 1. 先查可重试的 failed 任务
-        const failedConditions = [
-            eq(tasks.status, 'failed'),
-            sql`${tasks.retryCount} < ${tasks.maxRetries}`,
-            ...baseConditions
-        ];
-        const failedTasks = await db
-            .select()
-            .from(tasks)
-            .where(and(...failedConditions))
-            .orderBy(asc(tasks.createdAt));
-
-        for (const task of failedTasks) {
-            if (task.dependsOn) {
-                const depTask = await this.getById(task.dependsOn, scope);
-                if (depTask && depTask.status === 'done') {
-                    return task;
-                }
-                continue;
-            }
-            return task;
+        const hasExcludedBatches = scope.excludedBatchIds && scope.excludedBatchIds.length > 0;
+        let batchFilter: ReturnType<typeof sql> | undefined;
+        if (hasExcludedBatches) {
+            const conditions: ReturnType<typeof sql>[] = [];
+            conditions.push(sql`${tasks.batchId} NOT IN ${scope.excludedBatchIds!}`);
+            batchFilter = and(...conditions);
         }
 
-        // 2. 再查 pending 任务
-        const pendingConditions = [
-            eq(tasks.status, 'pending'),
-            ...baseConditions
+        const statusConditions = or(
+            and(
+                eq(tasks.status, 'pending'),
+                retryAfterFilter,
+            ),
+            and(
+                eq(tasks.status, 'failed'),
+                sql`${tasks.retryCount} < ${tasks.maxRetries}`,
+                retryAfterFilter,
+            ),
+        );
+
+        const conditions = [
+            statusConditions,
+            ...baseConditions,
         ];
-        const pendingTasks = await db
+        if (batchFilter) {
+            conditions.push(batchFilter);
+        }
+
+        const allTasks = await db
             .select()
             .from(tasks)
-            .where(and(...pendingConditions))
-            .orderBy(asc(tasks.createdAt));
+            .where(and(...conditions))
+            .orderBy(
+                desc(tasks.urgency),
+                desc(tasks.importance),
+                asc(tasks.createdAt),
+            );
 
-        for (const task of pendingTasks) {
+        for (const task of allTasks) {
             if (task.dependsOn) {
                 const depTask = await this.getById(task.dependsOn, scope);
                 if (depTask && depTask.status === 'done') {
@@ -85,10 +84,6 @@ export class TaskService {
         return null;
     }
 
-    /**
-     * 开始执行任务 - 标记为 running
-     * 乐观锁：只更新 pending 或可重试的 failed 任务
-     */
     static async start(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
         const conditions = [
             eq(tasks.id, id),
@@ -96,10 +91,10 @@ export class TaskService {
                 eq(tasks.status, 'pending'),
                 and(
                     eq(tasks.status, 'failed'),
-                    sql`${tasks.retryCount} < ${tasks.maxRetries}`
-                )
+                    sql`${tasks.retryCount} < ${tasks.maxRetries}`,
+                ),
             ),
-            ...this.buildScopeWhere(scope)
+            ...this.buildScopeWhere(scope),
         ];
         const result = await db
             .update(tasks)
@@ -113,13 +108,10 @@ export class TaskService {
         return result[0] || null;
     }
 
-    /**
-     * 完成任务 - 标记为 done
-     */
     static async done(
         id: number,
         log?: string,
-        scope: { cwd?: string } = {}
+        scope: { cwd?: string } = {},
     ): Promise<Task | null> {
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
         const result = await db
@@ -128,41 +120,90 @@ export class TaskService {
                 status: 'done',
                 finishedAt: new Date(),
                 resultLog: log,
+                retryAfter: null,
             })
             .where(and(...conditions))
             .returning();
         return result[0] || null;
     }
 
-    /**
-     * 任务失败 - 标记为 failed
-     */
     static async fail(
         id: number,
         log?: string,
-        scope: { cwd?: string } = {}
+        scope: { cwd?: string } = {},
+        options?: { setDeadLetter?: boolean; retryAfterMs?: number },
     ): Promise<Task | null> {
-        // 先获取当前重试次数
         const current = await this.getById(id, scope);
         if (!current) return null;
+
+        const newRetryCount = (current.retryCount ?? 0) + 1;
+        const maxRetries = current.maxRetries ?? 3;
+        const isDeadLetter = options?.setDeadLetter ?? newRetryCount >= maxRetries;
 
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
         const result = await db
             .update(tasks)
             .set({
-                status: 'failed',
+                status: isDeadLetter ? 'dead_letter' : 'failed',
                 finishedAt: new Date(),
                 resultLog: log,
-                retryCount: (current.retryCount ?? 0) + 1,
+                retryCount: newRetryCount,
+                retryAfter: isDeadLetter
+                    ? null
+                    : (options?.retryAfterMs ?? Date.now() + computeBackoff(newRetryCount)),
             })
             .where(and(...conditions))
             .returning();
         return result[0] || null;
     }
 
-    /**
-     * 取消任务
-     */
+    static async markPendingForRetry(
+        id: number,
+        retryAfterMs: number,
+        retryCount: number,
+    ): Promise<Task | null> {
+        const result = await db
+            .update(tasks)
+            .set({
+                status: 'pending',
+                startedAt: null,
+                finishedAt: null,
+                retryAfter: retryAfterMs,
+                retryCount,
+            })
+            .where(eq(tasks.id, id))
+            .returning();
+        return result[0] || null;
+    }
+
+    static async markDeadLetter(id: number, retryCount: number): Promise<Task | null> {
+        const result = await db
+            .update(tasks)
+            .set({ status: 'dead_letter', finishedAt: new Date(), retryCount })
+            .where(eq(tasks.id, id))
+            .returning();
+        return result[0] || null;
+    }
+
+    static async resetRunningToPending(ids: number[]): Promise<number> {
+        if (ids.length === 0) return 0;
+        const result = await db
+            .update(tasks)
+            .set({
+                status: 'pending',
+                startedAt: null,
+                finishedAt: null,
+            })
+            .where(
+                and(
+                    sql`${tasks.id} IN ${ids}`,
+                    eq(tasks.status, 'running'),
+                ),
+            )
+            .returning();
+        return result.length;
+    }
+
     static async cancel(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
         const result = await db
@@ -173,13 +214,10 @@ export class TaskService {
         return result[0] || null;
     }
 
-    /**
-     * 重试任务 - 将 failed 重置为 pending
-     */
     static async retry(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
         const current = await this.getById(id, scope);
         if (!current) return null;
-        if (current.status !== 'failed') return null;
+        if (current.status !== 'failed' && current.status !== 'dead_letter') return null;
 
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
         const result = await db
@@ -188,19 +226,17 @@ export class TaskService {
                 status: 'pending',
                 startedAt: null,
                 finishedAt: null,
+                retryAfter: null,
             })
             .where(and(...conditions))
             .returning();
         return result[0] || null;
     }
 
-    /**
-     * 批量重试 - 按批次 ID
-     */
     static async retryBatch(batchId: string, scope: { cwd?: string } = {}): Promise<number> {
         const conditions = [
             eq(tasks.batchId, batchId),
-            eq(tasks.status, 'failed'),
+            or(eq(tasks.status, 'failed'), eq(tasks.status, 'dead_letter')),
             ...this.buildScopeWhere(scope),
         ];
         const result = await db
@@ -209,24 +245,19 @@ export class TaskService {
                 status: 'pending',
                 startedAt: null,
                 finishedAt: null,
+                retryAfter: null,
             })
             .where(and(...conditions))
             .returning();
         return result.length;
     }
 
-    /**
-     * 获取单个任务
-     */
     static async getById(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
         const result = await db.select().from(tasks).where(and(...conditions));
         return result[0] || null;
     }
 
-    /**
-     * 列出任务
-     */
     static async list(options: {
         status?: TaskStatus;
         batchId?: string;
@@ -267,9 +298,6 @@ export class TaskService {
         return await query;
     }
 
-    /**
-     * 统计任务状态
-     */
     static async stats(options: { batchId?: string; cwd?: string } = {}): Promise<Record<string, number>> {
         const conditions = [];
         if (options.batchId !== undefined) {
@@ -295,6 +323,7 @@ export class TaskService {
             running: 0,
             done: 0,
             failed: 0,
+            dead_letter: 0,
             cancelled: 0,
         };
 
@@ -308,12 +337,24 @@ export class TaskService {
         return stats;
     }
 
-    /**
-     * 删除任务
-     */
     static async delete(id: number, scope: { cwd?: string } = {}): Promise<boolean> {
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
         const result = await db.delete(tasks).where(and(...conditions)).returning();
         return result.length > 0;
+    }
+
+    static async deleteOlderThan(retentionDays: number): Promise<number> {
+        const cutoffSec = Math.floor(Date.now() / 1000) - retentionDays * 86400;
+        const result = await db
+            .delete(tasks)
+            .where(
+                and(
+                    sql`${tasks.status} IN ('done', 'failed', 'dead_letter')`,
+                    sql`${tasks.finishedAt} IS NOT NULL`,
+                    sql`${tasks.finishedAt} < ${cutoffSec}`,
+                ),
+            )
+            .returning();
+        return result.length;
     }
 }

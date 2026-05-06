@@ -96,6 +96,8 @@ const styles = html`
   .status-running { background: rgba(56,139,253,0.15); color: #58a6ff; border-color: rgba(56,139,253,0.4); }
   .status-done { background: rgba(46,160,67,0.15); color: #3fb950; border-color: rgba(46,160,67,0.4); }
   .status-failed { background: rgba(248,81,73,0.15); color: #f85149; border-color: rgba(248,81,73,0.4); }
+  .status-dead_letter { background: rgba(210,153,34,0.15); color: #d29922; border-color: rgba(210,153,34,0.4); }
+  .status-cancelled { background: rgba(110,118,129,0.2); color: #6e7681; border-color: rgba(110,118,129,0.3); }
 
   .action-btn {
     appearance: none;
@@ -226,6 +228,7 @@ app.get('/', async (c) => {
     running: statsData.running || 0,
     done: statsData.done || 0,
     failed: statsData.failed || 0,
+    dead_letter: statsData.dead_letter || 0,
     total: statsData.total || 0
   };
 
@@ -255,7 +258,7 @@ app.get('/', async (c) => {
           <div class="stat-label">Done</div>
         </div>
         <div class="stat-card">
-          <div class="stat-value" style={{ color: 'var(--danger)' }}>{counts.failed}</div>
+          <div class="stat-value" style={{ color: 'var(--danger)' }}>{counts.failed + counts.dead_letter}</div>
           <div class="stat-label">Failed</div>
         </div>
       </div>
@@ -330,7 +333,7 @@ app.get('/', async (c) => {
                 </td>
                 <td>
                   <button class="action-btn" onclick={`showDetail(${task.id})`}>详情</button>
-                  {task.status === 'failed' && (
+                  {(task.status === 'failed' || task.status === 'dead_letter') && (
                     <button class="action-btn btn-retry" onclick={`retryTask(${task.id})`}>重试</button>
                   )}
                   <button class="action-btn btn-delete" onclick={`deleteTask(${task.id})`}>删除</button>

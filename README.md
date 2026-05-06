@@ -2,19 +2,19 @@
 
 SuperTask 是一个基于 SQLite 的高性能任务队列管理系统，专为 OpenCode Agent 设计。它允许你批量创建任务、管理依赖，并通过后台 Worker 自动调度 Agent 执行。
 
-## 🚀 核心特性
+## 核心特性
 
 - **SQLite 驱动**：轻量、快速，无需额外数据库服务。
 - **CLI 管理**：提供完整的命令行工具进行任务增删改查。
 - **Agent 集成**：通过 MCP 插件将任务能力暴露给 OpenCode Agent。
-- **Worker 调度**：支持后台 Worker 自动轮询并抢占式执行任务。
-- **并发安全**：基于乐观锁的任务抢占机制，支持多 Worker 并发运行。
+- **Gateway 常驻进程**：集成 Worker + Scheduler + Watchdog，支持心跳检测、自动重试、定时任务、过期清理。
+- **并发安全**：基于 SQLite 进程锁保证单实例运行，batchId 级别的同组串行隔离。
 
-## 📦 安装与配置
+## 安装与配置
+
 ### 1. 安装依赖
 
 ```bash
-cd ~/code/opencodedocs/supertask
 bun install
 ```
 
@@ -23,121 +23,136 @@ bun install
 数据库位于 `~/.local/share/opencode/tasks.db`。
 
 ```bash
-# 生成迁移文件 (如有修改 schema)
-bun run db:generate
-
-# 执行迁移
-bun run db:migrate
+bun run db:generate   # 生成迁移文件（如有修改 schema）
+bun run db:migrate    # 执行迁移
 ```
 
-### 3. 配置 OpenCode
+### 3. 配置 OpenCode 插件
 
-在你的 OpenCode 配置文件（通常是 `opencode.json` 或 `~/.opencode/config.json`）中注册插件：
+在你的 OpenCode 配置文件中注册插件：
 
 ```json
 {
   "plugin": [
-    "/Users/javazys/code/opencodedocs/supertask"
+    "/Users/javazys/2026code/supertask"
   ]
 }
 ```
 
-重新构建插件以生效：
+构建插件：
 
 ```bash
 bun run build
 ```
 
+### 4. 部署 Runner Agent
+
+将 `agents/supertask-runner.md` 复制到 `~/.config/opencode/agent/` 目录。
+
 ---
 
-## 🛠️ CLI 使用指南
+## CLI 使用指南
 
-CLI 入口：`src/cli/index.ts`
-
-### 添加任务
+### 任务管理
 
 ```bash
-bun run src/cli/index.ts add \
-  --name "任务名称" \
+supertask add --name "任务名称" --agent "localize-gen" --prompt "提示词..." --importance 5
+supertask list [--status pending] [--batch <id>] [--limit 20]
+supertask get --id 1
+supertask status [--batch <id>]
+supertask cancel --id 1
+supertask delete --id 1
+supertask retry --id 1              # 重试单个失败/死信任务
+supertask retry --batch <batchId>   # 批量重试
+```
+
+### 调度模板管理
+
+```bash
+supertask template add \
+  --name "每日翻译" \
   --agent "localize-gen" \
-  --prompt "任务提示词..." \
-  --importance 5
+  --prompt "翻译所有未翻译的文档" \
+  --type cron \
+  --cron "0 9 * * *" \
+  --max-instances 2
+
+supertask template list
+supertask template enable --id 1
+supertask template disable --id 1
+supertask template delete --id 1
 ```
 
-### 查看任务列表
-
-```bash
-# 列出所有任务
-bun run src/cli/index.ts list
-
-# 筛选 pending 状态
-bun run src/cli/index.ts list --status pending
-```
-
-### 查看统计
-
-```bash
-bun run src/cli/index.ts status
-```
-
-### 删除/取消任务
-
-```bash
-# 删除任务
-bun run src/cli/index.ts delete --id 1
-
-# 取消任务
-bun run src/cli/index.ts cancel --id 1
-```
+支持三种调度类型：`cron`（cron 表达式）、`delayed`（定时执行）、`recurring`（固定间隔循环）。
 
 ---
 
-## 🤖 Runner Agent
+## Runner Agent
 
-**SuperTask Runner** 是一个专门的 Agent，用于执行队列中的任务。
+**配置文件**：`~/.config/opencode/agent/supertask-runner.md`（项目备份：`agents/supertask-runner.md`）
 
-**配置文件**：`~/.config/opencode/agent/supertask-runner.md`
-
-### 手动运行
+手动运行：
 
 ```bash
-cd ~/code/opencodedocs
-opencode run --agent supertask-runner "执行下一个任务"
+opencode run --agent supertask-runner
 ```
 
-### 工作原理
-
-1. Runner 启动后，通过 `supertask_next` 获取任务。
-2. 只要有任务，它就会用 Bash 调用 `opencode run --agent <task.agent>` 执行具体的子 Agent（如 `localize-gen`）。
-3. 执行完成后，自动标记任务为 `done`。
+Gateway 自动调用，通常不需要手动执行。
 
 ---
 
-## 👷 后台 Worker (推荐)
+## Gateway（常驻进程）
 
-Worker 脚本可以自动轮询数据库，抢占任务并调用 `supertask-runner` 执行。
+Gateway 是 SuperTask 的核心运行时，集成了 Worker、Scheduler 和 Watchdog。
 
-### 启动 Worker
-
-```bash
-# 前台运行（测试）
-bun run scripts/worker.ts
-
-# 指定模型运行（覆盖任务配置）
-bun run scripts/worker.ts -m gemini-2.0-flash
-
-# 后台运行（生产）
-nohup bun run scripts/worker.ts > worker.log 2>&1 &
-```
-
-**并发执行**：你可以启动多个 Worker 进程，它们会自动竞争任务，互不干扰。
-
-### 批量创建任务
-
-我们提供了一个脚本扫描中文文档并批量创建翻译任务：
+### 启动
 
 ```bash
-bun run scripts/batch-translate.ts
+bun run gateway
 ```
 
-该脚本会自动跳过已存在的任务（基于任务名去重）。
+或通过 systemd（参见 `deploy/supertask-gateway.service`）。
+
+### 架构
+
+```
+Gateway 进程
+├── Worker         → 抢占 pending 任务，spawn supertask-runner 执行
+├── Scheduler      → 定时克隆模板任务（cron/delayed/recurring）
+└── Watchdog       → 心跳检测 + 过期清理
+```
+
+### 配置
+
+配置文件：`~/.config/opencode/supertask.json`，未创建时使用默认值。
+
+```json
+{
+  "worker": {
+    "maxConcurrency": 2,
+    "pollIntervalMs": 1000,
+    "heartbeatIntervalMs": 30000,
+    "taskTimeoutMs": 1800000,
+    "defaultModel": "zhipuai-coding-plan/glm-4.7"
+  },
+  "scheduler": {
+    "enabled": true,
+    "checkIntervalMs": 1000,
+    "catchUp": "next"
+  },
+  "watchdog": {
+    "heartbeatTimeoutMs": 600000,
+    "cleanupIntervalMs": 60000,
+    "retentionDays": 30
+  }
+}
+```
+
+### 核心机制
+
+- **进程锁**：基于 SQLite `BEGIN IMMEDIATE`，保证单实例运行
+- **心跳**：Worker 每 30s 更新 task_runs.heartbeat_at，Watchdog 检测超时后 kill 进程
+- **自动重试**：失败任务按指数退避（30s × 2^n，上限 30min）自动重试
+- **死信队列**：重试次数耗尽后标记为 `dead_letter`，可通过 `retry` 命令手动恢复
+- **批次隔离**：同一 batchId 的任务串行执行，不同 batchId 并发
+- **优先级**：urgency DESC → importance DESC → createdAt ASC

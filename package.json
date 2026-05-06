@@ -22,7 +22,8 @@
         "db:generate": "drizzle-kit generate",
         "db:migrate": "bun run src/core/db/migrate.ts",
         "ui": "bun run src/web/index.tsx",
-        "worker": "bun run src/worker/index.ts"
+        "worker": "bun run src/worker/index.ts",
+        "gateway": "bun run src/gateway/index.ts"
     },
     "bin": {
         "supertask": "./src/cli/index.ts"
@@ -41,6 +42,7 @@
     "dependencies": {
         "@opencode-ai/plugin": "^1.1.42",
         "commander": "^13.1.0",
+        "cron-parser": "^5.5.0",
         "drizzle-orm": "^0.39.1",
         "glob": "^13.0.0",
         "hono": "^4.7.4"

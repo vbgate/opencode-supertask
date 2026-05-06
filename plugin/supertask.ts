@@ -8,6 +8,7 @@
 
 import { type Plugin, tool } from "@opencode-ai/plugin";
 import { TaskService } from "@core/services/task.service";
+import { TaskTemplateService } from "@core/services/task-template.service";
 
 export const SuperTaskPlugin: Plugin = async () => {
     return {
@@ -310,6 +311,68 @@ export const SuperTaskPlugin: Plugin = async () => {
                         } else {
                             return JSON.stringify({ error: "Task not found" });
                         }
+                    } catch (error) {
+                        return JSON.stringify({
+                            error: error instanceof Error ? error.message : String(error),
+                        });
+                    }
+                },
+            }),
+
+            // 创建调度模板
+            supertask_schedule: tool({
+                description:
+                    "创建调度模板，用于定时/延迟/循环执行任务。支持 cron 表达式、一次性延迟和固定间隔循环。Gateway 会按模板自动生成任务到队列。",
+                args: {
+                    name: tool.schema.string().describe("模板名称"),
+                    agent: tool.schema.string().describe("执行的 Agent 名称"),
+                    prompt: tool.schema.string().describe("发送给 Agent 的完整提示词"),
+                    model: tool.schema.string().optional().describe("使用的模型"),
+                    category: tool.schema.string().optional().describe("任务分类：translate/generate/review/test/general"),
+                    importance: tool.schema.number().optional().describe("重要程度 1-5"),
+                    urgency: tool.schema.number().optional().describe("紧急程度 1-5"),
+                    batchId: tool.schema.string().optional().describe("模板生成的任务归属的批次 ID"),
+                    schedule: tool.schema
+                        .object({
+                            type: tool.schema.enum(["cron", "delayed", "recurring"]).describe("调度类型"),
+                            cron_expr: tool.schema.string().optional().describe("cron 表达式（cron 类型必填，如 '0 9 * * 1-5'）"),
+                            run_at: tool.schema.number().optional().describe("执行时间戳 ms（delayed 类型必填）"),
+                            interval_ms: tool.schema.number().optional().describe("间隔毫秒（recurring 类型必填）"),
+                        })
+                        .describe("调度配置"),
+                    max_instances: tool.schema.number().optional().describe("最大并发实例数，默认 1"),
+                    max_retries: tool.schema.number().optional().describe("克隆给 task 的最大重试次数，默认 3"),
+                    retry_backoff_ms: tool.schema.number().optional().describe("克隆给 task 的退避基础间隔 ms，默认 30000"),
+                },
+                async execute(args) {
+                    try {
+                        if (!args.schedule) {
+                            return JSON.stringify({ error: "schedule is required" });
+                        }
+                        const scheduleType = args.schedule.type as import("@core/db/schema").ScheduleType;
+                        const tmpl = await TaskTemplateService.create({
+                            name: args.name,
+                            agent: args.agent,
+                            prompt: args.prompt,
+                            model: args.model,
+                            category: args.category ?? "general",
+                            importance: args.importance ?? 3,
+                            urgency: args.urgency ?? 3,
+                            scheduleType,
+                            cronExpr: args.schedule.cron_expr,
+                            intervalMs: args.schedule.interval_ms,
+                            runAt: args.schedule.run_at,
+                            maxInstances: args.max_instances,
+                            maxRetries: args.max_retries,
+                            retryBackoffMs: args.retry_backoff_ms,
+                        });
+                        return JSON.stringify({
+                            id: tmpl.id,
+                            status: "created",
+                            scheduleType: tmpl.scheduleType,
+                            nextRunAt: tmpl.nextRunAt,
+                            enabled: tmpl.enabled,
+                        });
                     } catch (error) {
                         return JSON.stringify({
                             error: error instanceof Error ? error.message : String(error),

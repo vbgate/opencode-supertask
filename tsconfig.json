@@ -35,6 +35,9 @@
             ],
             "@plugin/*": [
                 "plugin/*"
+            ],
+            "@gateway/*": [
+                "src/gateway/*"
             ]
         },
         "rootDir": "."
