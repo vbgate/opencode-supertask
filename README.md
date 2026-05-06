@@ -128,6 +128,15 @@ opencode run --agent supertask-runner
 
 Gateway 自动调用，通常不需要手动执行。
 
+## Web Dashboard
+
+```bash
+bun run ui
+# 打开 http://localhost:3000
+```
+
+只读视图，展示任务列表、状态统计、执行记录，支持重试和删除操作。与 Gateway 共享同一个 SQLite 数据库，可以同时运行。
+
 ---
 
 ## Gateway（常驻进程）
