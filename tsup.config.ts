@@ -38,5 +38,6 @@ export default defineConfig({
     '@web': './src/web',
     '@plugin': './plugin',
     '@gateway': './src/gateway',
+    '@daemon': './src/daemon',
   },
 });

@@ -9,15 +9,14 @@
 import { type Plugin, type Hooks, tool } from "@opencode-ai/plugin";
 import { TaskService } from "@core/services/task.service";
 import { TaskTemplateService } from "@core/services/task-template.service";
-import { getDb, sqlite } from "@core/db";
-import { spawn, type ChildProcess } from "child_process";
-import { existsSync } from "fs";
+import { getDb } from "@core/db";
+import { ensureGateway } from "../src/daemon/pm2";
 
-let _gatewaySpawned = false;
+let _initialized = false;
 
-function ensureGateway() {
-    if (_gatewaySpawned) return;
-    _gatewaySpawned = true;
+function ensureInit() {
+    if (_initialized) return;
+    _initialized = true;
 
     try {
         getDb();
@@ -27,22 +26,8 @@ function ensureGateway() {
     }
 
     try {
-        const lockRow = sqlite.prepare("SELECT pid, heartbeat_at FROM gateway_lock WHERE id = 1").get() as
-            | { pid: number; heartbeat_at: number }
-            | undefined;
-
-        if (lockRow && Date.now() - lockRow.heartbeat_at < 30_000) {
-            return;
-        }
-
-        const child = spawn("supertask", ["gateway"], {
-            detached: true,
-            stdio: "ignore",
-        });
-        child.unref();
-    } catch (err) {
-        console.error("[supertask] gateway spawn failed:", err instanceof Error ? err.message : String(err));
-    }
+        ensureGateway();
+    } catch {}
 }
 
 const RUNNER_PROMPT = `你是 **SuperTask 任务执行器**。
@@ -134,7 +119,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                 },
             };
 
-            ensureGateway();
+            ensureInit();
         },
 
         async "experimental.chat.system.transform"(input, output) {

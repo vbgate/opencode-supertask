@@ -363,4 +363,20 @@ program
         console.log(JSON.stringify(cfg, null, 2));
     });
 
+program
+    .command('install')
+    .description('Install Gateway as pm2 service (auto-start on boot, crash recovery)')
+    .action(async () => {
+        const { install: pm2Install } = await import('../daemon/pm2');
+        pm2Install();
+    });
+
+program
+    .command('uninstall')
+    .description('Stop and remove Gateway pm2 service')
+    .action(async () => {
+        const { uninstall: pm2Uninstall } = await import('../daemon/pm2');
+        pm2Uninstall();
+    });
+
 program.parse();
