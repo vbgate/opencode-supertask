@@ -21,7 +21,6 @@ function getMigrationsFolder(): string {
 
 function initDb() {
     const dataDir = dirname(DB_FILE_PATH);
-    const dbExisted = existsSync(DB_FILE_PATH);
     if (!existsSync(dataDir)) {
         mkdirSync(dataDir, { recursive: true });
     }

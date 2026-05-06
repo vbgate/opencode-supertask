@@ -1,8 +1,6 @@
 import { execSync, spawnSync } from "child_process";
-import { existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { homedir } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const GATEWAY_ENTRY = join(__dirname, "../gateway/index.js");
@@ -69,11 +67,19 @@ export function isGatewayRunning(): boolean {
     return proc.pm2_env?.status === "online";
 }
 
+function findBunPath(): string {
+    try {
+        const cmd = process.platform === "win32" ? "where bun" : "which bun";
+        return execSync(cmd, { stdio: "pipe" }).toString().trim().split("\n")[0];
+    } catch {
+        return process.execPath;
+    }
+}
+
 export function install(): void {
     if (!isPm2Installed()) {
         if (!installPm2()) {
-            console.error("[supertask] Failed to install pm2. Please install it manually: npm install -g pm2");
-            process.exit(1);
+            throw new Error("[supertask] Failed to install pm2. Please install it manually: npm install -g pm2");
         }
     }
     console.log("[supertask] pm2 ready");
@@ -90,7 +96,7 @@ export function install(): void {
         }
     } else {
         console.log("[supertask] Starting Gateway with pm2...");
-        const bunPath = process.execPath;
+        const bunPath = findBunPath();
         const { ok, output } = pm2Exec([
             "start",
             GATEWAY_ENTRY,
@@ -104,8 +110,7 @@ export function install(): void {
             "30",
         ]);
         if (!ok) {
-            console.error("[supertask] pm2 start failed:", output);
-            process.exit(1);
+            throw new Error(`[supertask] pm2 start failed: ${output}`);
         }
     }
 
@@ -171,7 +176,7 @@ export function ensureGateway(): void {
     if (existing) {
         pm2Exec(["restart", PROCESS_NAME]);
     } else {
-        const bunPath = process.execPath;
+        const bunPath = findBunPath();
         pm2Exec([
             "start",
             GATEWAY_ENTRY,

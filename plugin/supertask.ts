@@ -9,7 +9,7 @@
 import { type Plugin, type Hooks, tool } from "@opencode-ai/plugin";
 import { TaskService } from "@core/services/task.service";
 import { TaskTemplateService } from "@core/services/task-template.service";
-import { getDb } from "@core/db";
+import { getDb, sqlite } from "@core/db";
 import { ensureGateway } from "../src/daemon/pm2";
 
 let _initialized = false;
@@ -24,6 +24,16 @@ function ensureInit() {
         console.error("[supertask] DB init failed:", err instanceof Error ? err.message : String(err));
         return;
     }
+
+    try {
+        const lockRow = sqlite.prepare("SELECT pid, heartbeat_at FROM gateway_lock WHERE id = 1").get() as
+            | { pid: number; heartbeat_at: number }
+            | undefined;
+
+        if (lockRow && Date.now() - lockRow.heartbeat_at < 30_000) {
+            return;
+        }
+    } catch {}
 
     try {
         ensureGateway();
