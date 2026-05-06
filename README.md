@@ -1,148 +1,153 @@
-# OpenCode SuperTask
+# SuperTask
 
-AI Agent 任务调度系统 — OpenCode 插件 + CLI + Gateway 常驻进程。
+**AI-Powered Task Queue for OpenCode** — Schedule, retry, and manage batch jobs for AI agents.
 
-基于 SQLite 的高性能任务队列，支持并发调度、定时任务、自动重试、心跳检测。
+[简体中文](#简体中文)
 
-## 快速开始
+---
+
+## Features
+
+- **Task Queue** — SQLite-based, zero-config. Create, prioritize, batch, and schedule tasks.
+- **Gateway Daemon** — Worker + Scheduler + Watchdog in one process. Auto-retry with exponential backoff.
+- **CLI** — Full task & template management from the terminal.
+- **Web Dashboard** — Real-time monitoring, execution logs, config editing.
+- **OpenCode Plugin** — 10 MCP tools auto-injected. Agent auto-registered. Zero setup.
+- **Batch Isolation** — Same-batch tasks run serially; different batches run in parallel.
+- **Priority Scheduling** — `urgency` × `importance` × FIFO.
+
+## Quick Start
 
 ```bash
-# 安装
 bun install -g opencode-supertask
-
-# 初始化（创建配置 + 运行迁移）
-supertask init
-
-# 启动 Gateway（前台）
-supertask gateway
-
-# 后台运行（推荐 pm2）
-pm2 start "supertask gateway" --name supertask-gateway
-
-# 启动 Web Dashboard
-supertask ui
-# → http://localhost:3000
+supertask init        # create config + run migrations
+supertask gateway     # start gateway (foreground)
+supertask ui          # web dashboard → http://localhost:3000
 ```
 
-## OpenCode 集成
+### OpenCode Integration
 
-在 `opencode.json` 中注册插件：
-
-```json
+```jsonc
+// opencode.json
 {
   "plugin": ["opencode-supertask"]
 }
 ```
 
-插件自动完成：
-- 注册 10 个 `supertask_*` MCP 工具
-- 注入 `supertask-runner` Agent（无需手动复制配置文件）
-- 注入使用指南到 system prompt
+That's it. 10 MCP tools (`supertask_add`, `supertask_next`, etc.) and the `supertask-runner` agent are auto-injected.
 
-## CLI 命令
+### Background Running
 
 ```bash
-supertask init                          # 初始化（配置 + 迁移）
-supertask migrate                       # 运行数据库迁移
-supertask gateway                       # 启动 Gateway（前台）
-supertask ui                            # 启动 Web Dashboard
-supertask config                        # 显示当前配置
+# pm2 (recommended)
+pm2 start "supertask gateway" --name supertask-gateway
 
-# 任务管理
-supertask add -n "任务名" -a "agent" -p "提示词" --importance 5
-supertask list [--status pending] [--limit 20]
-supertask get --id 1
+# systemd
+cp deploy/supertask-gateway.service ~/.config/systemd/user/
+systemctl --user enable --now supertask-gateway
+```
+
+## CLI Reference
+
+```bash
+supertask init                          # init config + db
+supertask migrate                       # run migrations
+supertask gateway                       # start gateway
+supertask ui                            # start web dashboard
+supertask config                        # show config
+
+supertask add -n "Task" -a "agent" -p "prompt" --importance 5
+supertask list [--status pending]
 supertask status
-supertask cancel --id 1
 supertask retry --id 1
 
-# 定时任务模板
-supertask template add --name "每日翻译" --agent "gen" --prompt "..." --type cron --cron "0 9 * * *"
+supertask template add --name "Daily" --agent "gen" \
+  --prompt "..." --type cron --cron "0 9 * * *"
 supertask template list
 supertask template enable --id 1
-supertask template disable --id 1
 ```
 
-## Gateway 架构
+## Architecture
 
 ```
-Gateway 进程（supertask gateway）
-├── Worker         → 抢占 pending 任务，spawn supertask-runner 执行
-├── Scheduler      → 定时克隆模板任务（cron/delayed/recurring）
-└── Watchdog       → 心跳检测 + 自动重试 + 过期清理
+Gateway (supertask gateway)
+├── Worker     → claim tasks, spawn supertask-runner via opencode
+├── Scheduler  → clone tasks from templates (cron/delayed/recurring)
+└── Watchdog   → heartbeat timeout detection, auto-retry, cleanup
 ```
 
-配置文件：`~/.config/opencode/supertask.json`
+Config: `~/.config/opencode/supertask.json`
 
 ```json
 {
-  "worker": {
-    "maxConcurrency": 2,
-    "pollIntervalMs": 1000,
-    "heartbeatIntervalMs": 30000,
-    "taskTimeoutMs": 1800000
-  },
-  "scheduler": {
-    "enabled": true,
-    "catchUp": "next"
-  },
-  "watchdog": {
-    "heartbeatTimeoutMs": 600000,
-    "cleanupIntervalMs": 60000,
-    "retentionDays": 30
-  }
+  "worker": { "maxConcurrency": 2 },
+  "scheduler": { "enabled": true, "catchUp": "next" },
+  "watchdog": { "heartbeatTimeoutMs": 600000, "retentionDays": 30 }
 }
 ```
 
-核心机制：
-- **进程锁**：SQLite `BEGIN IMMEDIATE`，保证单实例
-- **心跳**：Worker 每 30s 更新，Watchdog 检测超时后 kill
-- **自动重试**：指数退避（30s × 2^n，上限 30min）
-- **死信队列**：超过重试次数 → `dead_letter`，可手动恢复
-- **批次隔离**：同 batchId 串行，不同 batchId 并发
-- **优先级**：urgency DESC → importance DESC → createdAt ASC
+Key mechanisms:
+- **Process lock**: SQLite `BEGIN IMMEDIATE` ensures single instance
+- **Heartbeat**: Worker updates every 30s; Watchdog kills stale processes
+- **Exponential backoff**: 30s × 2^n, capped at 30min
+- **Dead letter queue**: Exhausted retries → `dead_letter`, manually recoverable
+- **Batch isolation**: Same `batchId` → serial; different `batchId` → parallel
 
-## 生产部署
+## Data
 
-### systemd
+- Database: `~/.local/share/opencode/tasks.db` (SQLite WAL)
+- Config: `~/.config/opencode/supertask.json`
+
+## Requirements
+
+- [Bun](https://bun.sh) >= 1.0
+- [OpenCode](https://opencode.ai)
+
+## License
+
+MIT
+
+---
+
+<a id="简体中文"></a>
+
+## 简体中文
+
+SuperTask 是一个基于 SQLite 的 AI Agent 任务调度系统，专为 [OpenCode](https://opencode.ai) 设计。
+
+### 功能亮点
+
+- **任务队列** — 零配置 SQLite 驱动，支持优先级、批次、依赖
+- **Gateway 常驻进程** — Worker + Scheduler + Watchdog 三合一，自动重试 + 指数退避
+- **CLI 工具** — 完整的任务和模板管理命令
+- **Web 控制台** — 实时监控、执行日志、在线编辑配置
+- **OpenCode 插件** — 10 个 MCP 工具自动注入，supertask-runner Agent 自动注册
+- **批次隔离** — 同批次串行，不同批次并行，互不阻塞
+
+### 快速开始
 
 ```bash
-# 编辑 deploy/supertask-gateway.service，替换 bun 路径
-cp deploy/supertask-gateway.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now supertask-gateway
-journalctl --user -u supertask-gateway -f
+bun install -g opencode-supertask
+supertask init        # 初始化配置 + 数据库
+supertask gateway     # 启动 Gateway（前台）
+supertask ui          # Web 控制台 → http://localhost:3000
 ```
 
-### pm2
+在 `opencode.json` 中注册插件：
+
+```jsonc
+{
+  "plugin": ["opencode-supertask"]
+}
+```
+
+后台运行推荐 pm2：
 
 ```bash
 pm2 start "supertask gateway" --name supertask-gateway
-pm2 logs supertask-gateway
-pm2 restart supertask-gateway
 ```
 
-## Web Dashboard
+### 数据位置
 
-`supertask ui` 启动后访问 http://localhost:3000
-
-四个页面：
-- **任务队列**：状态筛选、分页、重试、删除
-- **定时任务**：模板管理、启用/禁用、手动触发
-- **执行日志**：task_runs 列表、日志查看
-- **系统状态**：配置编辑、并发占用、队列统计
-
-## 数据存储
-
-- 数据库：`~/.local/share/opencode/tasks.db`（SQLite WAL）
+- 数据库：`~/.local/share/opencode/tasks.db`
 - 配置：`~/.config/opencode/supertask.json`
-
-## 从源码安装
-
-```bash
-git clone https://github.com/javazys/supertask.git
-cd supertask
-bun install
-bun run build
-supertask init
-```

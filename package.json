@@ -45,6 +45,14 @@
     ],
     "author": "javazys",
     "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/vbgate/opencode-supertask.git"
+    },
+    "bugs": {
+        "url": "https://github.com/vbgate/opencode-supertask/issues"
+    },
+    "homepage": "https://github.com/vbgate/opencode-supertask#readme",
     "dependencies": {
         "commander": "^13.1.0",
         "cron-parser": "^5.5.0",
