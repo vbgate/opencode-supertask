@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { TaskService } from '@core/services/task.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import { closeDb } from '@core/db';
+import { parseDuration } from '@core/duration';
 import type { TaskStatus, ScheduleType } from '@core/db/schema';
 
 async function withDb<T>(fn: () => Promise<T>): Promise<T> {
@@ -221,8 +222,8 @@ program
             .requiredOption('-p, --prompt <prompt>', '提示词')
             .requiredOption('-t, --type <type>', '调度类型：cron/delayed/recurring')
             .option('--cron <expr>', 'cron 表达式（cron 类型必填）')
-            .option('--interval <ms>', '间隔毫秒（recurring 类型必填）')
-            .option('--run-at <ms>', '执行时间戳 ms（delayed 类型必填）')
+            .option('--delay <duration>', '延迟时间（delayed 类型必填），如 30s / 5min / 1h / 2d')
+            .option('--interval <duration>', '循环间隔（recurring 类型必填），如 1h / 30min / 5s')
             .option('-m, --model <model>', '模型')
             .option('-c, --category <category>', '分类', 'general')
             .option('-i, --importance <number>', '重要程度 1-5', '3')
@@ -231,6 +232,25 @@ program
             .option('--max-retries <number>', '最大重试次数', '3')
             .option('--retry-backoff <ms>', '退避基础间隔 ms', '30000')
             .action(async (options) => withDb(async () => {
+                let intervalMs: number | null = null;
+                let runAt: number | null = null;
+
+                if (options.interval) {
+                    intervalMs = parseDuration(options.interval);
+                    if (intervalMs === null) {
+                        console.error(JSON.stringify({ error: `Invalid interval: "${options.interval}". Use 30s / 5min / 1h / 2d` }));
+                        process.exit(1);
+                    }
+                }
+                if (options.delay) {
+                    const delayMs = parseDuration(options.delay);
+                    if (delayMs === null) {
+                        console.error(JSON.stringify({ error: `Invalid delay: "${options.delay}". Use 30s / 5min / 1h / 2d` }));
+                        process.exit(1);
+                    }
+                    runAt = Date.now() + delayMs;
+                }
+
                 const tmpl = await TaskTemplateService.create({
                     name: options.name,
                     agent: options.agent,
@@ -241,8 +261,8 @@ program
                     urgency: parseInt(options.urgency),
                     scheduleType: options.type as ScheduleType,
                     cronExpr: options.cron,
-                    intervalMs: options.interval ? parseInt(options.interval) : null,
-                    runAt: options.runAt ? parseInt(options.runAt) : null,
+                    intervalMs,
+                    runAt,
                     maxInstances: parseInt(options.maxInstances),
                     maxRetries: parseInt(options.maxRetries),
                     retryBackoffMs: parseInt(options.retryBackoff),

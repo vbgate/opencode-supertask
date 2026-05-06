@@ -10,6 +10,7 @@ import { type Plugin, type Hooks, tool } from "@opencode-ai/plugin";
 import { TaskService } from "@core/services/task.service";
 import { TaskTemplateService } from "@core/services/task-template.service";
 import { getDb, sqlite } from "@core/db";
+import { parseDuration } from "@core/duration";
 import { ensureGateway } from "../src/daemon/pm2";
 
 let _initialized = false;
@@ -460,8 +461,8 @@ export const SuperTaskPlugin: Plugin = async () => {
                         .object({
                             type: tool.schema.enum(["cron", "delayed", "recurring"]).describe("调度类型"),
                             cron_expr: tool.schema.string().optional().describe("cron 表达式（cron 类型必填，如 '0 9 * * 1-5'）"),
-                            run_at: tool.schema.number().optional().describe("执行时间戳 ms（delayed 类型必填）"),
-                            interval_ms: tool.schema.number().optional().describe("间隔毫秒（recurring 类型必填）"),
+                            delay: tool.schema.string().optional().describe("延迟时间（delayed 类型必填），友好格式如 '30s' '5min' '1h' '2d'，也支持 ISO 8601 duration 如 'PT30M'"),
+                            interval: tool.schema.string().optional().describe("循环间隔（recurring 类型必填），友好格式如 '1h' '30min' '5s'，也支持 ISO 8601 duration 如 'PT1H'"),
                         })
                         .describe("调度配置"),
                     max_instances: tool.schema.number().optional().describe("最大并发实例数，默认 1"),
@@ -474,6 +475,26 @@ export const SuperTaskPlugin: Plugin = async () => {
                             return JSON.stringify({ error: "schedule is required" });
                         }
                         const scheduleType = args.schedule.type as import("@core/db/schema").ScheduleType;
+
+                        let cronExpr = args.schedule.cron_expr;
+                        let intervalMs: number | null = null;
+                        let runAt: number | null = null;
+
+                        if (scheduleType === "delayed" && args.schedule.delay) {
+                            const delayMs = parseDuration(args.schedule.delay);
+                            if (delayMs === null) {
+                                return JSON.stringify({ error: `Invalid delay format: "${args.schedule.delay}". Use formats like "30s", "5min", "1h", "2d"` });
+                            }
+                            runAt = Date.now() + delayMs;
+                        }
+
+                        if (scheduleType === "recurring" && args.schedule.interval) {
+                            intervalMs = parseDuration(args.schedule.interval);
+                            if (intervalMs === null) {
+                                return JSON.stringify({ error: `Invalid interval format: "${args.schedule.interval}". Use formats like "30s", "5min", "1h", "2d"` });
+                            }
+                        }
+
                         const tmpl = await TaskTemplateService.create({
                             name: args.name,
                             agent: args.agent,
@@ -483,9 +504,9 @@ export const SuperTaskPlugin: Plugin = async () => {
                             importance: args.importance ?? 3,
                             urgency: args.urgency ?? 3,
                             scheduleType,
-                            cronExpr: args.schedule.cron_expr,
-                            intervalMs: args.schedule.interval_ms,
-                            runAt: args.schedule.run_at,
+                            cronExpr,
+                            intervalMs,
+                            runAt,
                             maxInstances: args.max_instances,
                             maxRetries: args.max_retries,
                             retryBackoffMs: args.retry_backoff_ms,
