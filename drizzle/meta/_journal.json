@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1769715046886,
+      "tag": "0000_steep_micromax",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1769718256045,
+      "tag": "0001_tranquil_baron_strucker",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1769887991634,
+      "tag": "0002_round_william_stryker",
+      "breakpoints": true
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+    "name": "opencode-supertask",
+    "version": "0.1.0",
+    "description": "通用任务管理系统 - AI Agent 任务调度器插件",
+    "type": "module",
+    "main": "dist/plugin/supertask.js",
+    "types": "dist/plugin/supertask.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/plugin/supertask.js",
+            "types": "./dist/plugin/supertask.d.ts"
+        }
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE"
+    ],
+    "scripts": {
+        "dev": "bun run src/cli/index.ts",
+        "build": "tsc",
+        "db:generate": "drizzle-kit generate",
+        "db:migrate": "bun run src/core/db/migrate.ts",
+        "ui": "bun run src/web/index.tsx",
+        "worker": "bun run src/worker/index.ts"
+    },
+    "bin": {
+        "supertask": "./src/cli/index.ts"
+    },
+    "keywords": [
+        "opencode",
+        "plugin",
+        "task",
+        "queue",
+        "agent",
+        "scheduler",
+        "supertask"
+    ],
+    "author": "javazys",
+    "license": "MIT",
+    "dependencies": {
+        "@opencode-ai/plugin": "^1.1.42",
+        "commander": "^13.1.0",
+        "drizzle-orm": "^0.39.1",
+        "glob": "^13.0.0",
+        "hono": "^4.7.4"
+    },
+    "devDependencies": {
+        "@types/bun": "latest",
+        "@types/node": "^25.1.0",
+        "drizzle-kit": "^0.30.4",
+        "typescript": "^5.9.3"
+    },
+    "peerDependencies": {
+        "@opencode-ai/plugin": "^1.1.0"
+    },
+    "engines": {
+        "node": ">=18.0.0"
+    }
+}
