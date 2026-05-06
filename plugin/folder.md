@@ -8,7 +8,7 @@
 
 | 文件 | 导出 | 工具前缀 | 工具数量 |
 |------|------|---------|---------|
-| `supertask.ts` | `SuperTaskPlugin` | `supertask_` | 9 个（add/next/start/done/fail/status/retry/list/get） |
+| `supertask.ts` | `SuperTaskPlugin` | `supertask_` | 10 个（add/next/start/done/fail/status/retry/list/get/schedule） |
 | `task.ts` | `TaskPlugin` | `task_` | 7 个（add/next/start/done/fail/status/retry） |
 
 ## 设计
