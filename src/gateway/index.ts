@@ -91,6 +91,17 @@ async function main() {
     watchdog.start();
     await scheduler.start();
 
+    if (cfg.dashboard.enabled) {
+        const { dashboardApp } = await import('@web/index');
+        Bun.serve({ port: cfg.dashboard.port, fetch: dashboardApp.fetch });
+        console.log(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'info',
+            msg: 'Dashboard started',
+            url: `http://localhost:${cfg.dashboard.port}`,
+        }));
+    }
+
     console.log(JSON.stringify({
         ts: new Date().toISOString(),
         level: 'info',

@@ -20,6 +20,10 @@ export interface GatewayConfig {
         cleanupIntervalMs: number;
         retentionDays: number;
     };
+    dashboard: {
+        enabled: boolean;
+        port: number;
+    };
     logging: {
         level: string;
         format: 'json' | 'text';
@@ -43,6 +47,10 @@ const DEFAULT_CONFIG: GatewayConfig = {
         heartbeatTimeoutMs: 600000,
         cleanupIntervalMs: 60000,
         retentionDays: 30,
+    },
+    dashboard: {
+        enabled: true,
+        port: 4680,
     },
     logging: {
         level: 'info',

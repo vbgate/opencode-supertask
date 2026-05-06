@@ -585,7 +585,9 @@ app.put('/api/config', async (c) => {
     }
 });
 
+export const dashboardApp = app;
+
 export default {
-    port: 3000,
+    port: 4680,
     fetch: app.fetch,
 };

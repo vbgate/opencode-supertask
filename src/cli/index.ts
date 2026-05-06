@@ -349,9 +349,17 @@ program
 
 program
     .command('ui')
-    .description('Start the Web Dashboard')
+    .description('Open Web Dashboard (embedded in Gateway)')
     .action(async () => {
-        await import('@web/index');
+        const { loadConfig } = await import('@gateway/config');
+        const cfg = loadConfig();
+        const url = `http://localhost:${cfg.dashboard.port}`;
+        console.log(`Dashboard: ${url}`);
+        try {
+            const { execSync } = await import('child_process');
+            const cmd = process.platform === 'win32' ? `start ${url}` : process.platform === 'darwin' ? `open ${url}` : `xdg-open ${url}`;
+            execSync(cmd, { stdio: 'ignore' });
+        } catch {}
     });
 
 program
