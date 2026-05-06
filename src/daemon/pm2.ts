@@ -159,19 +159,21 @@ export function ensureGateway(): void {
     } catch {}
 
     if (!isPm2Installed()) {
+        console.log("[supertask] Installing pm2 for Gateway process management...");
         try {
             execSync("npm install -g pm2", { stdio: "pipe" });
         } catch {
             try {
                 execSync("bun install -g pm2", { stdio: "pipe" });
             } catch {
+                console.warn("[supertask] Could not install pm2. Gateway will not auto-start. Run `supertask install` manually.");
                 return;
             }
         }
     }
 
-    const list = pm2JsonList();
-    const existing = list.find((p) => p.name === PROCESS_NAME);
+    const pm2List = pm2JsonList();
+    const existing = pm2List.find((p) => p.name === PROCESS_NAME);
 
     if (existing) {
         pm2Exec(["restart", PROCESS_NAME]);

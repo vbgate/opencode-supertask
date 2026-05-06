@@ -367,16 +367,26 @@ program
     .command('install')
     .description('Install Gateway as pm2 service (auto-start on boot, crash recovery)')
     .action(async () => {
-        const { install: pm2Install } = await import('../daemon/pm2');
-        pm2Install();
+        try {
+            const { install: pm2Install } = await import('../daemon/pm2');
+            pm2Install();
+        } catch (err) {
+            console.error(err instanceof Error ? err.message : String(err));
+            process.exit(1);
+        }
     });
 
 program
     .command('uninstall')
     .description('Stop and remove Gateway pm2 service')
     .action(async () => {
-        const { uninstall: pm2Uninstall } = await import('../daemon/pm2');
-        pm2Uninstall();
+        try {
+            const { uninstall: pm2Uninstall } = await import('../daemon/pm2');
+            pm2Uninstall();
+        } catch (err) {
+            console.error(err instanceof Error ? err.message : String(err));
+            process.exit(1);
+        }
     });
 
 program.parse();
