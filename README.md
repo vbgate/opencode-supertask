@@ -12,29 +12,42 @@ SuperTask 是一个基于 SQLite 的高性能任务队列管理系统，专为 O
 
 ## 安装与配置
 
-### 1. 安装依赖
+### 前置条件
+
+- [Bun](https://bun.sh) >= 1.0
+- [OpenCode](https://opencode.ai) CLI
+
+### 1. 克隆并安装
 
 ```bash
+git clone https://github.com/javazys/supertask.git ~/code/supertask
+cd ~/code/supertask
 bun install
 ```
 
 ### 2. 初始化数据库
 
-数据库位于 `~/.local/share/opencode/tasks.db`。
+数据库位于 `~/.local/share/opencode/tasks.db`，首次运行自动创建。
 
 ```bash
-bun run db:generate   # 生成迁移文件（如有修改 schema）
-bun run db:migrate    # 执行迁移
+bun run db:migrate
 ```
 
-### 3. 配置 OpenCode 插件
+### 3. 部署 Runner Agent
 
-在你的 OpenCode 配置文件中注册插件：
+```bash
+mkdir -p ~/.config/opencode/agent
+cp agents/supertask-runner.md ~/.config/opencode/agent/
+```
+
+### 4. 注册 OpenCode 插件
+
+在你的 OpenCode 配置文件（`opencode.json`）中注册：
 
 ```json
 {
   "plugin": [
-    "/Users/javazys/2026code/supertask"
+    "/your/path/to/supertask"
   ]
 }
 ```
@@ -45,9 +58,25 @@ bun run db:migrate    # 执行迁移
 bun run build
 ```
 
-### 4. 部署 Runner Agent
+### 5. 启动 Gateway
 
-将 `agents/supertask-runner.md` 复制到 `~/.config/opencode/agent/` 目录。
+前台运行（调试）：
+
+```bash
+bun run gateway
+```
+
+systemd 常驻（生产）：
+
+```bash
+# 编辑 deploy/supertask-gateway.service，将路径替换为实际路径
+cp deploy/supertask-gateway.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now supertask-gateway
+
+# 查看日志
+journalctl --user -u supertask-gateway -f
+```
 
 ---
 
