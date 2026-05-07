@@ -35,9 +35,10 @@ export class TaskService {
         const hasExcludedBatches = scope.excludedBatchIds && scope.excludedBatchIds.length > 0;
         let batchFilter: ReturnType<typeof sql> | undefined;
         if (hasExcludedBatches) {
-            const conditions: ReturnType<typeof sql>[] = [];
-            conditions.push(sql`${tasks.batchId} NOT IN ${scope.excludedBatchIds!}`);
-            batchFilter = and(...conditions);
+            batchFilter = or(
+                isNull(tasks.batchId),
+                sql`${tasks.batchId} NOT IN ${scope.excludedBatchIds!}`,
+            );
         }
 
         const statusConditions = or(
@@ -286,7 +287,7 @@ export class TaskService {
             query = query.where(and(...conditions));
         }
 
-        query = query.orderBy(desc(tasks.createdAt));
+        query = query.orderBy(desc(tasks.createdAt), desc(tasks.id));
 
         if (options.limit) {
             query = query.limit(options.limit);

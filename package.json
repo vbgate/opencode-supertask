@@ -1,6 +1,6 @@
 {
     "name": "opencode-supertask",
-    "version": "0.1.6",
+    "version": "0.1.17",
     "description": "AI Agent 任务调度系统 — OpenCode 插件 + CLI + Gateway 常驻进程",
     "type": "module",
     "main": "dist/plugin/supertask.js",

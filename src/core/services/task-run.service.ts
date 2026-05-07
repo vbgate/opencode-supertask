@@ -86,7 +86,7 @@ export class TaskRunService {
             .select()
             .from(taskRuns)
             .where(eq(taskRuns.taskId, taskId))
-            .orderBy(desc(taskRuns.startedAt));
+            .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id));
     }
 
     static async getLatestByTaskId(taskId: number): Promise<TaskRun | null> {
@@ -94,7 +94,7 @@ export class TaskRunService {
             .select()
             .from(taskRuns)
             .where(eq(taskRuns.taskId, taskId))
-            .orderBy(desc(taskRuns.startedAt))
+            .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
             .limit(1);
         return result[0] || null;
     }
@@ -160,7 +160,7 @@ export class TaskRunService {
             .select()
             .from(taskRuns)
             .where(and(eq(taskRuns.taskId, taskId), eq(taskRuns.status, 'running')))
-            .orderBy(desc(taskRuns.startedAt))
+            .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id))
             .limit(1);
         return result[0] || null;
     }

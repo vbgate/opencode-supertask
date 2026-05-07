@@ -150,15 +150,25 @@ async function deleteTmpl(id){if(!confirm('确定删除此模板? 此操作不�
 async function triggerTmpl(id){if(!confirm('立即触发一次?'))return;const r=await fetch('/api/templates/'+id+'/trigger',{method:'POST'});const d=await r.json();if(d.success){alert('已创建任务 #'+d.taskId);location.reload();}else{alert('触发失败');}}
 function toggleLog(id){const el=document.getElementById('log-'+id);el.style.display=el.style.display==='none'?'block':'none';}
 
+async function clearDatabase(){
+  if(!confirm('确定清空所有任务数据？此操作不可恢复！'))return;
+  if(!confirm('再次确认：将删除所有任务、执行记录和调度模板。'))return;
+  try{
+    const r=await fetch('/api/database/clear',{method:'POST'});
+    const d=await r.json();
+    if(d.success){alert('数据库已清空');location.reload();}
+    else{alert('清空失败: '+d.error);}
+  }catch(e){alert('清空失败: '+e.message);}
+}
+
 async function saveConfig(){
   const form=document.getElementById('config-form');
-  const data={
+    const data={
     worker:{
       maxConcurrency:Number(form.mc.value),
       pollIntervalMs:Number(form.pi.value),
       heartbeatIntervalMs:Number(form.hi.value)*1000,
       taskTimeoutMs:Number(form.to.value)*60000,
-      defaultModel:form.dm.value,
     },
     scheduler:{
       enabled:form.se.checked,
@@ -454,7 +464,6 @@ app.get('/system', async (c) => {
           <div class="form-row"><label>轮询间隔(ms)</label><input type="number" name="pi" value="${config.worker.pollIntervalMs}" min="100" style="width:100px"></div>
           <div class="form-row"><label>心跳间隔(秒)</label><input type="number" name="hi" value="${config.worker.heartbeatIntervalMs / 1000}" min="5" style="width:100px"></div>
           <div class="form-row"><label>任务超时(分钟)</label><input type="number" name="to" value="${config.worker.taskTimeoutMs / 60000}" min="1" style="width:100px"></div>
-          <div class="form-row"><label>默认模型</label><input type="text" name="dm" value="${config.worker.defaultModel}" style="width:260px"></div>
         </div>
         <div class="card">
           <h3 style="margin:0 0 12px;font-size:14px">Scheduler 配置</h3>
@@ -503,6 +512,12 @@ app.get('/system', async (c) => {
         <h3 style="margin:0 0 12px;font-size:14px">配置文件</h3>
         <div class="ir"><span class="ik">路径</span><span class="iv m sm">${CONFIG_PATH}</span></div>
         <div class="ir"><span class="ik">文件存在</span><span class="iv">${configFileStatus}</span></div>
+      </div>
+
+      <div class="card mt16" style="border-color:var(--red)">
+        <h3 style="margin:0 0 12px;font-size:14px;color:var(--red)">危险操作</h3>
+        <p class="sm mu" style="margin:0 0 12px">清空所有任务数据（tasks + task_runs + task_templates），不可恢复。</p>
+        <button class="btn btn-danger" style="border-color:var(--red);color:var(--red);padding:6px 16px" onclick="clearDatabase()">清空数据库</button>
       </div>`;
 
     return c.html(renderLayout('系统状态', 'system', body));
@@ -579,6 +594,18 @@ app.put('/api/config', async (c) => {
         const bD = (body.watchdog ?? {}) as Record<string, unknown>;
         const merged = { ...current, ...body, worker: { ...curW, ...bW }, scheduler: { ...curS, ...bS }, watchdog: { ...curD, ...bD } };
         writeConfig(merged);
+        return c.json({ success: true });
+    } catch (err) {
+        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+});
+
+app.post('/api/database/clear', async (c) => {
+    try {
+        const { tasks, taskRuns, taskTemplates } = schema;
+        await db.delete(taskRuns);
+        await db.delete(taskTemplates);
+        await db.delete(tasks);
         return c.json({ success: true });
     } catch (err) {
         return c.json({ success: false, error: err instanceof Error ? err.message : String(err) });

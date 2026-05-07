@@ -161,8 +161,6 @@ export const SuperTaskPlugin: Plugin = async () => {
                 },
                 async execute(args) {
                     try {
-                        // 记录“提交任务时”的工作目录（即当前 opencode 进程的启动目录）
-                        // 不依赖/不要求调用方传入 cwd，避免 worker 与提交端目录不一致导致执行错目录。
                         const submitCwd = process.cwd();
 
                         const task = await TaskService.add({

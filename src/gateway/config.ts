@@ -8,7 +8,6 @@ export interface GatewayConfig {
         pollIntervalMs: number;
         heartbeatIntervalMs: number;
         taskTimeoutMs: number;
-        defaultModel: string;
     };
     scheduler: {
         enabled: boolean;
@@ -36,7 +35,6 @@ const DEFAULT_CONFIG: GatewayConfig = {
         pollIntervalMs: 1000,
         heartbeatIntervalMs: 30000,
         taskTimeoutMs: 1800000,
-        defaultModel: 'zhipuai-coding-plan/glm-4.7',
     },
     scheduler: {
         enabled: true,
