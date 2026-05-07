@@ -417,4 +417,18 @@ program
         }
     });
 
+program
+    .command('upgrade')
+    .description('Restart Gateway with current plugin version')
+    .action(async () => {
+        try {
+            const { upgrade: pm2Upgrade } = await import('../daemon/pm2');
+            const result = pm2Upgrade();
+            console.log(JSON.stringify({ before: result.before, after: result.after, restarted: result.restarted }));
+        } catch (err) {
+            console.error(err instanceof Error ? err.message : String(err));
+            process.exit(1);
+        }
+    });
+
 program.parse();

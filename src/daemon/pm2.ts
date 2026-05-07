@@ -185,6 +185,31 @@ export function uninstall(): void {
     console.log("[supertask] To fully remove pm2 startup: pm2 unstartup");
 }
 
+export function upgrade(): { before: string | null; after: string; restarted: boolean } {
+    const before = getRunningVersion();
+    const currentVersion = getPackageVersion();
+
+    const list = pm2JsonList();
+    const proc = list.find((p) => p.name === PROCESS_NAME);
+
+    if (proc) {
+        console.log(`[supertask] Stopping Gateway (version ${before ?? "unknown"})...`);
+        pm2Exec(["delete", PROCESS_NAME]);
+    }
+
+    console.log(`[supertask] Starting Gateway (version ${currentVersion})...`);
+    const { ok } = pm2StartGateway(currentVersion);
+    if (ok) {
+        writeRunningVersion(currentVersion);
+        pm2Exec(["save"]);
+        console.log(`[supertask] Gateway upgraded: ${before ?? "unknown"} → ${currentVersion}`);
+    } else {
+        throw new Error(`[supertask] Failed to start Gateway after upgrade`);
+    }
+
+    return { before, after: currentVersion, restarted: true };
+}
+
 export function ensureGateway(): void {
     const currentVersion = getPackageVersion();
 

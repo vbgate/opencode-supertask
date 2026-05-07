@@ -11,7 +11,7 @@ import { TaskService } from "@core/services/task.service";
 import { TaskTemplateService } from "@core/services/task-template.service";
 import { getDb, sqlite } from "@core/db";
 import { parseDuration } from "@core/duration";
-import { ensureGateway } from "../src/daemon/pm2";
+import { ensureGateway, upgrade as pm2Upgrade } from "../src/daemon/pm2";
 
 let _initialized = false;
 
@@ -518,6 +518,50 @@ export const SuperTaskPlugin: Plugin = async () => {
                         });
                     } catch (error) {
                         return JSON.stringify({
+                            error: error instanceof Error ? error.message : String(error),
+                        });
+                    }
+                },
+            }),
+
+            supertask_upgrade: tool({
+                description:
+                    "升级 SuperTask 插件。先通过 npm 更新插件包到最新版本，然后重启 Gateway 进程。当用户说'升级插件'、'更新 supertask'、'upgrade'时使用。",
+                args: {},
+                async execute() {
+                    try {
+                        const { execSync } = await import("child_process");
+                        const configDir = await import("@opencode-ai/plugin").then((m) => {
+                            const home = process.env.HOME || process.env.USERPROFILE || "";
+                            return `${home}/.config/opencode`;
+                        });
+
+                        console.log("[supertask] Updating npm package...");
+                        try {
+                            execSync("npm install opencode-supertask@latest", {
+                                cwd: configDir,
+                                stdio: "pipe",
+                                timeout: 60000,
+                            });
+                        } catch (npmErr) {
+                            return JSON.stringify({
+                                success: false,
+                                error: `npm install failed: ${npmErr instanceof Error ? npmErr.message : String(npmErr)}`,
+                                hint: "Try manually: cd ~/.config/opencode && npm install opencode-supertask@latest",
+                            });
+                        }
+
+                        const result = pm2Upgrade();
+                        return JSON.stringify({
+                            success: true,
+                            before: result.before,
+                            after: result.after,
+                            restarted: result.restarted,
+                            message: `SuperTask 已从 ${result.before ?? "unknown"} 升级到 ${result.after}，Gateway 已重启。请重启 opencode 以加载新版插件。`,
+                        });
+                    } catch (error) {
+                        return JSON.stringify({
+                            success: false,
                             error: error instanceof Error ? error.message : String(error),
                         });
                     }
