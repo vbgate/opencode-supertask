@@ -419,14 +419,33 @@ program
 
 program
     .command('upgrade')
-    .description('Restart Gateway with current plugin version')
+    .description('Update npm package and restart Gateway')
     .action(async () => {
+        const { execSync } = await import('child_process');
+        const { homedir } = await import('os');
+        const { join } = await import('path');
+        const configDir = join(homedir(), '.config/opencode');
+
+        console.log('Updating opencode-supertask...');
+        try {
+            execSync('npm install opencode-supertask@latest', {
+                cwd: configDir,
+                stdio: 'inherit',
+                timeout: 60000,
+            });
+        } catch (err) {
+            console.error('npm install failed:', err instanceof Error ? err.message : String(err));
+            console.error('Try manually: cd ~/.config/opencode && npm install opencode-supertask@latest');
+            process.exit(1);
+        }
+
         try {
             const { upgrade: pm2Upgrade } = await import('../daemon/pm2');
             const result = pm2Upgrade();
-            console.log(JSON.stringify({ before: result.before, after: result.after, restarted: result.restarted }));
+            console.log(`\nSuperTask upgraded: ${result.before ?? 'unknown'} → ${result.after}`);
+            console.log('Gateway restarted. Please restart opencode to load the new plugin.');
         } catch (err) {
-            console.error(err instanceof Error ? err.message : String(err));
+            console.error('Gateway restart failed:', err instanceof Error ? err.message : String(err));
             process.exit(1);
         }
     });
