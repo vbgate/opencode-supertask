@@ -329,7 +329,7 @@ program
             const dir = dirname(CONFIG_PATH);
             if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
             writeFileSync(CONFIG_PATH, JSON.stringify({
-                worker: { maxConcurrency: 2, defaultModel: 'zhipuai-coding-plan/glm-4.7' },
+                worker: { maxConcurrency: 2 },
                 scheduler: { enabled: true },
             }, null, 2) + '\n');
             console.log(JSON.stringify({ created: CONFIG_PATH }));

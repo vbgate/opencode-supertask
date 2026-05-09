@@ -86,11 +86,14 @@ export class WorkerEngine {
                 });
 
                 const modelToUse = this.resolveModel(task.model);
-                const modelArg = modelToUse ? ` -m "${modelToUse}"` : '';
-                const cmd = `opencode run --agent supertask-runner${modelArg} --format json "执行任务 ID: ${task.id}${modelToUse ? ` OVERRIDE_MODEL=${modelToUse}` : ''}"`;
+                const args = ['run', '--agent', 'supertask-runner', '--format', 'json'];
+                if (modelToUse) {
+                    args.push('-m', modelToUse);
+                }
+                args.push(`执行任务 ID: ${task.id}${modelToUse ? ` OVERRIDE_MODEL=${modelToUse}` : ''}`);
                 const cwd = task.cwd || process.cwd();
 
-                const child = spawn('sh', ['-c', cmd], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+                const child = spawn('opencode', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
                 await TaskRunService.updatePid(run.id, process.pid, child.pid ?? 0);
 

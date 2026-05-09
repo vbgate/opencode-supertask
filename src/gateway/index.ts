@@ -93,7 +93,16 @@ async function main() {
 
     if (cfg.dashboard.enabled) {
         const { dashboardApp } = await import('@web/index');
-        Bun.serve({ port: cfg.dashboard.port, fetch: dashboardApp.fetch });
+        Bun.serve({
+            port: cfg.dashboard.port,
+            fetch(req) {
+                const url = new URL(req.url);
+                if (url.hostname !== 'localhost' && url.hostname !== '127.0.0.1' && url.hostname !== '::1') {
+                    return new Response('Forbidden', { status: 403 });
+                }
+                return dashboardApp.fetch(req);
+            },
+        });
         console.log(JSON.stringify({
             ts: new Date().toISOString(),
             level: 'info',
@@ -146,10 +155,12 @@ async function main() {
 
     process.on('uncaughtException', (err) => {
         console.error(JSON.stringify({ ts: new Date().toISOString(), level: 'fatal', msg: 'uncaughtException', error: err.message, stack: err.stack }));
+        process.exit(1);
     });
 
     process.on('unhandledRejection', (reason) => {
         console.error(JSON.stringify({ ts: new Date().toISOString(), level: 'fatal', msg: 'unhandledRejection', reason: String(reason) }));
+        process.exit(1);
     });
 }
 

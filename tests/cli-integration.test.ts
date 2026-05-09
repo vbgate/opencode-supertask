@@ -1,15 +1,35 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import { execSync } from 'child_process';
+import { mkdtempSync, rmSync } from 'fs';
+import { join, dirname } from 'path';
+import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
 
 const CLI = 'bun run src/cli/index.ts';
+let testDbPath: string;
 
 function run(args: string): string {
-    return execSync(`${CLI} ${args}`, { encoding: 'utf-8', timeout: 10000 });
+    return execSync(`${CLI} ${args}`, {
+        encoding: 'utf-8',
+        timeout: 10000,
+        env: { ...process.env, SUPERTASK_DB_PATH: testDbPath },
+    });
 }
 
 function runJson<T>(args: string): T {
     return JSON.parse(run(args)) as T;
 }
+
+beforeAll(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'supertask-cli-test-'));
+    testDbPath = join(dir, `${randomUUID()}.db`);
+});
+
+afterAll(() => {
+    if (testDbPath) {
+        rmSync(dirname(testDbPath), { recursive: true, force: true });
+    }
+});
 
 describe('CLI integration', () => {
     let taskId1: number;

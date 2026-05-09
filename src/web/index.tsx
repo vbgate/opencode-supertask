@@ -48,6 +48,11 @@ function formatDate(ts: Date | number | null): string {
     return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
+function esc(s: string | null | undefined): string {
+    if (!s) return '';
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function readCurrentConfig(): Record<string, unknown> {
     if (!existsSync(CONFIG_PATH)) return {};
     try {
@@ -144,6 +149,7 @@ async function retryTask(id){if(!confirm('确定重试任务 #'+id+'?'))return;a
 async function deleteTask(id){if(!confirm('确定删除任务 #'+id+'?'))return;await fetch('/api/tasks/'+id,{method:'DELETE'});location.reload();}
 async function showDetail(id){try{const r=await fetch('/api/tasks/'+id);const t=await r.json();document.getElementById('dc').textContent=JSON.stringify(t,null,2);document.getElementById('dd').showModal();}catch(e){alert('获取详情失败');}}
 async function showRunDetail(id){try{const r=await fetch('/api/runs/'+id);const t=await r.json();document.getElementById('dc').textContent=JSON.stringify(t,null,2);document.getElementById('dd').showModal();}catch(e){alert('获取详情失败');}}
+async function showTemplateDetail(id){try{const r=await fetch('/api/templates/'+id);const t=await r.json();document.getElementById('dc').textContent=JSON.stringify(t,null,2);document.getElementById('dd').showModal();}catch(e){alert('获取详情失败');}}
 async function enableTmpl(id){await fetch('/api/templates/'+id+'/enable',{method:'POST'});location.reload();}
 async function disableTmpl(id){if(!confirm('确定禁用此模板?'))return;await fetch('/api/templates/'+id+'/disable',{method:'POST'});location.reload();}
 async function deleteTmpl(id){if(!confirm('确定删除此模板? 此操作不可恢复!'))return;await fetch('/api/templates/'+id,{method:'DELETE'});location.reload();}
@@ -246,8 +252,8 @@ app.get('/', async (c) => {
         const st = (task.status ?? '').toUpperCase();
         rows += `<tr>
           <td class="mu">#${task.id}</td>
-          <td><div style="font-weight:500">${task.name}</div><div class="mu sm el">${task.prompt.substring(0, 120)}</div></td>
-          <td><span class="tag">${task.agent}</span></td>
+          <td><div style="font-weight:500">${esc(task.name)}</div><div class="mu sm el">${esc(task.prompt.substring(0, 120))}</div></td>
+          <td><span class="tag">${esc(task.agent)}</span></td>
           <td><span class="badge b-${task.status}">${st}</span></td>
           <td class="sm ${task.status === 'running' ? '' : 'mu'}">${formatDuration(task.startedAt, task.finishedAt)}</td>
           <td class="mu sm">${(task.retryCount ?? 0) > 0 ? task.retryCount : '-'}</td>
@@ -315,15 +321,15 @@ app.get('/templates', async (c) => {
 
         rows += `<tr>
           <td class="mu">#${t.id}</td>
-          <td><div style="font-weight:500">${t.name}</div><div class="mu sm el">${t.prompt.substring(0, 100)}</div>
-            <div class="sm" style="margin-top:2px"><span class="tag">${t.agent}</span>${t.model && t.model !== 'default' ? ` <span class="tag">${t.model}</span>` : ''}</div></td>
+          <td><div style="font-weight:500">${esc(t.name)}</div><div class="mu sm el">${esc(t.prompt.substring(0, 100))}</div>
+            <div class="sm" style="margin-top:2px"><span class="tag">${esc(t.agent)}</span>${t.model && t.model !== 'default' ? ` <span class="tag">${esc(t.model)}</span>` : ''}</div></td>
           <td><span class="${typeClass}">${typeLabel}</span></td>
           <td class="m sm">${rule}</td>
           <td>${statusBadge}</td>
           <td class="sm">${t.lastRunAt ? timeAgo(t.lastRunAt) : '-'}</td>
           <td class="sm">${t.nextRunAt ? timeUntil(t.nextRunAt) : '-'}</td>
           <td>
-            <button class="btn btn-sm" onclick="showDetail(${t.id})">详情</button>
+            <button class="btn btn-sm" onclick="showTemplateDetail(${t.id})">详情</button>
             <button class="btn btn-sm btn-primary" onclick="triggerTmpl(${t.id})">触发</button>
             ${toggleBtn}
             <button class="btn btn-sm btn-danger" onclick="deleteTmpl(${t.id})">删除</button>
@@ -380,9 +386,9 @@ app.get('/runs', async (c) => {
             : '';
         rows += `<tr>
           <td class="mu">#${run.id}</td>
-          <td><div style="font-weight:500">${run.taskName} <span class="mu">(#${run.taskId})</span></div>
-            ${run.model ? `<div class="sm"><span class="tag">${run.model}</span></div>` : ''}</td>
-          <td><span class="tag">${run.taskAgent}</span></td>
+          <td><div style="font-weight:500">${esc(run.taskName)} <span class="mu">(#${run.taskId})</span></div>
+            ${run.model ? `<div class="sm"><span class="tag">${esc(run.model)}</span></div>` : ''}</td>
+          <td><span class="tag">${esc(run.taskAgent)}</span></td>
           <td><span class="badge b-${run.status}">${(run.status ?? '').toUpperCase()}</span></td>
           <td class="sm">${formatDuration(run.startedAt, run.finishedAt)}</td>
           <td class="sm mu">${run.heartbeatAt ? timeAgo(run.heartbeatAt) : '-'}</td>
@@ -439,7 +445,7 @@ app.get('/system', async (c) => {
             runRows += `<tr>
               <td class="mu">#${run.id}</td><td>#${run.taskId}</td>
               <td class="m sm">${shortS}</td>
-              <td class="sm">${run.model || '-'}</td>
+              <td class="sm">${esc(run.model) || '-'}</td>
               <td class="sm">${formatDate(run.startedAt)}</td>
               <td class="sm">${run.heartbeatAt ? timeAgo(run.heartbeatAt) : '-'}</td>
               <td class="m sm">W:${run.workerPid ?? '-'} C:${run.childPid ?? '-'}</td>
@@ -536,6 +542,13 @@ app.get('/api/runs/:id', async (c) => {
     const run = await TaskRunService.getById(id);
     if (!run) return c.json({ error: 'not found' }, 404);
     return c.json(run);
+});
+
+app.get('/api/templates/:id', async (c) => {
+    const id = Number(c.req.param('id'));
+    const tmpl = await TaskTemplateService.getById(id);
+    if (!tmpl) return c.json({ error: 'not found' }, 404);
+    return c.json(tmpl);
 });
 
 app.post('/api/tasks/:id/retry', async (c) => {

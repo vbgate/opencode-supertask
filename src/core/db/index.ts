@@ -7,7 +7,8 @@ import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
-export const DB_FILE_PATH = join(homedir(), '.local/share/opencode/tasks.db');
+const DEFAULT_DB_PATH = join(homedir(), '.local/share/opencode/tasks.db');
+export const DB_FILE_PATH = process.env.SUPERTASK_DB_PATH || DEFAULT_DB_PATH;
 export { schema };
 
 let _sqlite: Database | null = null;
@@ -16,7 +17,7 @@ let _migrationRan = false;
 
 function getMigrationsFolder(): string {
     const __dirname = dirname(fileURLToPath(import.meta.url));
-    return join(__dirname, '../../drizzle');
+    return join(__dirname, '../../../drizzle');
 }
 
 function initDb() {
@@ -42,7 +43,9 @@ function initDb() {
         try {
             migrate(_db, { migrationsFolder: getMigrationsFolder() });
         } catch (err) {
-            console.error('[supertask] migration failed:', err instanceof Error ? err.message : String(err));
+            const msg = err instanceof Error ? err.message : String(err);
+            console.error(`[supertask] migration failed: ${msg}`);
+            throw new Error(`[supertask] DB migration failed: ${msg}`);
         }
     }
 

@@ -677,6 +677,177 @@ describe('TaskService', () => {
         });
     });
 
+    describe('batchId 传递链路', () => {
+        test('add 时传入 batchId，getById 返回的 batchId 一致', async () => {
+            const task = await TaskService.add({
+                name: '文档翻译批次',
+                agent: 'translator',
+                prompt: '翻译技术文档',
+                batchId: 'translate-batch-001',
+            });
+
+            const found = await TaskService.getById(task.id);
+            expect(found).not.toBeNull();
+            expect(found!.batchId).toBe('translate-batch-001');
+        });
+
+        test('add 时不传 batchId，默认为 null', async () => {
+            const task = await TaskService.add({
+                name: '独立审查任务',
+                agent: 'reviewer',
+                prompt: '审查代码质量',
+            });
+
+            const found = await TaskService.getById(task.id);
+            expect(found).not.toBeNull();
+            expect(found!.batchId).toBeNull();
+        });
+
+        test('next 排除活跃批次时，batchId 正确过滤', async () => {
+            await TaskService.add({
+                name: '批次A任务一',
+                agent: 'a',
+                prompt: '处理数据',
+                batchId: 'batch-a',
+            });
+            await TaskService.add({
+                name: '批次A任务二',
+                agent: 'a',
+                prompt: '清洗数据',
+                batchId: 'batch-a',
+            });
+            const batchBTask = await TaskService.add({
+                name: '批次B任务',
+                agent: 'a',
+                prompt: '生成报告',
+                batchId: 'batch-b',
+            });
+
+            const next = await TaskService.next({ excludedBatchIds: ['batch-a'] });
+            expect(next).not.toBeNull();
+            expect(next!.id).toBe(batchBTask.id);
+            expect(next!.batchId).toBe('batch-b');
+        });
+
+        test('start 任务后，batchId 不变', async () => {
+            const task = await TaskService.add({
+                name: '数据分析任务',
+                agent: 'analyst',
+                prompt: '分析用户行为数据',
+                batchId: 'analytics-batch',
+            });
+
+            const started = await TaskService.start(task.id);
+            expect(started).not.toBeNull();
+            expect(started!.status).toBe('running');
+            expect(started!.batchId).toBe('analytics-batch');
+
+            const found = await TaskService.getById(task.id);
+            expect(found!.batchId).toBe('analytics-batch');
+        });
+
+        test('done 任务后，batchId 保持不变', async () => {
+            const task = await TaskService.add({
+                name: '图片生成任务',
+                agent: 'designer',
+                prompt: '生成首页 Banner',
+                batchId: 'design-batch',
+            });
+
+            await TaskService.start(task.id);
+            const finished = await TaskService.done(task.id, '生成完成');
+            expect(finished!.batchId).toBe('design-batch');
+
+            const found = await TaskService.getById(task.id);
+            expect(found!.batchId).toBe('design-batch');
+        });
+
+        test('fail 任务后，batchId 保持不变', async () => {
+            const task = await TaskService.add({
+                name: '部署任务',
+                agent: 'devops',
+                prompt: '部署到预发布环境',
+                batchId: 'deploy-batch',
+                maxRetries: 3,
+            });
+
+            await TaskService.start(task.id);
+            const failed = await TaskService.fail(task.id, '部署超时');
+            expect(failed!.batchId).toBe('deploy-batch');
+
+            const found = await TaskService.getById(task.id);
+            expect(found!.batchId).toBe('deploy-batch');
+        });
+
+        test('retryBatch 后，retryCount 增加但 batchId 不变', async () => {
+            const task = await TaskService.add({
+                name: '邮件发送任务',
+                agent: 'mailer',
+                prompt: '发送活动通知邮件',
+                batchId: 'notification-batch',
+                maxRetries: 5,
+            });
+
+            await TaskService.start(task.id);
+            const failed = await TaskService.fail(task.id, 'SMTP 连接超时');
+            expect(failed!.retryCount).toBe(1);
+            expect(failed!.batchId).toBe('notification-batch');
+
+            await TaskService.retryBatch('notification-batch');
+
+            const found = await TaskService.getById(task.id);
+            expect(found!.status).toBe('pending');
+            expect(found!.batchId).toBe('notification-batch');
+            expect(found!.retryCount).toBe(1);
+        });
+
+        test('不同批次互不干扰', async () => {
+            const t1 = await TaskService.add({
+                name: '数据处理任务一',
+                agent: 'a',
+                prompt: '清洗订单数据',
+                batchId: 'batch-x',
+            });
+            const t2 = await TaskService.add({
+                name: '数据处理任务二',
+                agent: 'a',
+                prompt: '计算统计指标',
+                batchId: 'batch-x',
+            });
+            await TaskService.start(t1.id);
+            await TaskService.done(t1.id);
+            await TaskService.start(t2.id);
+            await TaskService.done(t2.id);
+            await TaskService.add({
+                name: '数据处理任务三',
+                agent: 'a',
+                prompt: '生成可视化报表',
+                batchId: 'batch-x',
+            });
+
+            const t4 = await TaskService.add({
+                name: '日志分析任务',
+                agent: 'a',
+                prompt: '分析服务端错误日志',
+                batchId: 'batch-y',
+                maxRetries: 3,
+            });
+            await TaskService.start(t4.id);
+            await TaskService.fail(t4.id, '日志文件不存在');
+
+            const statsX = await TaskService.stats({ batchId: 'batch-x' });
+            expect(statsX.total).toBe(3);
+            expect(statsX.done).toBe(2);
+            expect(statsX.pending).toBe(1);
+            expect(statsX.failed).toBe(0);
+
+            const listY = await TaskService.list({ batchId: 'batch-y' });
+            expect(listY.length).toBe(1);
+            expect(listY[0].batchId).toBe('batch-y');
+            expect(listY[0].status).toBe('failed');
+        });
+    });
+
     describe('resetRunningToPending', () => {
         test('批量重置 running 任务为 pending', async () => {
             const t1 = await TaskService.add({ name: 'T1', agent: 'a', prompt: 'p' });

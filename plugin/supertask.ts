@@ -12,6 +12,7 @@ import { TaskTemplateService } from "@core/services/task-template.service";
 import { getDb, sqlite } from "@core/db";
 import { parseDuration } from "@core/duration";
 import { ensureGateway, upgrade as pm2Upgrade } from "../src/daemon/pm2";
+import { homedir } from "os";
 
 let _initialized = false;
 
@@ -531,10 +532,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                 async execute() {
                     try {
                         const { execSync } = await import("child_process");
-                        const configDir = await import("@opencode-ai/plugin").then((m) => {
-                            const home = process.env.HOME || process.env.USERPROFILE || "";
-                            return `${home}/.config/opencode`;
-                        });
+                        const configDir = `${homedir()}/.config/opencode`;
 
                         console.log("[supertask] Updating npm package...");
                         try {
