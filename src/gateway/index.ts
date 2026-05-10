@@ -94,14 +94,9 @@ async function main() {
     if (cfg.dashboard.enabled) {
         const { dashboardApp } = await import('@web/index');
         Bun.serve({
+            hostname: '127.0.0.1',
             port: cfg.dashboard.port,
-            fetch(req) {
-                const url = new URL(req.url);
-                if (url.hostname !== 'localhost' && url.hostname !== '127.0.0.1' && url.hostname !== '::1') {
-                    return new Response('Forbidden', { status: 403 });
-                }
-                return dashboardApp.fetch(req);
-            },
+            fetch: dashboardApp.fetch,
         });
         console.log(JSON.stringify({
             ts: new Date().toISOString(),

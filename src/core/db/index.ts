@@ -17,7 +17,15 @@ let _migrationRan = false;
 
 function getMigrationsFolder(): string {
     const __dirname = dirname(fileURLToPath(import.meta.url));
-    return join(__dirname, '../../../drizzle');
+    let dir = __dirname;
+    for (let i = 0; i < 5; i++) {
+        const candidate = join(dir, 'drizzle', 'meta', '_journal.json');
+        if (existsSync(candidate)) {
+            return join(dir, 'drizzle');
+        }
+        dir = dirname(dir);
+    }
+    return join(__dirname, '../../drizzle');
 }
 
 function initDb() {
