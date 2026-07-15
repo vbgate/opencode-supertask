@@ -344,21 +344,21 @@ program
     .description('Initialize SuperTask (create config + run migrations)')
     .action(async () => withDb(async () => {
         const { existsSync, mkdirSync, writeFileSync } = await import('fs');
-        const { homedir } = await import('os');
-        const { join, dirname } = await import('path');
-        const { CONFIG_PATH } = await import('@gateway/config');
+        const { dirname } = await import('path');
+        const { getConfigPath } = await import('@gateway/config');
+        const configPath = getConfigPath();
 
-        if (!existsSync(CONFIG_PATH)) {
-            const dir = dirname(CONFIG_PATH);
+        if (!existsSync(configPath)) {
+            const dir = dirname(configPath);
             if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-            writeFileSync(CONFIG_PATH, JSON.stringify({
+            writeFileSync(configPath, JSON.stringify({
                 configVersion: 2,
                 worker: { maxConcurrency: 2 },
                 scheduler: { enabled: true },
             }, null, 2) + '\n');
-            console.log(JSON.stringify({ created: CONFIG_PATH }));
+            console.log(JSON.stringify({ created: configPath }));
         } else {
-            console.log(JSON.stringify({ exists: CONFIG_PATH }));
+            console.log(JSON.stringify({ exists: configPath }));
         }
 
         const { getDb } = await import('@core/db');

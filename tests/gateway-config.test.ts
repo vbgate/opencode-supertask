@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { loadConfig, validateConfig } from '../src/gateway/config';
+import { getConfigPath, loadConfig, validateConfig } from '../src/gateway/config';
 
 const tempDirs: string[] = [];
 
@@ -66,5 +66,18 @@ describe('Gateway 配置', () => {
     test('配置文件损坏时明确报错，不静默回退默认值', () => {
         const path = configFile('{broken');
         expect(() => loadConfig(path)).toThrow(`无法读取配置 ${path}`);
+    });
+
+    test('配置路径可通过环境变量覆盖并由默认加载使用', () => {
+        const path = configFile(JSON.stringify({ worker: { maxConcurrency: 7 } }));
+        const original = process.env.SUPERTASK_CONFIG_PATH;
+        process.env.SUPERTASK_CONFIG_PATH = path;
+        try {
+            expect(getConfigPath()).toBe(path);
+            expect(loadConfig().worker.maxConcurrency).toBe(7);
+        } finally {
+            if (original === undefined) delete process.env.SUPERTASK_CONFIG_PATH;
+            else process.env.SUPERTASK_CONFIG_PATH = original;
+        }
     });
 });

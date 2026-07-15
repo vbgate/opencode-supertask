@@ -52,7 +52,11 @@ const DEFAULT_CONFIG: GatewayConfig = {
     },
 };
 
-const CONFIG_PATH = join(homedir(), '.config/opencode/supertask.json');
+const DEFAULT_CONFIG_PATH = join(homedir(), '.config/opencode/supertask.json');
+
+export function getConfigPath(): string {
+    return process.env.SUPERTASK_CONFIG_PATH ?? DEFAULT_CONFIG_PATH;
+}
 
 function objectAt(value: unknown, path: string): Record<string, unknown> {
     if (value === undefined) return {};
@@ -148,7 +152,7 @@ export function validateConfig(input: unknown): GatewayConfig {
     };
 }
 
-export function loadConfig(path = CONFIG_PATH): GatewayConfig {
+export function loadConfig(path = getConfigPath()): GatewayConfig {
     if (!existsSync(path)) return validateConfig({ configVersion: 2 });
 
     try {
@@ -159,4 +163,4 @@ export function loadConfig(path = CONFIG_PATH): GatewayConfig {
     }
 }
 
-export { CONFIG_PATH, DEFAULT_CONFIG };
+export { DEFAULT_CONFIG, DEFAULT_CONFIG_PATH };

@@ -5,7 +5,7 @@ import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import { desc, sql, eq } from 'drizzle-orm';
 import { db, schema } from '@core/db';
-import { loadConfig, validateConfig, CONFIG_PATH, type GatewayConfig } from '@gateway/config';
+import { getConfigPath, loadConfig, validateConfig, type GatewayConfig } from '@gateway/config';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
 import type { TaskStatus } from '@core/db/schema';
@@ -109,18 +109,20 @@ function esc(s: string | null | undefined): string {
 }
 
 function readCurrentConfig(): Record<string, unknown> {
-    if (!existsSync(CONFIG_PATH)) return {};
+    const configPath = getConfigPath();
+    if (!existsSync(configPath)) return {};
     try {
-        return JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'));
+        return JSON.parse(readFileSync(configPath, 'utf-8'));
     } catch { return {}; }
 }
 
 function writeConfig(cfg: GatewayConfig): void {
-    const dir = dirname(CONFIG_PATH);
+    const configPath = getConfigPath();
+    const dir = dirname(configPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const tempPath = `${CONFIG_PATH}.${process.pid}.tmp`;
+    const tempPath = `${configPath}.${process.pid}.tmp`;
     writeFileSync(tempPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
-    renameSync(tempPath, CONFIG_PATH);
+    renameSync(tempPath, configPath);
 }
 
 const SHARED_STYLES = html`
@@ -489,10 +491,11 @@ app.get('/runs', async (c) => {
 
 app.get('/system', async (c) => {
     const config = loadConfig();
+    const configPath = getConfigPath();
     const stats = await TaskService.stats({});
     const runningRuns = await TaskRunService.getAllRunningRuns();
     const templates = await TaskTemplateService.list(100);
-    const configExists = existsSync(CONFIG_PATH);
+    const configExists = existsSync(configPath);
 
     let runRows = '';
     if (runningRuns.length > 0) {
@@ -569,7 +572,7 @@ app.get('/system', async (c) => {
 
       <div class="card mt16">
         <h3 style="margin:0 0 12px;font-size:14px">配置文件</h3>
-        <div class="ir"><span class="ik">路径</span><span class="iv m sm">${esc(CONFIG_PATH)}</span></div>
+        <div class="ir"><span class="ik">路径</span><span class="iv m sm">${esc(configPath)}</span></div>
         <div class="ir"><span class="ik">文件存在</span><span class="iv">${configFileStatus}</span></div>
       </div>
 

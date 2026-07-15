@@ -45,7 +45,7 @@ supertask migrate    # 手动触发迁移；正常初始化也会自动迁移
 | 数据 | 默认位置 | 覆盖方式 |
 |---|---|---|
 | SQLite | `~/.local/share/opencode/tasks.db` | `SUPERTASK_DB_PATH` |
-| Gateway 配置 | `~/.config/opencode/supertask.json` | 当前无路径覆盖 |
+| Gateway 配置 | `~/.config/opencode/supertask.json` | `SUPERTASK_CONFIG_PATH` |
 | 目标 OpenCode 可执行文件 | `opencode` | `SUPERTASK_OPENCODE_BIN` |
 
 数据库连接启用 WAL 和 5 秒 `busy_timeout`。每次新连接初始化会自动执行 migrations、启用外键并检查孤立记录；检查失败会拒绝继续运行，不会自动删除用户数据。

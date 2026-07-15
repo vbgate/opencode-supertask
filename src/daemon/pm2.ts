@@ -103,6 +103,7 @@ function pm2Exec(args: string[]): { ok: boolean; output: string } {
     const result = spawnSync(pm2Bin(), args, {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
+        env: process.env,
         shell: process.platform === "win32",
     });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
