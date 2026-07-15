@@ -12,7 +12,7 @@ import { TaskTemplateService } from "@core/services/task-template.service";
 import { getDb, sqlite } from "@core/db";
 import { parseDuration } from "@core/duration";
 import { ensureGateway, upgrade as pm2Upgrade } from "../src/daemon/pm2";
-import { homedir } from "os";
+import { installLatestPlugin } from "../src/daemon/update";
 
 let _initialized = false;
 
@@ -483,29 +483,23 @@ export const SuperTaskPlugin: Plugin = async () => {
 
             supertask_upgrade: tool({
                 description:
-                    "升级 SuperTask 插件。先通过 npm 更新插件包到最新版本，然后重启 Gateway 进程。当用户说'升级插件'、'更新 supertask'、'upgrade'时使用。",
+                    "升级 SuperTask 插件。通过 OpenCode 刷新插件缓存，校验新版构建产物后重启 Gateway。当用户说'升级插件'、'更新 supertask'、'upgrade'时使用。",
                 args: {},
                 async execute() {
                     try {
-                        const { execSync } = await import("child_process");
-                        const configDir = `${homedir()}/.config/opencode`;
-
-                        console.log("[supertask] Updating npm package...");
+                        console.log("[supertask] Updating OpenCode plugin cache...");
+                        let installed: { gatewayEntry: string; version: string };
                         try {
-                            execSync("npm install opencode-supertask@latest", {
-                                cwd: configDir,
-                                stdio: "pipe",
-                                timeout: 60000,
-                            });
-                        } catch (npmErr) {
+                            installed = installLatestPlugin();
+                        } catch (updateError) {
                             return JSON.stringify({
                                 success: false,
-                                error: `npm install failed: ${npmErr instanceof Error ? npmErr.message : String(npmErr)}`,
-                                hint: "Try manually: cd ~/.config/opencode && npm install opencode-supertask@latest",
+                                error: updateError instanceof Error ? updateError.message : String(updateError),
+                                hint: "Try manually: opencode plugin opencode-supertask@latest --global --force",
                             });
                         }
 
-                        const result = pm2Upgrade();
+                        const result = pm2Upgrade(installed);
                         return JSON.stringify({
                             success: true,
                             before: result.before,

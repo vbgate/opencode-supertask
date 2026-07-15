@@ -195,10 +195,10 @@ cp ~/.config/opencode/supertask.json ~/supertask-backup/supertask.json
 ## 升级与卸载
 
 ```bash
-supertask upgrade     # 更新 npm 包并重启 PM2 Gateway
+supertask upgrade     # 刷新 OpenCode 插件缓存并重启 PM2 Gateway
 supertask uninstall   # 仅从 PM2 移除 Gateway，保留其他 PM2 项和数据
 ```
 
-`upgrade` 要求 PM2 已安装。数据库迁移会在新版本首次初始化时自动运行；升级前备份是低成本的安全措施。发布流程仍通过 GitHub Release 触发 npm 发布，不手动 `npm publish`。
+`upgrade` 使用 `opencode plugin opencode-supertask@latest --global --force` 更新 OpenCode 实际加载的缓存，校验包版本和 `dist/gateway/index.js` 后再切换 PM2；新版未就绪会自动回滚旧 Gateway。该命令要求 OpenCode CLI 和 PM2 已安装。数据库迁移会在新版本首次初始化时自动运行；升级前备份是低成本的安全措施。发布流程仍通过 GitHub Release 触发 npm 发布，不手动 `npm publish`。
 
 更完整的设计边界见[当前架构与决策](./architecture.md)。

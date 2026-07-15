@@ -7,6 +7,7 @@ import {
     getPackageVersion,
     isGatewayRunning,
     resolveGatewayEntry,
+    upgrade,
 } from '../src/daemon/pm2';
 
 const dirs: string[] = [];
@@ -121,5 +122,107 @@ if (args[0] === 'start') process.exit(0);
 
         expect(isGatewayRunning()).toBe(false);
         expect(() => ensureGateway()).toThrow('未在限定时间内就绪');
+    });
+
+    test('升级时用已安装新包的 Gateway 入口和版本替换旧进程', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-upgrade-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const state = join(dir, 'state');
+        const log = join(dir, 'calls.jsonl');
+        const oldGateway = join(dir, 'old-gateway.ts');
+        const newGateway = join(dir, 'new-gateway.js');
+        const dbPath = join(dir, 'tasks.db');
+        const versionFile = join(dir, 'version');
+        writeFileSync(oldGateway, '');
+        writeFileSync(newGateway, '');
+        writeFileSync(state, 'online');
+        writeFileSync(versionFile, '0.1.20');
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, rmSync, writeFileSync } from 'fs';
+import { Database } from 'bun:sqlite';
+const args = process.argv.slice(2);
+if (args[0] === '--version') process.exit(0);
+if (args[0] === 'jlist') {
+    console.log(existsSync(${JSON.stringify(state)}) ? JSON.stringify([{ name: 'supertask-gateway', pid: 4242, pm2_env: { status: 'online' } }]) : '[]');
+    process.exit(0);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'delete') rmSync(${JSON.stringify(state)}, { force: true });
+if (args[0] === 'start') {
+    writeFileSync(${JSON.stringify(state)}, 'online');
+    const db = new Database(${JSON.stringify(dbPath)});
+    db.exec('CREATE TABLE IF NOT EXISTS gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
+    db.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), Date.now());
+    db.close();
+}
+`);
+        chmodSync(fakePm2, 0o755);
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = '/tmp/bun';
+        process.env.SUPERTASK_GATEWAY_ENTRY = oldGateway;
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_VERSION_FILE = versionFile;
+        process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '100';
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '35000';
+
+        expect(upgrade({ gatewayEntry: newGateway, version: '0.1.21' })).toEqual({
+            before: '0.1.20', after: '0.1.21', restarted: true,
+        });
+        const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
+        expect(calls.find((call) => call[0] === 'start')?.at(-1)).toBe(newGateway);
+        expect(readFileSync(versionFile, 'utf8')).toBe('0.1.21');
+    });
+
+    test('新 Gateway 未就绪时恢复旧入口和旧版本', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-rollback-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const state = join(dir, 'state');
+        const log = join(dir, 'calls.jsonl');
+        const oldGateway = join(dir, 'old-gateway.ts');
+        const newGateway = join(dir, 'broken-gateway.js');
+        const dbPath = join(dir, 'tasks.db');
+        const versionFile = join(dir, 'version');
+        writeFileSync(oldGateway, '');
+        writeFileSync(newGateway, '');
+        writeFileSync(state, 'online');
+        writeFileSync(versionFile, '0.1.20');
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, rmSync, writeFileSync } from 'fs';
+import { Database } from 'bun:sqlite';
+const args = process.argv.slice(2);
+if (args[0] === '--version') process.exit(0);
+if (args[0] === 'jlist') {
+    console.log(existsSync(${JSON.stringify(state)}) ? JSON.stringify([{ name: 'supertask-gateway', pid: 4242, pm2_env: { status: 'online' } }]) : '[]');
+    process.exit(0);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'delete') rmSync(${JSON.stringify(state)}, { force: true });
+if (args[0] === 'start') {
+    writeFileSync(${JSON.stringify(state)}, 'online');
+    const db = new Database(${JSON.stringify(dbPath)});
+    db.exec('CREATE TABLE IF NOT EXISTS gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
+    const readyAt = args.at(-1) === ${JSON.stringify(oldGateway)} ? Date.now() : null;
+    db.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), readyAt);
+    db.close();
+}
+`);
+        chmodSync(fakePm2, 0o755);
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = '/tmp/bun';
+        process.env.SUPERTASK_GATEWAY_ENTRY = oldGateway;
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_VERSION_FILE = versionFile;
+        process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '50';
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '35000';
+
+        expect(() => upgrade({ gatewayEntry: newGateway, version: '0.1.21' })).toThrow('已回滚到旧 Gateway');
+        const starts = readFileSync(log, 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line) as string[])
+            .filter((call) => call[0] === 'start');
+        expect(starts.map((call) => call.at(-1))).toEqual([newGateway, oldGateway]);
+        expect(readFileSync(versionFile, 'utf8')).toBe('0.1.20');
+        expect(isGatewayRunning()).toBe(true);
     });
 });

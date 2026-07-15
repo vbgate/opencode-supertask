@@ -435,29 +435,22 @@ program
 
 program
     .command('upgrade')
-    .description('Update npm package and restart Gateway')
+    .description('Update OpenCode plugin cache and restart Gateway')
     .action(async () => {
-        const { execSync } = await import('child_process');
-        const { homedir } = await import('os');
-        const { join } = await import('path');
-        const configDir = join(homedir(), '.config/opencode');
-
         console.log('Updating opencode-supertask...');
+        let installed: { gatewayEntry: string; version: string };
         try {
-            execSync('npm install opencode-supertask@latest', {
-                cwd: configDir,
-                stdio: 'inherit',
-                timeout: 60000,
-            });
+            const { installLatestPlugin } = await import('../daemon/update');
+            installed = installLatestPlugin();
         } catch (err) {
-            console.error('npm install failed:', err instanceof Error ? err.message : String(err));
-            console.error('Try manually: cd ~/.config/opencode && npm install opencode-supertask@latest');
+            console.error(err instanceof Error ? err.message : String(err));
+            console.error('Try manually: opencode plugin opencode-supertask@latest --global --force');
             process.exit(1);
         }
 
         try {
             const { upgrade: pm2Upgrade } = await import('../daemon/pm2');
-            const result = pm2Upgrade();
+            const result = pm2Upgrade(installed);
             console.log(`\nSuperTask upgraded: ${result.before ?? 'unknown'} → ${result.after}`);
             console.log('Gateway restarted. Please restart opencode to load the new plugin.');
         } catch (err) {

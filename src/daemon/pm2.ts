@@ -189,7 +189,7 @@ function findBunPath(): string {
     }
 }
 
-function pm2StartGateway(): void {
+function pm2StartGateway(gatewayEntry = resolveGatewayEntry()): void {
     const configuredKillTimeout = Number(process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS);
     const killTimeoutMs = Number.isInteger(configuredKillTimeout) && configuredKillTimeout >= 5000
         ? configuredKillTimeout
@@ -208,7 +208,7 @@ function pm2StartGateway(): void {
         "--kill-timeout",
         String(killTimeoutMs),
         "--",
-        resolveGatewayEntry(),
+        gatewayEntry,
     ], "pm2 start");
     const started = pm2JsonList().find((item) => item.name === PROCESS_NAME);
     if (started?.pm2_env?.status !== "online") {
@@ -254,20 +254,40 @@ export function uninstall(): void {
     console.log("[supertask] Gateway removed from pm2. Other pm2 startup entries were preserved.");
 }
 
-export function upgrade(): { before: string | null; after: string; restarted: boolean } {
+export function upgrade(target?: {
+    gatewayEntry: string;
+    version: string;
+}): { before: string | null; after: string; restarted: boolean } {
     if (!isPm2Installed()) {
         throw new Error("[supertask] pm2 is not installed. Run `supertask install` first.");
     }
 
     const before = getRunningVersion();
-    const currentVersion = getPackageVersion();
+    const oldGatewayEntry = resolveGatewayEntry();
+    const currentVersion = target?.version ?? getPackageVersion();
     const existing = pm2JsonList().find((item) => item.name === PROCESS_NAME);
     if (existing) requirePm2(["delete", PROCESS_NAME], "pm2 delete old Gateway");
 
-    pm2StartGateway();
-    writeRunningVersion(currentVersion);
-    savePm2State();
-    return { before, after: currentVersion, restarted: true };
+    try {
+        pm2StartGateway(target?.gatewayEntry ?? oldGatewayEntry);
+        writeRunningVersion(currentVersion);
+        savePm2State();
+        return { before, after: currentVersion, restarted: true };
+    } catch (error) {
+        const failed = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+        if (failed) requirePm2(["delete", PROCESS_NAME], "pm2 delete failed Gateway");
+        try {
+            pm2StartGateway(oldGatewayEntry);
+            if (before) writeRunningVersion(before);
+            savePm2State();
+        } catch (rollbackError) {
+            const original = error instanceof Error ? error.message : String(error);
+            const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+            throw new Error(`${original}; 旧 Gateway 回滚也失败: ${rollback}`);
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`${message}; 已回滚到旧 Gateway`);
+    }
 }
 
 export function ensureGateway(): EnsureGatewayResult {
