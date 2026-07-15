@@ -9,6 +9,7 @@ import { loadConfig, validateConfig, CONFIG_PATH, type GatewayConfig } from '@ga
 import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
 import type { TaskStatus } from '@core/db/schema';
+import { getGatewayHealth } from '@gateway/health';
 
 const app = new Hono();
 const TASK_STATUSES = new Set<TaskStatus>([
@@ -59,6 +60,11 @@ app.use('/api/*', async (c, next) => {
     }
 
     return next();
+});
+
+app.get('/health', (c) => {
+    const health = getGatewayHealth();
+    return c.json(health, health.status === 'ok' ? 200 : 503);
 });
 
 function formatDuration(startAt: Date | null, endAt: Date | null): string {

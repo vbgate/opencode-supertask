@@ -157,6 +157,7 @@ Key mechanisms:
 - **Process supervision** — optional pm2 crash recovery; plugin load never installs pm2, but can reuse an existing installation
 - **Version-aware restart** — if pm2 is already installed, plugin load starts or restarts the Gateway when the package version changes
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance
+- **Readiness check** — PM2 PID must match a fresh, ready Gateway lock; `/health` also checks component activity
 - **Heartbeat** — Worker updates every 30s; Watchdog kills stale processes
 - **Exponential backoff** — configurable base × 2^n, capped at 30min
 - **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
@@ -167,6 +168,8 @@ Key mechanisms:
 ## Web Dashboard
 
 http://localhost:4680 — 4 pages:
+
+Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active.
 
 | Page | Features |
 |------|----------|

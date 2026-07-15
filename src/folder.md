@@ -25,6 +25,7 @@
 | `core/duration.ts` | CLI 友好时长与 ISO 8601 解析 |
 | `core/services/task-template.service.ts` | 调度模板 CRUD + 计算下次运行时间 |
 | `gateway/config.ts` | Gateway 配置加载、校验与 v1 兼容 |
+| `gateway/health.ts` | ready 锁与内部循环健康快照 |
 | `gateway/scheduler/job-templates.ts` | 模板克隆 + `maxInstances` 检查 |
 | `gateway/watchdog/heartbeat.ts` | 心跳超时检测 + kill + 重试/死信 |
 | `gateway/watchdog/cleanup.ts` | 过期记录清理 |

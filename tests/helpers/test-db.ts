@@ -12,7 +12,8 @@ export function createTestDb() {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             pid INTEGER NOT NULL,
             acquired_at INTEGER NOT NULL,
-            heartbeat_at INTEGER NOT NULL
+            heartbeat_at INTEGER NOT NULL,
+            ready_at INTEGER
         );
     `);
 

@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureGateway, getPackageVersion, resolveGatewayEntry } from '../src/daemon/pm2';
+import {
+    ensureGateway,
+    getPackageVersion,
+    isGatewayRunning,
+    resolveGatewayEntry,
+} from '../src/daemon/pm2';
 
 const dirs: string[] = [];
 const originalEnv = {
@@ -10,6 +15,8 @@ const originalEnv = {
     bun: process.env.SUPERTASK_BUN_BIN,
     entry: process.env.SUPERTASK_GATEWAY_ENTRY,
     version: process.env.SUPERTASK_VERSION_FILE,
+    db: process.env.SUPERTASK_DB_PATH,
+    readyTimeout: process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS,
 };
 
 afterEach(() => {
@@ -18,6 +25,8 @@ afterEach(() => {
     restoreEnv('SUPERTASK_BUN_BIN', originalEnv.bun);
     restoreEnv('SUPERTASK_GATEWAY_ENTRY', originalEnv.entry);
     restoreEnv('SUPERTASK_VERSION_FILE', originalEnv.version);
+    restoreEnv('SUPERTASK_DB_PATH', originalEnv.db);
+    restoreEnv('SUPERTASK_GATEWAY_READY_TIMEOUT_MS', originalEnv.readyTimeout);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -45,16 +54,24 @@ describe('PM2 Gateway 管理', () => {
         const state = join(dir, 'pm2-state');
         const gateway = join(dir, 'gateway entry.ts');
         const versionFile = join(dir, 'version');
+        const dbPath = join(dir, 'tasks.db');
         writeFileSync(gateway, '');
         writeFileSync(fakePm2, `#!/usr/bin/env bun
 import { appendFileSync, existsSync, writeFileSync } from 'fs';
+import { Database } from 'bun:sqlite';
 const args = process.argv.slice(2);
 if (args[0] === '--version') { console.log('6.0.0'); process.exit(0); }
 if (args[0] === 'jlist') {
-    console.log(existsSync(${JSON.stringify(state)}) ? JSON.stringify([{ name: 'supertask-gateway', pm2_env: { status: 'online' } }]) : '[]');
+    console.log(existsSync(${JSON.stringify(state)}) ? JSON.stringify([{ name: 'supertask-gateway', pid: 4242, pm2_env: { status: 'online' } }]) : '[]');
     process.exit(0);
 }
-if (args[0] === 'start') writeFileSync(${JSON.stringify(state)}, 'online');
+if (args[0] === 'start') {
+    writeFileSync(${JSON.stringify(state)}, 'online');
+    const db = new Database(${JSON.stringify(dbPath)});
+    db.exec('CREATE TABLE IF NOT EXISTS gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
+    db.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), Date.now());
+    db.close();
+}
 appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 `);
         chmodSync(fakePm2, 0o755);
@@ -63,8 +80,11 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
         process.env.SUPERTASK_BUN_BIN = '/tmp/bun executable';
         process.env.SUPERTASK_GATEWAY_ENTRY = gateway;
         process.env.SUPERTASK_VERSION_FILE = versionFile;
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '200';
 
         expect(ensureGateway()).toEqual({ ok: true, action: 'started' });
+        expect(isGatewayRunning()).toBe(true);
         const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
         expect(calls[0]).toEqual([
             'start', '/tmp/bun executable', '--name', 'supertask-gateway', '--interpreter', 'none',
@@ -72,5 +92,30 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
         ]);
         expect(calls[1]).toEqual(['save']);
         expect(readFileSync(versionFile, 'utf8')).toBe(getPackageVersion());
+    });
+
+    test('PM2 online 但没有匹配的 Gateway ready 心跳时判定为未运行', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-unready-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const gateway = join(dir, 'gateway.ts');
+        const dbPath = join(dir, 'tasks.db');
+        writeFileSync(gateway, '');
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+if (args[0] === '--version') { console.log('6.0.0'); process.exit(0); }
+if (args[0] === 'jlist') { console.log(JSON.stringify([{ name: 'supertask-gateway', pid: 4242, pm2_env: { status: 'online' } }])); process.exit(0); }
+if (args[0] === 'start') process.exit(0);
+`);
+        chmodSync(fakePm2, 0o755);
+
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = '/tmp/bun';
+        process.env.SUPERTASK_GATEWAY_ENTRY = gateway;
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '50';
+
+        expect(isGatewayRunning()).toBe(false);
+        expect(() => ensureGateway()).toThrow('未在限定时间内就绪');
     });
 });

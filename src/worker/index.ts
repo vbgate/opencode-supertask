@@ -3,6 +3,7 @@ import { TaskRunService } from '@core/services/task-run.service';
 import { spawn, type ChildProcess } from 'child_process';
 import type { GatewayConfig } from '@gateway/config';
 import type { Task } from '@core/db/schema';
+import { markGatewayActivity } from '@gateway/health';
 
 const DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024;
 const FORBIDDEN_AGENT = 'supertask-runner';
@@ -41,6 +42,7 @@ export class WorkerEngine {
 
     start() {
         this.stopped = false;
+        markGatewayActivity('worker');
         this.poll();
         this.heartbeatTimer = setInterval(() => this.updateHeartbeats(), this.cfg.heartbeatIntervalMs);
     }
@@ -74,6 +76,7 @@ export class WorkerEngine {
 
     private poll() {
         if (this.stopped) return;
+        markGatewayActivity('worker');
 
         this.tryDispatch().then(() => {
             if (this.stopped) return;

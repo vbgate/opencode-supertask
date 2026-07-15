@@ -3,14 +3,18 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import { Database } from "bun:sqlite";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROCESS_NAME = "supertask-gateway";
 
 interface Pm2Process {
     name: string;
+    pid?: number;
     pm2_env?: { status?: string };
 }
+
+const GATEWAY_LOCK_STALE_MS = 30_000;
 
 export type EnsureGatewayResult =
     | { ok: true; action: "already-running" | "started" | "restarted" }
@@ -126,7 +130,50 @@ function pm2JsonList(): Pm2Process[] {
 export function isGatewayRunning(): boolean {
     if (!isPm2Installed()) return false;
     const proc = pm2JsonList().find((item) => item.name === PROCESS_NAME);
-    return proc?.pm2_env?.status === "online";
+    return proc?.pm2_env?.status === "online"
+        && typeof proc.pid === "number"
+        && isGatewayReady(proc.pid);
+}
+
+function databasePath(): string {
+    return process.env.SUPERTASK_DB_PATH
+        ?? join(homedir(), ".local/share/opencode/tasks.db");
+}
+
+export function isGatewayReady(expectedPid?: number): boolean {
+    const path = databasePath();
+    if (!existsSync(path)) return false;
+
+    let database: Database | null = null;
+    try {
+        database = new Database(path, { readonly: true });
+        const row = database.query(
+            "SELECT pid, heartbeat_at, ready_at FROM gateway_lock WHERE id = 1",
+        ).get() as { pid: number; heartbeat_at: number; ready_at: number | null } | null;
+        if (!row || row.ready_at == null) return false;
+        if (expectedPid !== undefined && row.pid !== expectedPid) return false;
+        const ageMs = Date.now() - row.heartbeat_at;
+        return ageMs >= -5000 && ageMs < GATEWAY_LOCK_STALE_MS;
+    } catch {
+        return false;
+    } finally {
+        database?.close();
+    }
+}
+
+function readyTimeoutMs(): number {
+    const value = Number(process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS ?? 30_000);
+    return Number.isFinite(value) && value > 0 ? value : 30_000;
+}
+
+function waitForGatewayReady(pid: number): boolean {
+    const deadline = Date.now() + readyTimeoutMs();
+    const sleeper = new Int32Array(new SharedArrayBuffer(4));
+    while (Date.now() < deadline) {
+        if (isGatewayReady(pid)) return true;
+        Atomics.wait(sleeper, 0, 0, 100);
+    }
+    return isGatewayReady(pid);
 }
 
 function findBunPath(): string {
@@ -159,6 +206,9 @@ function pm2StartGateway(): void {
     if (started?.pm2_env?.status !== "online") {
         throw new Error(`[supertask] Gateway did not become online (status: ${started?.pm2_env?.status ?? "missing"})`);
     }
+    if (typeof started.pid !== "number" || !waitForGatewayReady(started.pid)) {
+        throw new Error("[supertask] Gateway 进程 online，但未在限定时间内就绪；请查看 pm2 logs supertask-gateway");
+    }
 }
 
 function savePm2State(): void {
@@ -179,9 +229,9 @@ export function install(): void {
     savePm2State();
 
     const startup = pm2Exec(["startup"]);
+    if (startup.output) console.log(startup.output);
     if (!startup.ok) {
         console.warn("[supertask] pm2 startup 未完成；请按 pm2 输出执行需要管理员权限的命令，然后运行 `pm2 save`。");
-        if (startup.output) console.warn(startup.output);
     }
 
     console.log("[supertask] Gateway installed and running.");
@@ -220,7 +270,12 @@ export function ensureGateway(): EnsureGatewayResult {
     const currentVersion = getPackageVersion();
     const processList = pm2JsonList();
     const existing = processList.find((item) => item.name === PROCESS_NAME);
-    if (existing?.pm2_env?.status === "online" && getRunningVersion() === currentVersion) {
+    if (
+        existing?.pm2_env?.status === "online"
+        && typeof existing.pid === "number"
+        && isGatewayReady(existing.pid)
+        && getRunningVersion() === currentVersion
+    ) {
         return { ok: true, action: "already-running" };
     }
 

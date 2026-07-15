@@ -2,6 +2,7 @@ import { getDueTemplates, cloneTaskFromTemplate, initializeNextRunAt } from './j
 import type { GatewayConfig } from '@gateway/config';
 import { db, schema } from '@core/db';
 import { isNull } from 'drizzle-orm';
+import { markGatewayActivity } from '../health';
 
 export class Scheduler {
     private stopped = false;
@@ -13,6 +14,7 @@ export class Scheduler {
     async start() {
         if (!this.cfg.scheduler.enabled) return;
         this.stopped = false;
+        markGatewayActivity('scheduler');
 
         await this.initializeTemplates();
 
@@ -29,6 +31,7 @@ export class Scheduler {
 
     private async tick() {
         if (this.stopped || this.ticking) return;
+        markGatewayActivity('scheduler');
         this.ticking = true;
         try {
             const dueTemplates = await getDueTemplates();

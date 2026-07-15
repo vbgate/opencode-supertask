@@ -27,11 +27,11 @@ function ensureInit() {
     }
 
     try {
-        const lockRow = sqlite.prepare("SELECT pid, heartbeat_at FROM gateway_lock WHERE id = 1").get() as
-            | { pid: number; heartbeat_at: number }
+        const lockRow = sqlite.prepare("SELECT pid, heartbeat_at, ready_at FROM gateway_lock WHERE id = 1").get() as
+            | { pid: number; heartbeat_at: number; ready_at: number | null }
             | undefined;
 
-        if (lockRow && Date.now() - lockRow.heartbeat_at < 30_000) {
+        if (lockRow?.ready_at != null && Date.now() - lockRow.heartbeat_at < 30_000) {
             _initialized = true;
             return;
         }

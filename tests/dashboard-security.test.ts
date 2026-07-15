@@ -5,12 +5,14 @@ import { dashboardApp } from '../src/web/index';
 import { TaskService } from '../src/core/services/task.service';
 import { TaskRunService } from '../src/core/services/task-run.service';
 import { TaskTemplateService } from '../src/core/services/task-template.service';
+import { initializeGatewayHealth, resetGatewayHealth } from '../src/gateway/health';
 
 describe('Dashboard 安全边界', () => {
     let testDb: ReturnType<typeof setupTestDb>;
 
     beforeEach(() => {
         testDb = setupTestDb();
+        resetGatewayHealth();
     });
 
     test('拒绝跨站写请求，但允许同源 Dashboard 请求', async () => {
@@ -72,5 +74,28 @@ describe('Dashboard 安全边界', () => {
             body: JSON.stringify({ worker: { maxConcurrency: 0 } }),
         });
         expect(invalidConfig.status).toBe(400);
+    });
+
+    test('健康检查同时要求组件活跃和匹配当前进程的 ready 锁', async () => {
+        initializeGatewayHealth({
+            workerPollIntervalMs: 1000,
+            schedulerEnabled: true,
+            schedulerCheckIntervalMs: 1000,
+            watchdogCheckIntervalMs: 60_000,
+        });
+
+        const unhealthy = await dashboardApp.request('http://localhost/health');
+        expect(unhealthy.status).toBe(503);
+
+        const now = Date.now();
+        testDb.sqlite.query(
+            'INSERT INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)',
+        ).run(process.pid, now, now, now);
+
+        const healthy = await dashboardApp.request('http://localhost/health');
+        expect(healthy.status).toBe(200);
+        const body = await healthy.json() as { status: string; lock: { pid: number } };
+        expect(body.status).toBe('ok');
+        expect(body.lock.pid).toBe(process.pid);
     });
 });

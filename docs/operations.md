@@ -123,19 +123,20 @@ supertask retry --id 42   # 仅 failed/dead_letter；清零重试计数
 
 ## 健康检查与可观测性
 
-项目当前没有专用 `/health` 端点。可以组合以下信号判断：
+Gateway 提供 `/health`，只有 PM2 PID 匹配新鲜 `gateway_lock.ready_at`，且 Worker、Scheduler、Watchdog 最近仍有活动时才返回 200。建议组合以下信号判断：
 
 ```bash
 pm2 status
 supertask status
 curl -fsS http://127.0.0.1:4680/ >/dev/null
+curl -fsS http://127.0.0.1:4680/health
 ```
 
-- PM2 `online` 只说明进程存在，不说明 Scheduler 或数据库一定健康。
-- Dashboard 可访问说明 Gateway 的 HTTP 循环正常；如果禁用了 Dashboard，此信号不适用。
+- PM2 `online` 只说明包装进程存在；SuperTask 自身还要求 PM2 PID 与 ready 锁 PID 一致。
+- `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
 - 最可靠的运行证据是 `pm2 logs supertask-gateway` 中的 Gateway 启动日志、任务状态变化和最新 `task_runs` 心跳。
 
-如需无人值守运行，仍缺少指标、告警和日志轮转的项目级约定；应由实际部署环境补齐，而不是把 PM2 状态当作完整健康检查。
+如需无人值守运行，仍缺少指标、告警和日志轮转的项目级约定；应由实际部署环境补齐。
 
 ## 排障
 

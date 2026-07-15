@@ -41,9 +41,14 @@ function initDb() {
             id INTEGER PRIMARY KEY CHECK (id = 1),
             pid INTEGER NOT NULL,
             acquired_at INTEGER NOT NULL,
-            heartbeat_at INTEGER NOT NULL
+            heartbeat_at INTEGER NOT NULL,
+            ready_at INTEGER
         );
     `);
+    const gatewayLockColumns = _sqlite.query('PRAGMA table_info(gateway_lock)').all() as Array<{ name: string }>;
+    if (!gatewayLockColumns.some((column) => column.name === 'ready_at')) {
+        _sqlite.exec('ALTER TABLE gateway_lock ADD COLUMN ready_at INTEGER;');
+    }
     _db = drizzle(_sqlite, { schema });
 
     if (!_migrationRan) {

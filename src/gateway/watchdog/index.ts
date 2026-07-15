@@ -1,6 +1,7 @@
 import { checkHeartbeats } from './heartbeat';
 import { cleanupOldRecords } from './cleanup';
 import type { GatewayConfig } from '@gateway/config';
+import { markGatewayActivity } from '../health';
 
 export class Watchdog {
     private stopped = false;
@@ -11,6 +12,7 @@ export class Watchdog {
 
     start() {
         this.stopped = false;
+        markGatewayActivity('watchdog');
         this.heartbeatTimer = setInterval(
             () => this.runHeartbeatCheck(),
             this.cfg.watchdog.checkIntervalMs,
@@ -35,6 +37,7 @@ export class Watchdog {
 
     private async runHeartbeatCheck() {
         if (this.stopped) return;
+        markGatewayActivity('watchdog');
         try {
             await checkHeartbeats(this.cfg.watchdog.heartbeatTimeoutMs);
         } catch (err) {

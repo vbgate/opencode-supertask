@@ -6,6 +6,7 @@ import { Scheduler } from './scheduler';
 import { closeDb } from '@core/db';
 import { TaskService } from '@core/services/task.service';
 import { TaskRunService } from '@core/services/task-run.service';
+import { initializeGatewayHealth, resetGatewayHealth } from './health';
 
 // gateway_lock.heartbeat_at / acquired_at 单位：毫秒（Date.now()）
 // 超过此阈值未心跳则视为锁持有者已死亡
@@ -40,7 +41,7 @@ function acquireLock(): boolean {
         }
 
         sqlite.exec(
-            'INSERT INTO gateway_lock (id, pid, acquired_at, heartbeat_at) VALUES (1, ?, ?, ?)',
+            'INSERT INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, NULL)',
             [pid, now, now],
         );
         sqlite.exec('COMMIT');
@@ -72,6 +73,19 @@ function updateLockHeartbeat() {
     } catch {}
 }
 
+function markGatewayReady() {
+    sqlite.exec(
+        'UPDATE gateway_lock SET heartbeat_at = ?, ready_at = ? WHERE pid = ?',
+        [Date.now(), Date.now(), process.pid],
+    );
+}
+
+function markGatewayNotReady() {
+    try {
+        sqlite.exec('UPDATE gateway_lock SET ready_at = NULL WHERE pid = ?', [process.pid]);
+    } catch {}
+}
+
 async function main() {
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'SuperTask Gateway starting', pid: process.pid }));
 
@@ -86,6 +100,13 @@ async function main() {
     const worker = new WorkerEngine(cfg);
     const watchdog = new Watchdog(cfg);
     const scheduler = new Scheduler(cfg);
+
+    initializeGatewayHealth({
+        workerPollIntervalMs: cfg.worker.pollIntervalMs,
+        schedulerEnabled: cfg.scheduler.enabled,
+        schedulerCheckIntervalMs: cfg.scheduler.checkIntervalMs,
+        watchdogCheckIntervalMs: cfg.watchdog.checkIntervalMs,
+    });
 
     worker.start();
     watchdog.start();
@@ -106,6 +127,8 @@ async function main() {
         }));
     }
 
+    markGatewayReady();
+
     console.log(JSON.stringify({
         ts: new Date().toISOString(),
         level: 'info',
@@ -122,6 +145,7 @@ async function main() {
         console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: `received ${signal}, shutting down...` }));
 
         clearInterval(heartbeatTimer);
+        markGatewayNotReady();
         scheduler.stop();
         watchdog.stop();
 
@@ -139,6 +163,7 @@ async function main() {
         }
 
         releaseLock();
+        resetGatewayHealth();
         closeDb();
 
         console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'Gateway stopped' }));

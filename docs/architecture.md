@@ -48,9 +48,9 @@ Dashboard ─────┘       ↑                 ↑
 Gateway 启动时按以下顺序工作：
 
 1. 初始化数据库，自动执行 `drizzle/` migrations，开启外键并运行 `PRAGMA foreign_key_check`；有孤立记录时直接拒绝启动。
-2. 用 `BEGIN IMMEDIATE` 更新 `gateway_lock`。锁每 10 秒心跳，30 秒未更新才允许新实例接管。
+2. 用 `BEGIN IMMEDIATE` 更新 `gateway_lock`。锁每 10 秒心跳，30 秒未更新才允许新实例接管；此时 `ready_at` 仍为空。
 3. 加载并校验配置；非法配置直接失败，不静默回退。
-4. 启动 Worker、Watchdog、Scheduler，最后按配置启动内嵌 Dashboard。
+4. 启动 Worker、Watchdog、Scheduler，最后按配置启动内嵌 Dashboard；全部成功后才写入 `ready_at`。
 5. 收到 `SIGINT` 或 `SIGTERM` 时停止调度，终止当前子进程，将本实例的 `running` 任务重置为 `pending`，并把仍为 `running` 的执行记录标为失败。
 
 单例锁防止两个 Gateway 同时调度，但不构成跨主机租约。SQLite 文件只适合由同一台机器上的进程共享。
@@ -136,7 +136,7 @@ Dashboard 只绑定 `127.0.0.1`，浏览器写请求检查 `Sec-Fetch-Site` 和�
 - 运行中 `cancel` 只改变数据库状态，不会立即终止正在执行的子进程；子进程会继续到退出或超时。
 - Watchdog 心跳超时路径目前终止记录的直接 `childPid`，不像 Worker 超时路径那样终止 Unix 进程组；若 Agent 再派生进程，可能留下后代进程。
 - 正常关闭会立即中断在途任务并重置为 `pending`，没有“停止接单并等待全部完成”的 drain 模式。
-- 没有专用健康检查端点、指标导出、结构化日志轮转策略或告警集成。
+- `/health` 会检查 ready 锁与 Worker、Scheduler、Watchdog 活跃时间，但仍没有指标导出、结构化日志轮转策略或告警集成。
 - 单实例锁、任务抢占和状态更新足以覆盖当前单机模型，但不提供分布式租约和 exactly-once 保证。
 
 这些限制一旦成为真实故障来源，应先写复现测试，再调整实现与本文档。
