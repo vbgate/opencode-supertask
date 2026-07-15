@@ -92,7 +92,8 @@ bun run db:migrate    # 手动运行数据库迁移
 ## 发布流程
 
 - 修改代码 → 测试通过 → `bun run build` → git commit/push
-- 创建 GitHub Release 自动触发 CI 发布到 npm（需要 NPM_TOKEN secret）
+- 创建 GitHub Release 自动触发 CI 发布到 npm；工作流通过 npm Trusted Publisher/OIDC 获取短期发布凭据，不使用长期 `NPM_TOKEN`
+- npm 包设置必须信任仓库 `vbgate/opencode-supertask` 的 `publish.yml`，Allowed actions 仅启用 `npm publish`
 - **不要手动 npm publish**，通过 `gh release create v<x.y.z>` 触发
 - 升级版本号在 `package.json` 的 `version` 字段
 
