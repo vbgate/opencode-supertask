@@ -127,6 +127,13 @@ supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE [--keep-s
 
 `db backup` creates and validates a standalone SQLite snapshot. For `db clear` and `db restore`, the CLI automatically stops a PM2 Gateway whose PID matches the current database's fresh ready lock, then restores its previous running state. Both commands create a safety backup before changing data and still refuse active tasks or an unverified/foreground Gateway. Use `--keep-stopped` to leave a previously running PM2 Gateway stopped.
 
+All four `db` commands print a concise human-readable summary when stdout is an interactive terminal. Pipes, command substitution, and other non-interactive callers continue to receive JSON; pass `--json` to force JSON in a terminal:
+
+```bash
+supertask db check --json
+supertask db check | jq '.counts'
+```
+
 ### Duration Format
 
 Schedule supports friendly duration strings:
@@ -293,6 +300,13 @@ supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE [--keep-s
 ```
 
 `db backup` 会生成并校验可独立恢复的 SQLite 快照。CLI 清空和恢复会先确认 PM2 PID 与当前数据库的新鲜 ready 锁一致，再自动停止并按原状态重启 Gateway；操作失败时也会尝试恢复 Gateway。它们仍会拒绝运行中任务、前台 Gateway 或无法确认归属的进程，并在修改数据前自动保留安全备份。传入 `--keep-stopped` 可让原本运行的 PM2 Gateway 保持停止。
+
+四个 `db` 命令在交互式终端默认输出简洁的人类可读摘要；管道、命令替换和其他非交互调用继续得到 JSON。终端内需要 JSON 时传入 `--json`：
+
+```bash
+supertask db check --json
+supertask db check | jq '.counts'
+```
 
 ### 数据位置
 

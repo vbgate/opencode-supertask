@@ -194,6 +194,7 @@ supertask db backup --output ~/supertask-backup/tasks.db
 - `db check` 运行 `PRAGMA integrity_check`、外键检查、必需表检查，并返回三张业务表和运行中记录的数量。
 - `db backup` 使用当前连接生成一致性快照，将其转换为不依赖 `-wal`/`-shm` 的独立 SQLite 文件，再用只读连接复检；目标文件已存在时拒绝覆盖。在线备份可以在 Gateway 运行时执行。
 - 自动备份默认与数据库放在同一目录，名称包含用途、UTC 时间和随机后缀，文件权限为 `0600`。
+- `check/backup/clear/restore` 在交互式终端输出人类可读摘要；stdout 非 TTY 时保持 JSON，终端脚本可传 `--json` 强制 JSON。成功和错误使用同一判断，便于 `supertask db check | jq` 等既有调用继续工作。
 
 清空全部任务、执行记录和调度模板：
 

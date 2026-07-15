@@ -10,23 +10,27 @@ import {
     restartGatewayAfterMaintenance,
     stopGatewayForMaintenance,
 } from '../daemon/pm2';
+import {
+    renderDatabaseError,
+    renderDatabaseResult,
+    type GatewayMaintenanceReport,
+} from './database-output';
 
-async function withDb<T>(fn: () => Promise<T>): Promise<T> {
+async function withDb<T>(
+    fn: () => Promise<T>,
+    formatError = (error: unknown) => JSON.stringify({
+        error: error instanceof Error ? error.message : String(error),
+    }),
+): Promise<T> {
     try {
         return await fn();
     } catch (error) {
-        console.error(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        console.error(formatError(error));
         closeDb();
         process.exit(1);
     } finally {
         closeDb();
     }
-}
-
-interface GatewayMaintenanceReport {
-    wasRunning: boolean;
-    restarted: boolean;
-    keptStopped: boolean;
 }
 
 function messageOf(error: unknown): string {
@@ -400,24 +404,29 @@ const databaseCommand = new Command('db')
 databaseCommand
     .command('check')
     .description('检查数据库完整性、外键和业务表统计')
-    .action(async () => withDb(async () => {
-        console.log(JSON.stringify(DatabaseMaintenanceService.check(), null, 2));
-    }));
+    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .action(async (options: { json?: boolean }) => withDb(async () => {
+        const result = DatabaseMaintenanceService.check();
+        console.log(renderDatabaseResult('check', result, { forceJson: options.json }));
+    }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand
     .command('backup')
     .description('创建经过完整性校验的一致性备份')
     .option('-o, --output <path>', '备份文件路径（默认写入数据库目录）')
-    .action(async (options: { output?: string }) => withDb(async () => {
-        console.log(JSON.stringify(DatabaseMaintenanceService.backup(options.output), null, 2));
-    }));
+    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .action(async (options: { output?: string; json?: boolean }) => withDb(async () => {
+        const result = DatabaseMaintenanceService.backup(options.output);
+        console.log(renderDatabaseResult('backup', result, { forceJson: options.json }));
+    }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand
     .command('clear')
     .description('备份后事务性清空任务、执行记录和调度模板')
     .option('--confirm <word>', '危险操作确认，必须填写 CLEAR')
     .option('--keep-stopped', '维护结束后不重启原本由 PM2 管理的 Gateway')
-    .action(async (options: { confirm?: string; keepStopped?: boolean }) => withDb(async () => {
+    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .action(async (options: { confirm?: string; keepStopped?: boolean; json?: boolean }) => withDb(async () => {
         if (options.confirm !== 'CLEAR') {
             throw new Error('清空数据库必须显式传入 --confirm CLEAR');
         }
@@ -425,8 +434,8 @@ databaseCommand
             options.keepStopped ?? false,
             () => DatabaseMaintenanceService.clear(),
         );
-        console.log(JSON.stringify(result, null, 2));
-    }));
+        console.log(renderDatabaseResult('clear', result, { forceJson: options.json }));
+    }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand
     .command('restore')
@@ -434,7 +443,8 @@ databaseCommand
     .requiredOption('--from <path>', '要恢复的 SQLite 备份文件')
     .option('--confirm <word>', '危险操作确认，必须填写 RESTORE')
     .option('--keep-stopped', '维护结束后不重启原本由 PM2 管理的 Gateway')
-    .action(async (options: { from: string; confirm?: string; keepStopped?: boolean }) => withDb(async () => {
+    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .action(async (options: { from: string; confirm?: string; keepStopped?: boolean; json?: boolean }) => withDb(async () => {
         if (options.confirm !== 'RESTORE') {
             throw new Error('恢复数据库必须显式传入 --confirm RESTORE');
         }
@@ -442,8 +452,8 @@ databaseCommand
             options.keepStopped ?? false,
             () => DatabaseMaintenanceService.restore(options.from),
         );
-        console.log(JSON.stringify(result, null, 2));
-    }));
+        console.log(renderDatabaseResult('restore', result, { forceJson: options.json }));
+    }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 program.addCommand(databaseCommand);
 

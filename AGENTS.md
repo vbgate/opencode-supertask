@@ -91,6 +91,8 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - 涉及 DB 的单元测试在 `beforeEach` 中调用 `setupTestDb()`，纯函数测试不需要初始化 DB
 - Service 层测试直接调用静态方法，不经过 CLI
 - CLI 集成测试通过 `execSync` 子进程执行，并用临时 `SUPERTASK_DB_PATH`，不得读写用户真实数据库
+- `db check/backup/clear/restore` 的交互式 stdout 必须人类可读；非 TTY 或显式 `--json` 必须保持可解析 JSON，成功与错误都要覆盖这三种模式
+- Gateway 构建产物 E2E 必须使用隔离数据库和假 OpenCode 可执行文件覆盖普通任务、失败重试、`delayed`、`recurring` 和 `cron`，不得为测试调用真实模型
 
 ## 发布流程
 
