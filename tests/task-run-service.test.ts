@@ -177,6 +177,15 @@ describe('TaskRunService', () => {
             expect(map.get(t2.id)!.id).toBe(r2.id);
         });
 
+        test('同秒多次执行用较大 ID 确定最新记录', async () => {
+            const task = await createTask({ name: '同秒执行' });
+            await TaskRunService.create({ taskId: task.id, status: 'running' });
+            const latestRun = await TaskRunService.create({ taskId: task.id, status: 'running' });
+
+            const map = await TaskRunService.getLatestByTaskIds([task.id]);
+            expect(map.get(task.id)!.id).toBe(latestRun.id);
+        });
+
         test('空数组返回空 Map', async () => {
             const map = await TaskRunService.getLatestByTaskIds([]);
             expect(map.size).toBe(0);

@@ -50,6 +50,7 @@ bun run db:migrate    # 手动运行数据库迁移
 - 配置文件位于 `~/.config/opencode/supertask.json`，默认值在 `src/gateway/config.ts`。
 - 数据库初始化时启用 WAL、创建 `gateway_lock` 并自动执行 `drizzle/` migrations。
 - Gateway 用 SQLite `BEGIN IMMEDIATE` + `gateway_lock` 保证单实例；Dashboard 默认只监听 `127.0.0.1:4680`。
+- Dashboard 的浏览器写请求必须通过同源检查，数据库字符串进入 HTML 前必须调用 `esc`；API 的 ID、状态和配置不得直接断言类型。
 
 ## 核心业务约束
 

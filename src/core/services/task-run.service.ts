@@ -107,7 +107,7 @@ export class TaskRunService {
             .select()
             .from(taskRuns)
             .where(inArray(taskRuns.taskId, taskIds))
-            .orderBy(desc(taskRuns.startedAt));
+            .orderBy(desc(taskRuns.startedAt), desc(taskRuns.id));
 
         const result = new Map<number, TaskRun>();
         for (const run of latestRuns) {

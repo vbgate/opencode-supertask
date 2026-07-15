@@ -111,6 +111,18 @@ describe('job-templates', () => {
         });
     });
 
+    test('模板同毫秒创建时用较大 ID 排在前面', async () => {
+        await TaskTemplateService.create({
+            name: '模板一', agent: 'a', prompt: 'p', scheduleType: 'recurring', intervalMs: 60_000,
+        });
+        const second = await TaskTemplateService.create({
+            name: '模板二', agent: 'a', prompt: 'p', scheduleType: 'recurring', intervalMs: 60_000,
+        });
+
+        const templates = await TaskTemplateService.list();
+        expect(templates[0].id).toBe(second.id);
+    });
+
     describe('getDueTemplates', () => {
         test('返回到期的启用模板', async () => {
             await TaskTemplateService.create({

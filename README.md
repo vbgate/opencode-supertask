@@ -158,6 +158,7 @@ Key mechanisms:
 - **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
 - **Batch isolation** — Same `batchId` serial; different `batchId` parallel
 - **Priority** — `urgency DESC → importance DESC → createdAt ASC`
+- **Local Dashboard boundary** — loopback-only listener, same-origin write checks, escaped database output
 
 ## Web Dashboard
 

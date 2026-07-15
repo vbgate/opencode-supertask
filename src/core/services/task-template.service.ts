@@ -69,7 +69,7 @@ export class TaskTemplateService {
         return await db
             .select()
             .from(taskTemplates)
-            .orderBy(desc(taskTemplates.createdAt))
+            .orderBy(desc(taskTemplates.createdAt), desc(taskTemplates.id))
             .limit(limit);
     }
 

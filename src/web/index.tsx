@@ -1,4 +1,3 @@
-/** @jsx Hono.jsx */
 import { Hono } from 'hono';
 import { html } from 'hono/html';
 import { TaskService } from '@core/services/task.service';
@@ -7,10 +6,60 @@ import { TaskTemplateService } from '@core/services/task-template.service';
 import { desc, sql, eq } from 'drizzle-orm';
 import { db, schema } from '@core/db';
 import { loadConfig, validateConfig, CONFIG_PATH, type GatewayConfig } from '@gateway/config';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'fs';
 import { dirname } from 'path';
+import type { TaskStatus } from '@core/db/schema';
 
 const app = new Hono();
+const TASK_STATUSES = new Set<TaskStatus>([
+    'pending', 'running', 'done', 'failed', 'dead_letter', 'cancelled',
+]);
+
+function parsePositiveInteger(value: string): number | null {
+    if (!/^\d+$/.test(value)) return null;
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function parseTaskStatus(value: string): TaskStatus | null {
+    return TASK_STATUSES.has(value as TaskStatus) ? value as TaskStatus : null;
+}
+
+function safeStatus(value: string | null): TaskStatus | 'unknown' {
+    return value && TASK_STATUSES.has(value as TaskStatus) ? value as TaskStatus : 'unknown';
+}
+
+app.use('*', async (c, next) => {
+    await next();
+    c.header('X-Content-Type-Options', 'nosniff');
+    c.header('X-Frame-Options', 'DENY');
+    c.header('Referrer-Policy', 'no-referrer');
+});
+
+app.use('/api/*', async (c, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return next();
+
+    const fetchSite = c.req.header('Sec-Fetch-Site');
+    if (fetchSite && !['same-origin', 'none'].includes(fetchSite)) {
+        return c.json({ error: 'cross-site request rejected' }, 403);
+    }
+
+    const origin = c.req.header('Origin');
+    if (origin) {
+        try {
+            const originUrl = new URL(origin);
+            const requestUrl = new URL(c.req.url);
+            const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(originUrl.hostname);
+            if (!loopback || originUrl.origin !== requestUrl.origin) {
+                return c.json({ error: 'cross-site request rejected' }, 403);
+            }
+        } catch {
+            return c.json({ error: 'invalid origin' }, 403);
+        }
+    }
+
+    return next();
+});
 
 function formatDuration(startAt: Date | null, endAt: Date | null): string {
     if (!startAt) return '-';
@@ -63,7 +112,9 @@ function readCurrentConfig(): Record<string, unknown> {
 function writeConfig(cfg: GatewayConfig): void {
     const dir = dirname(CONFIG_PATH);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
+    const tempPath = `${CONFIG_PATH}.${process.pid}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(cfg, null, 2) + '\n', { mode: 0o600 });
+    renameSync(tempPath, CONFIG_PATH);
 }
 
 const SHARED_STYLES = html`
@@ -216,13 +267,17 @@ async function saveConfig(){
 }
 
 app.get('/', async (c) => {
-    const page = Number(c.req.query('page') || '1');
+    const pageParam = c.req.query('page') || '1';
+    const page = parsePositiveInteger(pageParam);
+    if (page === null) return c.text('invalid page', 400);
     const statusFilter = c.req.query('status') || '';
+    const parsedStatus = statusFilter ? parseTaskStatus(statusFilter) : null;
+    if (statusFilter && !parsedStatus) return c.text('invalid status', 400);
     const limit = 50;
     const offset = (page - 1) * limit;
 
     const [tasks, statsData] = await Promise.all([
-        TaskService.list({ limit, offset, ...(statusFilter ? { status: statusFilter as any } : {}) }),
+        TaskService.list({ limit, offset, ...(parsedStatus ? { status: parsedStatus } : {}) }),
         TaskService.stats({}),
     ]);
 
@@ -249,12 +304,13 @@ app.get('/', async (c) => {
 
     let rows = '';
     for (const task of tasks) {
-        const st = (task.status ?? '').toUpperCase();
+        const status = safeStatus(task.status);
+        const st = status.toUpperCase();
         rows += `<tr>
           <td class="mu">#${task.id}</td>
           <td><div style="font-weight:500">${esc(task.name)}</div><div class="mu sm el">${esc(task.prompt.substring(0, 120))}</div></td>
           <td><span class="tag">${esc(task.agent)}</span></td>
-          <td><span class="badge b-${task.status}">${st}</span></td>
+          <td><span class="badge b-${status}">${st}</span></td>
           <td class="sm ${task.status === 'running' ? '' : 'mu'}">${formatDuration(task.startedAt, task.finishedAt)}</td>
           <td class="mu sm">${(task.retryCount ?? 0) > 0 ? task.retryCount : '-'}</td>
           <td>
@@ -291,22 +347,16 @@ app.get('/', async (c) => {
 app.get('/templates', async (c) => {
     const templates = await TaskTemplateService.list(100);
 
-    for (const tmpl of templates) {
-        if (tmpl.enabled && tmpl.scheduleType === 'cron' && tmpl.cronExpr) {
-            try {
-                const { getNextCronRun } = await import('@core/cron-parser');
-                tmpl.nextRunAt = getNextCronRun(tmpl.cronExpr, Date.now());
-            } catch { /* keep existing */ }
-        }
-    }
-
     const enabled = templates.filter(t => t.enabled).length;
     const disabled = templates.length - enabled;
 
     let rows = '';
     for (const t of templates) {
-        const typeLabel = t.scheduleType === 'cron' ? 'Cron' : t.scheduleType === 'recurring' ? '循环' : '定时';
-        const typeClass = 'tag t-' + t.scheduleType;
+        const scheduleType = ['cron', 'recurring', 'delayed'].includes(t.scheduleType)
+            ? t.scheduleType
+            : 'unknown';
+        const typeLabel = scheduleType === 'cron' ? 'Cron' : scheduleType === 'recurring' ? '循环' : scheduleType === 'delayed' ? '定时' : '未知';
+        const typeClass = 'tag t-' + scheduleType;
         let rule = '-';
         if (t.scheduleType === 'cron') rule = t.cronExpr || '-';
         else if (t.scheduleType === 'recurring') rule = t.intervalMs ? `${Math.floor(t.intervalMs / 60000)}分钟` : '-';
@@ -324,7 +374,7 @@ app.get('/templates', async (c) => {
           <td><div style="font-weight:500">${esc(t.name)}</div><div class="mu sm el">${esc(t.prompt.substring(0, 100))}</div>
             <div class="sm" style="margin-top:2px"><span class="tag">${esc(t.agent)}</span>${t.model && t.model !== 'default' ? ` <span class="tag">${esc(t.model)}</span>` : ''}</div></td>
           <td><span class="${typeClass}">${typeLabel}</span></td>
-          <td class="m sm">${rule}</td>
+          <td class="m sm">${esc(rule)}</td>
           <td>${statusBadge}</td>
           <td class="sm">${t.lastRunAt ? timeAgo(t.lastRunAt) : '-'}</td>
           <td class="sm">${t.nextRunAt ? timeUntil(t.nextRunAt) : '-'}</td>
@@ -358,7 +408,8 @@ app.get('/templates', async (c) => {
 });
 
 app.get('/runs', async (c) => {
-    const page = Number(c.req.query('page') || '1');
+    const page = parsePositiveInteger(c.req.query('page') || '1');
+    if (page === null) return c.text('invalid page', 400);
     const limit = 50;
     const offset = (page - 1) * limit;
 
@@ -369,7 +420,7 @@ app.get('/runs', async (c) => {
         log: tr.log, heartbeatAt: tr.heartbeatAt, workerPid: tr.workerPid, childPid: tr.childPid,
         taskName: tk.name, taskAgent: tk.agent,
     }).from(tr).innerJoin(tk, eq(tr.taskId, tk.id))
-      .orderBy(desc(tr.startedAt)).limit(limit).offset(offset);
+      .orderBy(desc(tr.startedAt), desc(tr.id)).limit(limit).offset(offset);
 
     const totalResult = await db.select({ count: sql<number>`count(*)` }).from(tr);
     const total = Number(totalResult[0]?.count ?? 0);
@@ -378,6 +429,7 @@ app.get('/runs', async (c) => {
     let rows = '';
     const logsHtml: string[] = [];
     for (const run of runs) {
+        const status = safeStatus(run.status);
         const shortSession = run.sessionId
             ? run.sessionId.slice(4, 7) + '***' + run.sessionId.slice(-3)
             : '-';
@@ -389,7 +441,7 @@ app.get('/runs', async (c) => {
           <td><div style="font-weight:500">${esc(run.taskName)} <span class="mu">(#${run.taskId})</span></div>
             ${run.model ? `<div class="sm"><span class="tag">${esc(run.model)}</span></div>` : ''}</td>
           <td><span class="tag">${esc(run.taskAgent)}</span></td>
-          <td><span class="badge b-${run.status}">${(run.status ?? '').toUpperCase()}</span></td>
+          <td><span class="badge b-${status}">${status.toUpperCase()}</span></td>
           <td class="sm">${formatDuration(run.startedAt, run.finishedAt)}</td>
           <td class="sm mu">${run.heartbeatAt ? timeAgo(run.heartbeatAt) : '-'}</td>
           <td><button class="btn btn-sm" onclick="showRunDetail(${run.id})">详情</button>${logBtn}</td>
@@ -397,8 +449,8 @@ app.get('/runs', async (c) => {
 
         if (run.log) {
             logsHtml.push(`<div id="log-${run.id}" style="display:none" class="mt8">
-              <div class="panel"><div class="ph"><h3>Run #${run.id} 日志 — ${run.taskName}</h3></div>
-              <div class="log-box">${run.log.replace(/</g, '&lt;')}</div></div></div>`);
+              <div class="panel"><div class="ph"><h3>Run #${run.id} 日志 — ${esc(run.taskName)}</h3></div>
+              <div class="log-box">${esc(run.log)}</div></div></div>`);
         }
     }
 
@@ -444,7 +496,7 @@ app.get('/system', async (c) => {
                 : '-';
             runRows += `<tr>
               <td class="mu">#${run.id}</td><td>#${run.taskId}</td>
-              <td class="m sm">${shortS}</td>
+              <td class="m sm">${esc(shortS)}</td>
               <td class="sm">${esc(run.model) || '-'}</td>
               <td class="sm">${formatDate(run.startedAt)}</td>
               <td class="sm">${run.heartbeatAt ? timeAgo(run.heartbeatAt) : '-'}</td>
@@ -511,7 +563,7 @@ app.get('/system', async (c) => {
 
       <div class="card mt16">
         <h3 style="margin:0 0 12px;font-size:14px">配置文件</h3>
-        <div class="ir"><span class="ik">路径</span><span class="iv m sm">${CONFIG_PATH}</span></div>
+        <div class="ir"><span class="ik">路径</span><span class="iv m sm">${esc(CONFIG_PATH)}</span></div>
         <div class="ir"><span class="ik">文件存在</span><span class="iv">${configFileStatus}</span></div>
       </div>
 
@@ -525,7 +577,8 @@ app.get('/system', async (c) => {
 });
 
 app.get('/api/tasks/:id', async (c) => {
-    const id = Number(c.req.param('id'));
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
     const task = await TaskService.getById(id);
     if (!task) return c.json({ error: 'not found' }, 404);
     const runs = await TaskRunService.listByTaskId(id);
@@ -533,46 +586,62 @@ app.get('/api/tasks/:id', async (c) => {
 });
 
 app.get('/api/runs/:id', async (c) => {
-    const id = Number(c.req.param('id'));
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
     const run = await TaskRunService.getById(id);
     if (!run) return c.json({ error: 'not found' }, 404);
     return c.json(run);
 });
 
 app.get('/api/templates/:id', async (c) => {
-    const id = Number(c.req.param('id'));
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
     const tmpl = await TaskTemplateService.getById(id);
     if (!tmpl) return c.json({ error: 'not found' }, 404);
     return c.json(tmpl);
 });
 
 app.post('/api/tasks/:id/retry', async (c) => {
-    await TaskService.retry(Number(c.req.param('id')));
-    return c.json({ success: true });
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
+    const task = await TaskService.retry(id);
+    if (task) return c.json({ success: true });
+    return await TaskService.getById(id)
+        ? c.json({ error: 'task status does not allow retry' }, 409)
+        : c.json({ error: 'not found' }, 404);
 });
 
 app.delete('/api/tasks/:id', async (c) => {
-    await TaskService.delete(Number(c.req.param('id')));
-    return c.json({ success: true });
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
+    const deleted = await TaskService.delete(id);
+    return deleted ? c.json({ success: true }) : c.json({ error: 'not found' }, 404);
 });
 
 app.post('/api/templates/:id/enable', async (c) => {
-    const result = await TaskTemplateService.enable(Number(c.req.param('id')));
-    return c.json({ success: !!result });
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
+    const result = await TaskTemplateService.enable(id);
+    return result ? c.json({ success: true }) : c.json({ error: 'not found' }, 404);
 });
 
 app.post('/api/templates/:id/disable', async (c) => {
-    const result = await TaskTemplateService.disable(Number(c.req.param('id')));
-    return c.json({ success: !!result });
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
+    const result = await TaskTemplateService.disable(id);
+    return result ? c.json({ success: true }) : c.json({ error: 'not found' }, 404);
 });
 
 app.delete('/api/templates/:id', async (c) => {
-    const ok = await TaskTemplateService.delete(Number(c.req.param('id')));
-    return c.json({ success: ok });
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
+    const ok = await TaskTemplateService.delete(id);
+    return ok ? c.json({ success: true }) : c.json({ error: 'not found' }, 404);
 });
 
 app.post('/api/templates/:id/trigger', async (c) => {
-    const id = Number(c.req.param('id'));
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
     const tmpl = await TaskTemplateService.getById(id);
     if (!tmpl) return c.json({ error: 'not found' }, 404);
     const task = await TaskService.add({
@@ -614,7 +683,7 @@ app.put('/api/config', async (c) => {
         writeConfig(validateConfig(merged));
         return c.json({ success: true });
     } catch (err) {
-        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) });
+        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) }, 400);
     }
 });
 
@@ -626,7 +695,7 @@ app.post('/api/database/clear', async (c) => {
         await db.delete(tasks);
         return c.json({ success: true });
     } catch (err) {
-        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) });
+        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) }, 500);
     }
 });
 
