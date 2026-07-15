@@ -27,7 +27,7 @@ Gateway ─ Worker + Scheduler + Watchdog + Dashboard
 - Drizzle ORM + SQLite (bun:sqlite)
 - Hono (Web Dashboard SSR)
 - Commander (CLI)
-- pm2 (Gateway 守护进程)
+- pm2 (可选的 Gateway 守护进程)
 - bun:test (测试框架)
 
 ## 常用命令
@@ -51,6 +51,12 @@ bun run db:migrate    # 手动运行数据库迁移
 - 数据库初始化时启用 WAL、创建 `gateway_lock` 并自动执行 `drizzle/` migrations。
 - Gateway 用 SQLite `BEGIN IMMEDIATE` + `gateway_lock` 保证单实例；Dashboard 默认只监听 `127.0.0.1:4680`。
 - Dashboard 的浏览器写请求必须通过同源检查，数据库字符串进入 HTML 前必须调用 `esc`；API 的 ID、状态和配置不得直接断言类型。
+
+## 文档维护
+
+- `docs/architecture.md` 是当前组件边界、执行链路和架构决策的权威说明；`docs/operations.md` 是配置、启停、重试和排障的权威说明。
+- `docs/plans/` 与 `doc/项目分析.md` 是历史资料，不得据此恢复 systemd、独立 Dashboard 或嵌套 `supertask-runner`。
+- 架构、状态语义、配置默认值或运行命令变化时，在同一提交中同步 `README.md`、`docs/architecture.md`、`docs/operations.md` 和本文件中的相关内容。
 
 ## 核心业务约束
 
@@ -100,13 +106,14 @@ src/core/           # 核心业务（Service、DB、纯函数）
 src/gateway/        # Gateway 主进程
   scheduler/        # 定时调度器 + 模板克隆
   watchdog/         # 心跳检测 + 过期清理
-  config.ts         # 配置加载 + deepMerge
+  config.ts         # 配置加载、校验与 v1 兼容
 src/worker/         # Worker 并发池 (spawn opencode run)
 src/cli/            # Commander CLI
 src/web/            # Hono Web Dashboard
 src/daemon/         # pm2 安装、启停与升级
 plugin/             # OpenCode 插件入口和工具定义
 agents/             # runner 提示词备份（非运行时来源）
+docs/               # 当前架构、运维手册与历史设计资料
 drizzle/            # SQL migrations 与元数据
 tests/              # bun:test 单元与 CLI 集成测试
 ```

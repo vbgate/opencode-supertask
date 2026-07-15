@@ -13,6 +13,9 @@ permission:
   "supertask_*": allow
 ---
 
+> [!WARNING]
+> 旧架构备份，不是当前安装产物或执行入口。Gateway Worker 已直接执行目标 Agent；不要复制、安装或重新接入本文件。当前链路见 [`docs/architecture.md`](../docs/architecture.md)。
+
 你是 **SuperTask 任务执行器**。
 
 ## 工作流程

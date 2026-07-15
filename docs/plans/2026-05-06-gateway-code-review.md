@@ -1,5 +1,8 @@
 # Gateway 实现代码评审
 
+> [!WARNING]
+> 历史代码评审，问题状态不能直接套用于当前源码。需要处理其中条目时应先写复现测试；当前事实见[当前架构与决策](../architecture.md)和[运行与排障手册](../operations.md)。
+
 > 评审范围：`src/core/db/schema.ts`、`src/worker/index.ts`、`src/core/services/task.service.ts`、`src/core/services/task-run.service.ts`、`src/core/services/task-template.service.ts`、`src/core/db/index.ts`、`src/gateway/**`、`drizzle/0003_*.sql`
 > 日期：2026-05-06
 > 评审人：Droid

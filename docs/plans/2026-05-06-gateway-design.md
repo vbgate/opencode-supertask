@@ -1,5 +1,8 @@
 # SuperTask Gateway 设计文档
 
+> [!WARNING]
+> 历史设计稿，不代表当前实现。systemd、独立 Dashboard 和嵌套 `supertask-runner` 方案均已被取代；当前事实见[当前架构与决策](../architecture.md)和[运行与排障手册](../operations.md)。
+
 > 版本：v1.5 | 日期：2026-05-06 | 状态：设计阶段
 > 变更记录：v1.2 → v1.3（Droid 评审 Top 3）→ v1.4（重试退避 + 优先级 + 分组并发）→ v1.5（补充 supertask-runner 架构角色）
 

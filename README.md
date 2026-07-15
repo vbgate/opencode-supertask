@@ -7,6 +7,8 @@ AI-powered task queue for [OpenCode](https://opencode.ai) agents — schedule, r
 
 [简体中文](#简体中文)
 
+Documentation: [current architecture](docs/architecture.md) · [operations and troubleshooting](docs/operations.md) · [document index](docs/README.md)
+
 ## Installation
 
 ### Quick Install
@@ -66,7 +68,7 @@ Then add the local path to your config:
 
 ## Quick Start
 
-After installation, the Gateway starts automatically. Use the MCP tools in OpenCode:
+After starting the Gateway with `supertask install` or `supertask gateway`, use the MCP tools in OpenCode:
 
 ```
 Create a task: "帮我生成项目的 README" with agent "explore"
@@ -134,6 +136,8 @@ Gateway (foreground or optionally managed by pm2)
 
 Config file: `~/.config/opencode/supertask.json`
 
+The complete configuration reference and restart semantics are documented in [Operations and Troubleshooting](docs/operations.md).
+
 ```json
 {
   "configVersion": 2,
@@ -150,14 +154,14 @@ Config file: `~/.config/opencode/supertask.json`
 ```
 
 Key mechanisms:
-- **Process supervision** — optional pm2 crash recovery; installation is always explicit
-- **Auto-upgrade** — Plugin detects version changes and auto-reloads Gateway
+- **Process supervision** — optional pm2 crash recovery; plugin load never installs pm2, but can reuse an existing installation
+- **Version-aware restart** — if pm2 is already installed, plugin load starts or restarts the Gateway when the package version changes
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance
 - **Heartbeat** — Worker updates every 30s; Watchdog kills stale processes
 - **Exponential backoff** — configurable base × 2^n, capped at 30min
 - **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
 - **Batch isolation** — Same `batchId` serial; different `batchId` parallel
-- **Priority** — `urgency DESC → importance DESC → createdAt ASC`
+- **Priority** — `urgency DESC → importance DESC → createdAt ASC → id ASC`
 - **Local Dashboard boundary** — loopback-only listener, same-origin write checks, escaped database output
 
 ## Web Dashboard
@@ -192,6 +196,8 @@ MIT
 ## 简体中文
 
 SuperTask 是一个基于 SQLite 的 AI Agent 任务调度系统，专为 [OpenCode](https://opencode.ai) 设计。
+
+详细文档：[当前架构与决策](docs/architecture.md) · [运行与排障手册](docs/operations.md) · [文档索引](docs/README.md)
 
 ### 安装
 
@@ -238,8 +244,8 @@ supertask template add --type cron --cron "0 9 * * *" ...
 ### 核心功能
 
 - **任务队列** — 优先级调度、批次隔离、依赖管理
-- **进程守护** — 可选 pm2 崩溃恢复，安装动作必须由用户显式触发
-- **自动升级** — 插件更新后自动检测版本变化并 reload Gateway
+- **进程守护** — 可选 pm2 崩溃恢复；插件加载不会安装 pm2，但可复用机器上已有的 PM2
+- **版本感知重启** — 已安装 pm2 时，插件加载会在包版本变化后启动或重启 Gateway
 - **定时任务** — cron / delayed / recurring，支持友好时间格式
 - **Web 控制台** — 任务监控、执行日志、在线配置、清空数据库
 - **Session 追踪** — 自动从 opencode run 输出中捕获 session ID
