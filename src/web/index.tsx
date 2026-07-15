@@ -6,7 +6,7 @@ import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import { desc, sql, eq } from 'drizzle-orm';
 import { db, schema } from '@core/db';
-import { loadConfig, CONFIG_PATH, type GatewayConfig } from '@gateway/config';
+import { loadConfig, validateConfig, CONFIG_PATH, type GatewayConfig } from '@gateway/config';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 
@@ -60,7 +60,7 @@ function readCurrentConfig(): Record<string, unknown> {
     } catch { return {}; }
 }
 
-function writeConfig(cfg: Record<string, unknown>): void {
+function writeConfig(cfg: GatewayConfig): void {
     const dir = dirname(CONFIG_PATH);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n');
@@ -179,11 +179,11 @@ async function saveConfig(){
     scheduler:{
       enabled:form.se.checked,
       checkIntervalMs:Number(form.si.value),
-      catchUp:form.cu.value,
     },
     watchdog:{
       heartbeatTimeoutMs:Number(form.wt.value)*1000,
-      cleanupIntervalMs:Number(form.wc.value)*1000,
+      checkIntervalMs:Number(form.wci.value)*1000,
+      cleanupIntervalMs:Number(form.wcl.value)*3600000,
       retentionDays:Number(form.rd.value),
     }
   };
@@ -475,19 +475,14 @@ app.get('/system', async (c) => {
           <h3 style="margin:0 0 12px;font-size:14px">Scheduler 配置</h3>
           <div class="form-row"><label>启用调度</label><input type="checkbox" name="se" ${config.scheduler.enabled ? 'checked' : ''}></div>
           <div class="form-row"><label>检查间隔(ms)</label><input type="number" name="si" value="${config.scheduler.checkIntervalMs}" min="100" style="width:100px"></div>
-          <div class="form-row"><label>追赶模式</label><select name="cu" style="width:100px">
-            <option value="next" ${config.scheduler.catchUp === 'next' ? 'selected' : ''}>next</option>
-            <option value="all" ${config.scheduler.catchUp === 'all' ? 'selected' : ''}>all</option>
-            <option value="latest" ${config.scheduler.catchUp === 'latest' ? 'selected' : ''}>latest</option>
-          </select></div>
           <div class="ir"><span class="ik">活跃模板</span><span class="iv">${templates.filter(t => t.enabled).length} / ${templates.length}</span></div>
         </div>
         <div class="card">
           <h3 style="margin:0 0 12px;font-size:14px">Watchdog 配置</h3>
           <div class="form-row"><label>心跳超时(秒)</label><input type="number" name="wt" value="${config.watchdog.heartbeatTimeoutMs / 1000}" min="10" style="width:100px"></div>
-          <div class="form-row"><label>清理间隔(秒)</label><input type="number" name="wc" value="${config.watchdog.cleanupIntervalMs / 1000}" min="10" style="width:100px"></div>
+          <div class="form-row"><label>检查间隔(秒)</label><input type="number" name="wci" value="${config.watchdog.checkIntervalMs / 1000}" min="1" style="width:100px"></div>
+          <div class="form-row"><label>清理间隔(小时)</label><input type="number" name="wcl" value="${config.watchdog.cleanupIntervalMs / 3600000}" min="1" style="width:100px"></div>
           <div class="form-row"><label>数据保留(天)</label><input type="number" name="rd" value="${config.watchdog.retentionDays}" min="1" style="width:100px"></div>
-          <div class="ir"><span class="ik">日志格式</span><span class="iv">${config.logging.format}</span></div>
         </div>
       </div>
       <div style="text-align:center;margin-bottom:24px">
@@ -605,8 +600,15 @@ app.put('/api/config', async (c) => {
         const bW = (body.worker ?? {}) as Record<string, unknown>;
         const bS = (body.scheduler ?? {}) as Record<string, unknown>;
         const bD = (body.watchdog ?? {}) as Record<string, unknown>;
-        const merged = { ...current, ...body, worker: { ...curW, ...bW }, scheduler: { ...curS, ...bS }, watchdog: { ...curD, ...bD } };
-        writeConfig(merged);
+        const merged = {
+            ...current,
+            ...body,
+            configVersion: 2,
+            worker: { ...curW, ...bW },
+            scheduler: { ...curS, ...bS },
+            watchdog: { ...curD, ...bD },
+        };
+        writeConfig(validateConfig(merged));
         return c.json({ success: true });
     } catch (err) {
         return c.json({ success: false, error: err instanceof Error ? err.message : String(err) });

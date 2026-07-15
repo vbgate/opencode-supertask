@@ -121,8 +121,8 @@ Schedule supports friendly duration strings:
 ## Architecture
 
 ```
-Gateway (auto-started by pm2)
-├── Worker     → claim tasks, spawn supertask-runner via opencode run
+Gateway (managed by pm2)
+├── Worker     → claim tasks, execute the target agent via opencode run
 ├── Scheduler  → clone tasks from templates (cron / delayed / recurring)
 ├── Watchdog   → heartbeat timeout, auto-retry, data cleanup
 └── Dashboard  → Web UI on port 4680 (Hono SSR)
@@ -132,9 +132,15 @@ Config file: `~/.config/opencode/supertask.json`
 
 ```json
 {
-  "worker": { "maxConcurrency": 2 },
-  "scheduler": { "enabled": true, "catchUp": "next" },
-  "watchdog": { "heartbeatTimeoutMs": 600000, "retentionDays": 30 },
+  "configVersion": 2,
+  "worker": { "maxConcurrency": 2, "taskTimeoutMs": 1800000 },
+  "scheduler": { "enabled": true, "checkIntervalMs": 1000 },
+  "watchdog": {
+    "heartbeatTimeoutMs": 600000,
+    "checkIntervalMs": 60000,
+    "cleanupIntervalMs": 86400000,
+    "retentionDays": 30
+  },
   "dashboard": { "enabled": true, "port": 4680 }
 }
 ```
@@ -145,7 +151,7 @@ Key mechanisms:
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance
 - **Heartbeat** — Worker updates every 30s; Watchdog kills stale processes
 - **Exponential backoff** — 30s × 2^n, capped at 30min
-- **Dead letter queue** — Exhausted retries → `dead_letter`, manually recoverable
+- **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
 - **Batch isolation** — Same `batchId` serial; different `batchId` parallel
 - **Priority** — `urgency DESC → importance DESC → createdAt ASC`
 

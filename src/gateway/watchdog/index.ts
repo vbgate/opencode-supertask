@@ -13,11 +13,11 @@ export class Watchdog {
         this.stopped = false;
         this.heartbeatTimer = setInterval(
             () => this.runHeartbeatCheck(),
-            this.cfg.watchdog.cleanupIntervalMs,
+            this.cfg.watchdog.checkIntervalMs,
         );
         this.cleanupTimer = setInterval(
             () => this.runCleanup(),
-            this.cfg.watchdog.cleanupIntervalMs * 24 * 60,
+            this.cfg.watchdog.cleanupIntervalMs,
         );
     }
 

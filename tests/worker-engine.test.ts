@@ -31,6 +31,7 @@ process.exit(${options.exitCode ?? 0});
 
 function createConfig(taskTimeoutMs = 2_000): GatewayConfig {
     return {
+        configVersion: 2,
         worker: {
             maxConcurrency: 1,
             pollIntervalMs: 10,
@@ -40,15 +41,14 @@ function createConfig(taskTimeoutMs = 2_000): GatewayConfig {
         scheduler: {
             enabled: false,
             checkIntervalMs: 1_000,
-            catchUp: 'next',
         },
         watchdog: {
             heartbeatTimeoutMs: 1_000,
+            checkIntervalMs: 60_000,
             cleanupIntervalMs: 60_000,
             retentionDays: 30,
         },
         dashboard: { enabled: false, port: 4680 },
-        logging: { level: 'info', format: 'json' },
     };
 }
 
