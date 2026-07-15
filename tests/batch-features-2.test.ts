@@ -93,7 +93,7 @@ describe('批次功能测试 #2', () => {
                 agent: 'a',
                 prompt: 'p',
                 batchId: 'batch-retry',
-                maxRetries: 1,
+                maxRetries: 0,
             });
 
             await TaskService.start(t1.id);
@@ -185,7 +185,7 @@ describe('批次功能测试 #2', () => {
             expect(r2!.status).toBe('failed');
         });
 
-        test('retryBatch 重试后 retryCount 保持不变（手动重试不重置计数器）', async () => {
+        test('retryBatch 重试后重置 retryCount（恢复完整自动重试预算）', async () => {
             const task = await TaskService.add({
                 name: '重试计数验证',
                 agent: 'a',
@@ -206,7 +206,7 @@ describe('批次功能测试 #2', () => {
 
             const found = await TaskService.getById(task.id);
             expect(found!.status).toBe('pending');
-            expect(found!.retryCount).toBe(2);
+            expect(found!.retryCount).toBe(0);
         });
     });
 
@@ -497,7 +497,7 @@ describe('批次功能测试 #2', () => {
                 agent: 'a',
                 prompt: 'p',
                 batchId: 'dead-batch',
-                maxRetries: 1,
+                maxRetries: 0,
             });
 
             await TaskService.start(task.id);

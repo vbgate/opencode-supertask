@@ -24,7 +24,7 @@ describe('checkHeartbeats', () => {
     });
 
     test('检测 stale run 并标记为 dead_letter（达到最大重试）', async () => {
-        const task = await createTask({ maxRetries: 1 });
+        const task = await createTask({ maxRetries: 0 });
         await TaskService.start(task.id);
         await TaskRunService.create({ taskId: task.id, status: 'running' });
 
@@ -48,7 +48,7 @@ describe('checkHeartbeats', () => {
     });
 
     test('多次心跳超时后达到 dead_letter', async () => {
-        const task = await createTask({ maxRetries: 2 });
+        const task = await createTask({ maxRetries: 1 });
         await TaskService.start(task.id);
         await TaskRunService.create({ taskId: task.id, status: 'running' });
 

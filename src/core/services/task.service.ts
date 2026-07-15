@@ -6,7 +6,7 @@ import { eq, and, desc, asc, sql, isNull, or } from 'drizzle-orm';
 import type { Task, NewTask, TaskStatus } from '@core/db/schema';
 import { computeBackoff } from '@core/backoff';
 
-const { tasks } = schema;
+const { tasks, taskRuns } = schema;
 
 export class TaskService {
     private static buildScopeWhere(scope?: { cwd?: string }) {
@@ -48,7 +48,7 @@ export class TaskService {
             ),
             and(
                 eq(tasks.status, 'failed'),
-                sql`${tasks.retryCount} < ${tasks.maxRetries}`,
+                sql`${tasks.retryCount} <= ${tasks.maxRetries}`,
                 retryAfterFilter,
             ),
         );
@@ -69,6 +69,7 @@ export class TaskService {
                 desc(tasks.urgency),
                 desc(tasks.importance),
                 asc(tasks.createdAt),
+                asc(tasks.id),
             );
 
         for (const task of allTasks) {
@@ -91,8 +92,8 @@ export class TaskService {
             or(
                 eq(tasks.status, 'pending'),
                 and(
-                    eq(tasks.status, 'failed'),
-                    sql`${tasks.retryCount} < ${tasks.maxRetries}`,
+                eq(tasks.status, 'failed'),
+                    sql`${tasks.retryCount} <= ${tasks.maxRetries}`,
                 ),
             ),
             ...this.buildScopeWhere(scope),
@@ -114,7 +115,11 @@ export class TaskService {
         log?: string,
         scope: { cwd?: string } = {},
     ): Promise<Task | null> {
-        const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
+        const conditions = [
+            eq(tasks.id, id),
+            eq(tasks.status, 'running'),
+            ...this.buildScopeWhere(scope),
+        ];
         const result = await db
             .update(tasks)
             .set({
@@ -135,13 +140,17 @@ export class TaskService {
         options?: { setDeadLetter?: boolean; retryAfterMs?: number },
     ): Promise<Task | null> {
         const current = await this.getById(id, scope);
-        if (!current) return null;
+        if (!current || current.status !== 'running') return null;
 
         const newRetryCount = (current.retryCount ?? 0) + 1;
         const maxRetries = current.maxRetries ?? 3;
-        const isDeadLetter = options?.setDeadLetter ?? newRetryCount >= maxRetries;
+        const isDeadLetter = options?.setDeadLetter ?? newRetryCount > maxRetries;
 
-        const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
+        const conditions = [
+            eq(tasks.id, id),
+            eq(tasks.status, 'running'),
+            ...this.buildScopeWhere(scope),
+        ];
         const result = await db
             .update(tasks)
             .set({
@@ -206,7 +215,15 @@ export class TaskService {
     }
 
     static async cancel(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
-        const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
+        const conditions = [
+            eq(tasks.id, id),
+            or(
+                eq(tasks.status, 'pending'),
+                eq(tasks.status, 'running'),
+                eq(tasks.status, 'failed'),
+            ),
+            ...this.buildScopeWhere(scope),
+        ];
         const result = await db
             .update(tasks)
             .set({ status: 'cancelled' })
@@ -228,6 +245,7 @@ export class TaskService {
                 startedAt: null,
                 finishedAt: null,
                 retryAfter: null,
+                retryCount: 0,
             })
             .where(and(...conditions))
             .returning();
@@ -247,6 +265,7 @@ export class TaskService {
                 startedAt: null,
                 finishedAt: null,
                 retryAfter: null,
+                retryCount: 0,
             })
             .where(and(...conditions))
             .returning();
@@ -340,6 +359,14 @@ export class TaskService {
 
     static async delete(id: number, scope: { cwd?: string } = {}): Promise<boolean> {
         const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
+        const existing = await db
+            .select({ id: tasks.id })
+            .from(tasks)
+            .where(and(...conditions))
+            .limit(1);
+        if (!existing[0]) return false;
+
+        await db.delete(taskRuns).where(eq(taskRuns.taskId, id));
         const result = await db.delete(tasks).where(and(...conditions)).returning();
         return result.length > 0;
     }

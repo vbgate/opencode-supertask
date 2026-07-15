@@ -10,20 +10,20 @@ describe('边界条件测试', () => {
     });
 
     describe('TaskService 边界', () => {
-        test('done 一个尚未 start 的任务（直接 done）', async () => {
+        test('拒绝将尚未 start 的任务直接标记为 done', async () => {
             const task = await TaskService.add({ name: 'T', agent: 'a', prompt: 'p' });
             const result = await TaskService.done(task.id);
-            expect(result).not.toBeNull();
-            expect(result!.status).toBe('done');
+            expect(result).toBeNull();
+            expect((await TaskService.getById(task.id))!.status).toBe('pending');
         });
 
-        test('cancel 一个已 done 的任务', async () => {
+        test('拒绝取消一个已 done 的任务', async () => {
             const task = await TaskService.add({ name: 'T', agent: 'a', prompt: 'p' });
             await TaskService.start(task.id);
             await TaskService.done(task.id);
             const cancelled = await TaskService.cancel(task.id);
-            expect(cancelled).not.toBeNull();
-            expect(cancelled!.status).toBe('cancelled');
+            expect(cancelled).toBeNull();
+            expect((await TaskService.getById(task.id))!.status).toBe('done');
         });
 
         test('retry 已 cancelled 的任务返回 null', async () => {
@@ -41,14 +41,14 @@ describe('边界条件测试', () => {
                 maxRetries: 3,
             });
 
-            for (let i = 1; i <= 3; i++) {
+            for (let i = 1; i <= 4; i++) {
                 await TaskService.start(task.id);
                 await TaskService.fail(task.id, `第${i}次失败`);
             }
 
             const updated = await TaskService.getById(task.id);
             expect(updated!.status).toBe('dead_letter');
-            expect(updated!.retryCount).toBe(3);
+            expect(updated!.retryCount).toBe(4);
         });
 
         test('deleteOlderThan 只删除终态任务', async () => {

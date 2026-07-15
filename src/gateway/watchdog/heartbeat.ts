@@ -20,7 +20,7 @@ export async function checkHeartbeats(heartbeatTimeoutMs: number) {
             const newRetryCount = run.taskRetryCount + 1;
             const maxRetries = run.taskMaxRetries;
 
-            if (newRetryCount >= maxRetries) {
+            if (newRetryCount > maxRetries) {
                 await TaskService.markDeadLetter(run.taskId, newRetryCount);
                 console.log(JSON.stringify({
                     ts: new Date().toISOString(),

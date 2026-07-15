@@ -261,17 +261,17 @@ describe('TaskService', () => {
             expect(next!.id).toBe(dependent.id);
         });
 
-        test('retryCount >= maxRetries 的 failed 任务不返回（已 dead_letter）', async () => {
+        test('retryCount > maxRetries 的 failed 任务不返回（已耗尽重试）', async () => {
             const task = await TaskService.add({
                 name: '最终失败任务',
                 agent: 'a',
                 prompt: 'p',
-                maxRetries: 1,
+                maxRetries: 0,
             });
             await TaskService.start(task.id);
             await TaskService.fail(task.id, '失败');
 
-            expect(task.maxRetries).toBe(1);
+            expect(task.maxRetries).toBe(0);
             const next = await TaskService.next();
             expect(next).toBeNull();
         });
@@ -362,7 +362,7 @@ describe('TaskService', () => {
             expect(failed!.retryAfter).not.toBeNull();
         });
 
-        test('达到最大重试次数 → dead_letter', async () => {
+        test('耗尽最大重试次数后 → dead_letter', async () => {
             const task = await TaskService.add({
                 name: 'T',
                 agent: 'a',
@@ -370,7 +370,10 @@ describe('TaskService', () => {
                 maxRetries: 1,
             });
             await TaskService.start(task.id);
-            const failed = await TaskService.fail(task.id, '最终失败');
+            const first = await TaskService.fail(task.id, '首次失败', {}, { retryAfterMs: Date.now() - 1 });
+            expect(first!.status).toBe('failed');
+            await TaskService.start(task.id);
+            const failed = await TaskService.fail(task.id, '重试后仍失败');
             expect(failed!.status).toBe('dead_letter');
             expect(failed!.retryAfter).toBeNull();
         });
@@ -779,7 +782,7 @@ describe('TaskService', () => {
             expect(found!.batchId).toBe('deploy-batch');
         });
 
-        test('retryBatch 后，retryCount 增加但 batchId 不变', async () => {
+        test('retryBatch 后，retryCount 重置且 batchId 不变', async () => {
             const task = await TaskService.add({
                 name: '邮件发送任务',
                 agent: 'mailer',
@@ -798,7 +801,7 @@ describe('TaskService', () => {
             const found = await TaskService.getById(task.id);
             expect(found!.status).toBe('pending');
             expect(found!.batchId).toBe('notification-batch');
-            expect(found!.retryCount).toBe(1);
+            expect(found!.retryCount).toBe(0);
         });
 
         test('不同批次互不干扰', async () => {

@@ -14,7 +14,7 @@ export async function cloneTaskFromTemplate(templateId: number) {
         .where(eq(taskTemplates.id, templateId))
         .limit(1);
     const tmpl = rows[0];
-    if (!tmpl) return null;
+    if (!tmpl || !tmpl.enabled) return null;
 
     const activeCount = await db
         .select({ count: sql<number>`count(*)` })
@@ -30,11 +30,14 @@ export async function cloneTaskFromTemplate(templateId: number) {
     if (activeCount >= (tmpl.maxInstances ?? 1)) return null;
 
     const nowMs = Date.now();
-    const nextRunAt = TaskTemplateService.calculateNextRunAt(
-        tmpl.scheduleType as ScheduleType,
-        tmpl,
-        nowMs,
-    );
+    const isDelayed = tmpl.scheduleType === 'delayed';
+    const nextRunAt = isDelayed
+        ? null
+        : TaskTemplateService.calculateNextRunAt(
+            tmpl.scheduleType as ScheduleType,
+            tmpl,
+            nowMs,
+        );
 
     const task = await TaskService.add({
         name: tmpl.name,
@@ -55,6 +58,7 @@ export async function cloneTaskFromTemplate(templateId: number) {
         .set({
             lastRunAt: nowMs,
             nextRunAt,
+            enabled: isDelayed ? false : tmpl.enabled,
             updatedAt: nowMs,
         })
         .where(eq(taskTemplates.id, templateId));
