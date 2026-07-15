@@ -84,7 +84,7 @@ program
                 urgency: task.urgency,
             }, null, 2));
         } else {
-            console.log(JSON.stringify({ id: null, message: 'No pending tasks' }));
+            console.log(JSON.stringify({ id: null, message: 'No executable tasks' }));
         }
     }));
 

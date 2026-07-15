@@ -88,7 +88,7 @@ export const SuperTaskPlugin: Plugin = async () => {
             // 创建任务
             supertask_add: tool({
                 description:
-                    "创建新任务到队列。返回任务 ID。任务将按优先级（importance × urgency）排序执行。",
+                    "创建新任务到队列。返回任务 ID。任务按 urgency、importance、createdAt、id 的顺序调度。",
                 args: {
                     name: tool.schema.string().describe("任务名称（人类可读）"),
                     agent: tool.schema.string().describe("执行的 Agent 名称，如 localize-gen, course-gen"),
@@ -140,7 +140,7 @@ export const SuperTaskPlugin: Plugin = async () => {
             // 获取下一条任务
             supertask_next: tool({
                 description:
-                    "获取下一个待执行的任务。优先处理可重试的失败任务（retryCount < maxRetries），再处理 pending 任务，均按创建时间升序排列，会自动跳过依赖未完成的任务。",
+                    "获取下一个可执行任务。候选包括 pending 和退避到期且 retryCount <= maxRetries 的 failed 任务，按 urgency、importance、createdAt、id 排序，并跳过依赖未完成的任务。",
                 args: {
                     cwd: tool.schema
                         .string()
@@ -164,7 +164,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                                 urgency: task.urgency,
                             });
                         } else {
-                            return JSON.stringify({ id: null, message: "No pending tasks" });
+                            return JSON.stringify({ id: null, message: "No executable tasks" });
                         }
                     } catch (error) {
                         return JSON.stringify({
@@ -199,7 +199,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                             error: "Task status does not allow start",
                             id: existing.id,
                             status: existing.status,
-                            message: `Only pending tasks can be started; current status is '${existing.status}'.`,
+                            message: `Only pending or retryable failed tasks can be started; current status is '${existing.status}'.`,
                         });
                     } catch (error) {
                         return JSON.stringify({
