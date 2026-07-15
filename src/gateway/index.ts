@@ -7,12 +7,13 @@ import { closeDb } from '@core/db';
 import { TaskService } from '@core/services/task.service';
 import { TaskRunService } from '@core/services/task-run.service';
 import { initializeGatewayHealth, resetGatewayHealth } from './health';
+import { isProcessAlive } from '@core/process-control';
 
 // gateway_lock.heartbeat_at / acquired_at 单位：毫秒（Date.now()）
 // 超过此阈值未心跳则视为锁持有者已死亡
 const STALE_THRESHOLD_MS = 30_000;
 
-function acquireLock(): boolean {
+export function acquireLock(): boolean {
     const now = Date.now();
     const pid = process.pid;
 
@@ -26,7 +27,8 @@ function acquireLock(): boolean {
         } | undefined;
 
         if (existing) {
-            if (now - existing.heartbeat_at < STALE_THRESHOLD_MS) {
+            const lockHolderAlive = existing.pid !== pid && isProcessAlive(existing.pid);
+            if (now - existing.heartbeat_at < STALE_THRESHOLD_MS && lockHolderAlive) {
                 sqlite.exec('ROLLBACK');
                 console.error(JSON.stringify({
                     ts: new Date().toISOString(),
@@ -58,7 +60,7 @@ function acquireLock(): boolean {
     }
 }
 
-function releaseLock() {
+export function releaseLock() {
     try {
         sqlite.exec('DELETE FROM gateway_lock WHERE pid = ?', [process.pid]);
     } catch {}

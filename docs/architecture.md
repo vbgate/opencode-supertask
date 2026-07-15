@@ -48,7 +48,7 @@ Dashboard ─────┘       ↑                 ↑
 Gateway 启动时按以下顺序工作：
 
 1. 初始化数据库，自动执行 `drizzle/` migrations，开启外键并运行 `PRAGMA foreign_key_check`；有孤立记录时直接拒绝启动。
-2. 用 `BEGIN IMMEDIATE` 更新 `gateway_lock`。锁每 10 秒心跳，30 秒未更新才允许新实例接管；此时 `ready_at` 仍为空。
+2. 用 `BEGIN IMMEDIATE` 更新 `gateway_lock`。锁每 10 秒心跳；记录的 PID 已不存在时可立即接管，否则要等心跳 30 秒未更新；此时 `ready_at` 仍为空。
 3. 加载并校验配置；非法配置直接失败，不静默回退。
 4. 启动 Worker、Watchdog、Scheduler，最后按配置启动内嵌 Dashboard；全部成功后才写入 `ready_at`。
 5. 收到 `SIGINT` 或 `SIGTERM` 时先停止接单，等待 `worker.shutdownGracePeriodMs`；宽限期内完成的任务正常落库，只有剩余子进程才会终止、重置为 `pending`，对应执行记录标为失败。

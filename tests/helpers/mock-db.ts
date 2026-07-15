@@ -96,6 +96,7 @@ export function setupTestDb() {
 
     mock.module('../../src/core/db', () => ({
         db: testDb,
+        sqlite,
         schema,
         getDb: () => testDb,
         getSqlite: () => sqlite,

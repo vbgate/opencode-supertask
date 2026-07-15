@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { basename, join } from 'path';
 import { tmpdir } from 'os';
 import { spawn, type ChildProcess } from 'child_process';
-import { signalRecordedProcessTree, signalSpawnedProcessTree } from '../src/core/process-control';
+import { isProcessAlive, signalRecordedProcessTree, signalSpawnedProcessTree } from '../src/core/process-control';
 
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
@@ -57,6 +57,11 @@ setInterval(() => {}, 1000);
 }
 
 describe('进程树终止', () => {
+    test('能区分当前进程与不存在的 PID', () => {
+        expect(isProcessAlive(process.pid)).toBe(true);
+        expect(isProcessAlive(2_147_483_647)).toBe(false);
+    });
+
     test('命令不匹配时拒绝终止记录的 PID', async () => {
         const tree = createProcessTree();
         await waitForFile(tree.childPidFile);

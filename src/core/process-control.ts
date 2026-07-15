@@ -10,6 +10,16 @@ function isSafePid(pid: number): boolean {
     return Number.isInteger(pid) && pid > 1 && pid !== process.pid;
 }
 
+export function isProcessAlive(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+        return true;
+    } catch (error) {
+        return error instanceof Error && 'code' in error && error.code === 'EPERM';
+    }
+}
+
 function inspectUnixProcess(pid: number): ProcessInfo | null {
     const result = spawnSync('ps', ['-o', 'pgid=', '-o', 'command=', '-p', String(pid)], {
         encoding: 'utf8',
