@@ -199,6 +199,8 @@ supertask upgrade     # 刷新 OpenCode 插件缓存并重启 PM2 Gateway
 supertask uninstall   # 仅从 PM2 移除 Gateway，保留其他 PM2 项和数据
 ```
 
-`upgrade` 使用 `opencode plugin opencode-supertask@latest --global --force` 更新 OpenCode 实际加载的缓存，校验包版本和 `dist/gateway/index.js` 后再切换 PM2；新版未就绪会自动回滚旧 Gateway。该命令要求 OpenCode CLI 和 PM2 已安装。数据库迁移会在新版本首次初始化时自动运行；升级前备份是低成本的安全措施。发布流程仍通过 GitHub Release 触发 npm 发布，不手动 `npm publish`。
+`upgrade` 使用 `opencode plugin opencode-supertask@latest --global --force` 更新 OpenCode 实际加载的缓存，校验包版本和 `dist/gateway/index.js` 后再切换 PM2；新版未就绪会自动回滚旧 Gateway。该命令要求 OpenCode CLI 和 PM2 已安装。数据库迁移会在新版本首次初始化时自动运行；升级前备份是低成本的安全措施。
+
+发布流程通过 GitHub Release 触发，也可带明确版本参数手动运行 `publish.yml` 处理发布基础设施故障。工作流使用 npm Trusted Publisher/OIDC，不依赖长期 `NPM_TOKEN`；npm 包设置必须信任仓库 `vbgate/opencode-supertask` 的 `publish.yml`。不要在本机手动 `npm publish`。
 
 更完整的设计边界见[当前架构与决策](./architecture.md)。
