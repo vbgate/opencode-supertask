@@ -198,24 +198,22 @@ supertask db backup --output ~/supertask-backup/tasks.db
 清空全部任务、执行记录和调度模板：
 
 ```bash
-pm2 stop supertask-gateway
 supertask db clear --confirm CLEAR
-pm2 start supertask-gateway
 ```
 
-`db clear` 会拒绝活跃 Gateway 和任何 `running` 任务/执行记录，在一个 `BEGIN IMMEDIATE` 事务内先生成 `pre-clear` 备份，再删除三张业务表；任一步失败都会回滚事务。它保留数据库结构、迁移记录、配置和自增序列。Dashboard 的“清空数据库”复用同一服务，要求服务端确认并拒绝运行中任务；因为 Dashboard 本身位于当前 Gateway 内，它只豁免当前 Gateway PID，不豁免其他进程。
+`db clear` 会先核对 PM2 进程 PID 与当前数据库的新鲜 ready 锁；匹配时自动优雅停止 Gateway，维护结束后按原状态重启并等待新的 ready 锁，数据库操作失败时也会尝试恢复运行。传入 `--keep-stopped` 会让原本运行的 PM2 Gateway 保持停止。前台 Gateway、陈旧锁或无法确认归属的进程不会被自动终止，命令会拒绝操作并要求人工停止。
+
+清空仍会拒绝任何 `running` 任务/执行记录，在一个 `BEGIN IMMEDIATE` 事务内先生成 `pre-clear` 备份，再删除三张业务表；任一步失败都会回滚事务。它保留数据库结构、迁移记录、配置和自增序列。若数据库维护已完成但 PM2 重启失败，CLI 会明确报告“数据库维护已完成”，此时按错误提示检查 `pm2 logs supertask-gateway`，不要重复清空。Dashboard 的“清空数据库”复用同一服务，要求服务端确认并拒绝运行中任务；因为 Dashboard 本身位于当前 Gateway 内，它只豁免当前 Gateway PID，不豁免其他进程。
 
 从备份恢复：
 
 ```bash
-pm2 stop supertask-gateway
 supertask db restore --from ~/.local/share/opencode/tasks.pre-clear-<time>-<id>.db --confirm RESTORE
-pm2 start supertask-gateway
 supertask db check
 curl -fsS http://127.0.0.1:4680/health
 ```
 
-恢复会先校验来源文件并自动创建当前库的 `pre-restore` 安全备份，然后用同目录暂存文件替换数据库、自动执行缺失 migration，再复检完整性。备份中遗留的 `running` 任务会恢复为 `pending`，对应运行记录关闭为 `failed`，旧 `gateway_lock` 不会继续生效。恢复失败时会尝试原子回滚，并在错误信息中给出安全备份路径。
+恢复使用与清空相同的 PM2 自动停启和 `--keep-stopped` 语义。它会先校验来源文件并自动创建当前库的 `pre-restore` 安全备份，然后用同目录暂存文件替换数据库、自动执行缺失 migration，再复检完整性。备份中遗留的 `running` 任务会恢复为 `pending`，对应运行记录关闭为 `failed`，旧 `gateway_lock` 不会继续生效。恢复失败时会尝试原子回滚，并在错误信息中给出安全备份路径。
 
 不要在 Gateway 运行时删除或只复制 `tasks.db`；WAL 模式下最新事务可能还在 `tasks.db-wal`。配置文件仍需单独备份：
 

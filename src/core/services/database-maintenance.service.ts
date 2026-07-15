@@ -404,7 +404,7 @@ export class DatabaseMaintenanceService {
         if (!lock || !isProcessAlive(lock.pid)) return;
         if (allowCurrentGateway && lock.pid === process.pid) return;
         throw new DatabaseMaintenanceConflictError(
-            `Gateway PID ${lock.pid} 仍在运行，请先执行 pm2 stop supertask-gateway`,
+            `Gateway PID ${lock.pid} 仍在运行，但未确认由当前数据库对应的 PM2 进程管理；请先停止该 Gateway（PM2 可执行 pm2 stop supertask-gateway）`,
         );
     }
 

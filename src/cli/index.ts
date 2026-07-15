@@ -5,7 +5,11 @@ import { DatabaseMaintenanceService } from '@core/services/database-maintenance.
 import { closeDb } from '@core/db';
 import { parseDuration } from '@core/duration';
 import type { TaskStatus, ScheduleType } from '@core/db/schema';
-import { getPackageVersion } from '../daemon/pm2';
+import {
+    getPackageVersion,
+    restartGatewayAfterMaintenance,
+    stopGatewayForMaintenance,
+} from '../daemon/pm2';
 
 async function withDb<T>(fn: () => Promise<T>): Promise<T> {
     try {
@@ -17,6 +21,56 @@ async function withDb<T>(fn: () => Promise<T>): Promise<T> {
     } finally {
         closeDb();
     }
+}
+
+interface GatewayMaintenanceReport {
+    wasRunning: boolean;
+    restarted: boolean;
+    keptStopped: boolean;
+}
+
+function messageOf(error: unknown): string {
+    return error instanceof Error ? error.message : String(error);
+}
+
+function runDestructiveDatabaseMaintenance<T extends object>(
+    keepStopped: boolean,
+    operation: () => T,
+): T & { gateway: GatewayMaintenanceReport } {
+    const gatewayState = stopGatewayForMaintenance();
+    let result: T;
+    try {
+        result = operation();
+    } catch (error) {
+        if (gatewayState.wasRunning && !keepStopped) {
+            try {
+                restartGatewayAfterMaintenance(gatewayState);
+            } catch (restartError) {
+                throw new Error(
+                    `${messageOf(error)}；Gateway 自动恢复也失败：${messageOf(restartError)}`,
+                );
+            }
+        }
+        throw error;
+    }
+
+    let restarted = false;
+    if (gatewayState.wasRunning && !keepStopped) {
+        try {
+            restarted = restartGatewayAfterMaintenance(gatewayState);
+        } catch (error) {
+            throw new Error(`数据库维护已完成，但 Gateway 自动重启失败：${messageOf(error)}`);
+        }
+    }
+
+    return {
+        ...result,
+        gateway: {
+            wasRunning: gatewayState.wasRunning,
+            restarted,
+            keptStopped: gatewayState.wasRunning && keepStopped,
+        },
+    };
 }
 
 const program = new Command();
@@ -362,11 +416,16 @@ databaseCommand
     .command('clear')
     .description('备份后事务性清空任务、执行记录和调度模板')
     .option('--confirm <word>', '危险操作确认，必须填写 CLEAR')
-    .action(async (options: { confirm?: string }) => withDb(async () => {
+    .option('--keep-stopped', '维护结束后不重启原本由 PM2 管理的 Gateway')
+    .action(async (options: { confirm?: string; keepStopped?: boolean }) => withDb(async () => {
         if (options.confirm !== 'CLEAR') {
             throw new Error('清空数据库必须显式传入 --confirm CLEAR');
         }
-        console.log(JSON.stringify(DatabaseMaintenanceService.clear(), null, 2));
+        const result = runDestructiveDatabaseMaintenance(
+            options.keepStopped ?? false,
+            () => DatabaseMaintenanceService.clear(),
+        );
+        console.log(JSON.stringify(result, null, 2));
     }));
 
 databaseCommand
@@ -374,11 +433,16 @@ databaseCommand
     .description('自动备份当前库后，从指定备份恢复数据库')
     .requiredOption('--from <path>', '要恢复的 SQLite 备份文件')
     .option('--confirm <word>', '危险操作确认，必须填写 RESTORE')
-    .action(async (options: { from: string; confirm?: string }) => withDb(async () => {
+    .option('--keep-stopped', '维护结束后不重启原本由 PM2 管理的 Gateway')
+    .action(async (options: { from: string; confirm?: string; keepStopped?: boolean }) => withDb(async () => {
         if (options.confirm !== 'RESTORE') {
             throw new Error('恢复数据库必须显式传入 --confirm RESTORE');
         }
-        console.log(JSON.stringify(DatabaseMaintenanceService.restore(options.from), null, 2));
+        const result = runDestructiveDatabaseMaintenance(
+            options.keepStopped ?? false,
+            () => DatabaseMaintenanceService.restore(options.from),
+        );
+        console.log(JSON.stringify(result, null, 2));
     }));
 
 program.addCommand(databaseCommand);

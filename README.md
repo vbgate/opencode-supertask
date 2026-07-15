@@ -13,7 +13,13 @@ Documentation: [current architecture](docs/architecture.md) · [operations and t
 
 ### Quick Install
 
-Add the plugin to `~/.config/opencode/opencode.json`:
+Install the CLI globally:
+
+```bash
+npm install -g opencode-supertask
+```
+
+Then add the plugin to `~/.config/opencode/opencode.json`:
 
 ```json
 {
@@ -36,12 +42,13 @@ The plugin never installs global dependencies by itself. Without a running Gatew
 2. Remove `"opencode-supertask"` from `~/.config/opencode/opencode.json`
 3. Restart OpenCode
 
-To clear all task data safely, stop the Gateway and use the backup-first database command:
+To clear all task data safely, use the backup-first database command:
 
 ```bash
-pm2 stop supertask-gateway
 supertask db clear --confirm CLEAR
 ```
+
+If the matching Gateway is managed by PM2, the CLI stops it first and restarts it after maintenance.
 
 ### CLI Install / Uninstall
 
@@ -114,11 +121,11 @@ supertask template enable --id 1
 # Database maintenance
 supertask db check
 supertask db backup [--output /path/to/tasks-backup.db]
-supertask db clear --confirm CLEAR
-supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE
+supertask db clear --confirm CLEAR [--keep-stopped]
+supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE [--keep-stopped]
 ```
 
-`db backup` creates and validates a standalone SQLite snapshot. `db clear` and `db restore` refuse to run while another Gateway or task is active; both create a safety backup before changing data. Stop the PM2 Gateway before using the destructive CLI commands.
+`db backup` creates and validates a standalone SQLite snapshot. For `db clear` and `db restore`, the CLI automatically stops a PM2 Gateway whose PID matches the current database's fresh ready lock, then restores its previous running state. Both commands create a safety backup before changing data and still refuse active tasks or an unverified/foreground Gateway. Use `--keep-stopped` to leave a previously running PM2 Gateway stopped.
 
 ### Duration Format
 
@@ -214,7 +221,13 @@ SuperTask 是一个基于 SQLite 的 AI Agent 任务调度系统，专为 [OpenC
 
 ### 安装
 
-在 `~/.config/opencode/opencode.json` 中添加：
+先安装全局 CLI：
+
+```bash
+npm install -g opencode-supertask
+```
+
+然后在 `~/.config/opencode/opencode.json` 中添加：
 
 ```json
 {
@@ -240,9 +253,10 @@ supertask gateway   # 前台运行：不需要 pm2
 安全清理所有任务数据：
 
 ```bash
-pm2 stop supertask-gateway
 supertask db clear --confirm CLEAR
 ```
+
+若当前数据库对应的 Gateway 由 PM2 管理，CLI 会自动停止并在维护结束后恢复运行。
 
 ### 定时任务
 
@@ -274,11 +288,11 @@ supertask template add --type cron --cron "0 9 * * *" ...
 ```bash
 supertask db check
 supertask db backup [--output /path/to/tasks-backup.db]
-supertask db clear --confirm CLEAR
-supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE
+supertask db clear --confirm CLEAR [--keep-stopped]
+supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE [--keep-stopped]
 ```
 
-`db backup` 会生成并校验可独立恢复的 SQLite 快照。CLI 清空和恢复会拒绝活跃 Gateway 或运行中任务，并在修改数据前自动保留安全备份；执行这两个危险命令前应先停止 PM2 Gateway。
+`db backup` 会生成并校验可独立恢复的 SQLite 快照。CLI 清空和恢复会先确认 PM2 PID 与当前数据库的新鲜 ready 锁一致，再自动停止并按原状态重启 Gateway；操作失败时也会尝试恢复 Gateway。它们仍会拒绝运行中任务、前台 Gateway 或无法确认归属的进程，并在修改数据前自动保留安全备份。传入 `--keep-stopped` 可让原本运行的 PM2 Gateway 保持停止。
 
 ### 数据位置
 

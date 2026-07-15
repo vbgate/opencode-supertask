@@ -52,7 +52,7 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - 数据库初始化时启用 WAL、创建 `gateway_lock` 并自动执行 `drizzle/` migrations。
 - Gateway 用 SQLite `BEGIN IMMEDIATE` + `gateway_lock` 保证单实例；Dashboard 默认只监听 `127.0.0.1:4680`。
 - Gateway 仅在 Worker、Scheduler、Watchdog 和 Dashboard 启动完成后写入 `gateway_lock.ready_at`；PM2 `online` 不能单独作为就绪依据，进程 PID 必须匹配新鲜 ready 锁。
-- 数据库检查、备份、清空和恢复统一经过 `DatabaseMaintenanceService`；CLI 清空/恢复必须显式确认并拒绝活跃 Gateway 或运行中任务，清空/恢复前必须自动创建校验通过的安全备份。
+- 数据库检查、备份、清空和恢复统一经过 `DatabaseMaintenanceService`；CLI 清空/恢复必须显式确认并拒绝运行中任务，且只可自动停启 PID 与当前数据库新鲜 ready 锁一致的 PM2 Gateway；前台或无法确认归属的进程必须拒绝误杀。清空/恢复前必须自动创建校验通过的安全备份，默认在操作失败时也恢复原 Gateway 状态，`--keep-stopped` 除外。
 - Dashboard 清空只能豁免当前 Gateway PID，仍必须服务端确认、拒绝运行中任务并在同一事务内先备份后删除；不得恢复为直接 `DELETE` 三张表的路由实现。
 - Dashboard 的浏览器写请求必须通过同源检查，数据库字符串进入 HTML 前必须调用 `esc`；API 的 ID、状态和配置不得直接断言类型。
 

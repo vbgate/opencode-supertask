@@ -22,6 +22,10 @@ export type EnsureGatewayResult =
     | { ok: true; action: "already-running" | "started" | "restarted" }
     | { ok: false; reason: "pm2-not-installed" };
 
+export interface GatewayMaintenanceState {
+    wasRunning: boolean;
+}
+
 export function getPackageVersion(): string {
     const envVersion = process.env.npm_package_version;
     if (envVersion) return envVersion;
@@ -268,6 +272,35 @@ function waitForGatewayReady(pid: number): boolean {
         Atomics.wait(sleeper, 0, 0, 100);
     }
     return isGatewayReady(pid);
+}
+
+export function stopGatewayForMaintenance(): GatewayMaintenanceState {
+    if (!isPm2Installed()) return { wasRunning: false };
+
+    const proc = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    const managedCurrentDatabase = proc?.pm2_env?.status === "online"
+        && typeof proc.pid === "number"
+        && isGatewayReady(proc.pid);
+    if (!managedCurrentDatabase) return { wasRunning: false };
+
+    requirePm2(["stop", PROCESS_NAME], "pm2 stop Gateway for database maintenance");
+    return { wasRunning: true };
+}
+
+export function restartGatewayAfterMaintenance(state: GatewayMaintenanceState): boolean {
+    if (!state.wasRunning) return false;
+
+    requirePm2(["start", PROCESS_NAME], "pm2 restart Gateway after database maintenance");
+    const started = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    if (started?.pm2_env?.status !== "online") {
+        throw new Error(
+            `[supertask] Gateway 数据库维护后未恢复 online（状态：${started?.pm2_env?.status ?? "missing"}）`,
+        );
+    }
+    if (typeof started.pid !== "number" || !waitForGatewayReady(started.pid)) {
+        throw new Error("[supertask] Gateway 数据库维护后已 online，但未在限定时间内就绪；请查看 pm2 logs supertask-gateway");
+    }
+    return true;
 }
 
 function findBunPath(): string {
