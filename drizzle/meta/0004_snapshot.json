@@ -1,8 +1,8 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "f9e6bdaa-5d53-428f-ba2a-6d1d2deee5b3",
-  "prevId": "9138ed98-286a-46b2-bcc0-fd905755e789",
+  "id": "ad7e4a09-7706-42fe-be2e-a2f1f91976fe",
+  "prevId": "f9e6bdaa-5d53-428f-ba2a-6d1d2deee5b3",
   "tables": {
     "task_runs": {
       "name": "task_runs",
@@ -100,7 +100,25 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "task_runs_task_started_idx": {
+          "name": "task_runs_task_started_idx",
+          "columns": [
+            "task_id",
+            "started_at",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "task_runs_status_heartbeat_idx": {
+          "name": "task_runs_status_heartbeat_idx",
+          "columns": [
+            "status",
+            "heartbeat_at"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {
         "task_runs_task_id_tasks_id_fk": {
           "name": "task_runs_task_id_tasks_id_fk",
@@ -112,7 +130,7 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "no action",
+          "onDelete": "cascade",
           "onUpdate": "no action"
         }
       },
@@ -190,6 +208,13 @@
           "autoincrement": false,
           "default": 3
         },
+        "batch_id": {
+          "name": "batch_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "schedule_type": {
           "name": "schedule_type",
           "type": "text",
@@ -242,6 +267,13 @@
           "autoincrement": false,
           "default": 30000
         },
+        "timeout_ms": {
+          "name": "timeout_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "last_run_at": {
           "name": "last_run_at",
           "type": "integer",
@@ -281,7 +313,17 @@
           "default": 0
         }
       },
-      "indexes": {},
+      "indexes": {
+        "task_templates_due_idx": {
+          "name": "task_templates_due_idx",
+          "columns": [
+            "enabled",
+            "next_run_at",
+            "id"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -371,13 +413,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "session_id": {
-          "name": "session_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -430,6 +465,14 @@
           "autoincrement": false,
           "default": 3
         },
+        "retry_backoff_ms": {
+          "name": "retry_backoff_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false,
+          "default": 30000
+        },
         "retry_after": {
           "name": "retry_after",
           "type": "integer",
@@ -459,7 +502,36 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "tasks_queue_idx": {
+          "name": "tasks_queue_idx",
+          "columns": [
+            "status",
+            "retry_after",
+            "urgency",
+            "importance",
+            "created_at",
+            "id"
+          ],
+          "isUnique": false
+        },
+        "tasks_batch_status_idx": {
+          "name": "tasks_batch_status_idx",
+          "columns": [
+            "batch_id",
+            "status"
+          ],
+          "isUnique": false
+        },
+        "tasks_template_status_idx": {
+          "name": "tasks_template_status_idx",
+          "columns": [
+            "template_id",
+            "status"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

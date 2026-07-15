@@ -47,6 +47,19 @@ describe('checkHeartbeats', () => {
         expect(updatedTask!.retryCount).toBe(1);
     });
 
+    test('心跳超时使用任务自己的退避基础间隔', async () => {
+        const task = await createTask({ maxRetries: 1, retryBackoffMs: 5000 });
+        await TaskService.start(task.id);
+        await TaskRunService.create({ taskId: task.id, status: 'running' });
+        const before = Date.now();
+
+        await checkHeartbeats(-100000);
+
+        const updatedTask = await TaskService.getById(task.id);
+        expect(updatedTask!.retryAfter!).toBeGreaterThanOrEqual(before + 5000);
+        expect(updatedTask!.retryAfter!).toBeLessThanOrEqual(Date.now() + 5000);
+    });
+
     test('多次心跳超时后达到 dead_letter', async () => {
         const task = await createTask({ maxRetries: 1 });
         await TaskService.start(task.id);

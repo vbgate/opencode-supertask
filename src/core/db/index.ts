@@ -47,11 +47,20 @@ function initDb() {
     _db = drizzle(_sqlite, { schema });
 
     if (!_migrationRan) {
-        _migrationRan = true;
         try {
             migrate(_db, { migrationsFolder: getMigrationsFolder() });
+            _sqlite.exec('PRAGMA foreign_keys = ON;');
+            const violations = _sqlite.query('PRAGMA foreign_key_check;').all();
+            if (violations.length > 0) {
+                throw new Error(`检测到 ${violations.length} 条孤立关联记录，请先修复数据再启动`);
+            }
+            _migrationRan = true;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
+            _migrationRan = false;
+            _sqlite.close();
+            _sqlite = null;
+            _db = null;
             console.error(`[supertask] migration failed: ${msg}`);
             throw new Error(`[supertask] DB migration failed: ${msg}`);
         }
@@ -75,6 +84,7 @@ export function closeDb() {
         _sqlite.close();
         _sqlite = null;
         _db = null;
+        _migrationRan = false;
     }
 }
 

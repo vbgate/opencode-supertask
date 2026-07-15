@@ -29,6 +29,13 @@
       "when": 1778052887048,
       "tag": "0003_giant_polaris",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1784101521330,
+      "tag": "0004_reliability_fields",
+      "breakpoints": true
     }
   ]
 }

@@ -18,8 +18,33 @@ export class TaskService {
     }
 
     static async add(data: NewTask): Promise<Task> {
+        this.validateNewTask(data);
         const result = await db.insert(tasks).values(data).returning();
         return result[0];
+    }
+
+    private static validateNewTask(data: NewTask): void {
+        if (!data.name.trim()) throw new Error('name 不能为空');
+        if (!data.agent.trim()) throw new Error('agent 不能为空');
+        if (!data.prompt.trim()) throw new Error('prompt 不能为空');
+        this.validateInteger('importance', data.importance, 1, 5);
+        this.validateInteger('urgency', data.urgency, 1, 5);
+        this.validateInteger('maxRetries', data.maxRetries, 0, 1000);
+        this.validateInteger('retryBackoffMs', data.retryBackoffMs, 0, 86_400_000);
+        this.validateInteger('timeoutMs', data.timeoutMs, 1000, 604_800_000);
+        this.validateInteger('dependsOn', data.dependsOn, 1, Number.MAX_SAFE_INTEGER);
+    }
+
+    private static validateInteger(
+        name: string,
+        value: number | null | undefined,
+        min: number,
+        max: number,
+    ): void {
+        if (value === undefined || value === null) return;
+        if (!Number.isInteger(value) || value < min || value > max) {
+            throw new Error(`${name} 必须是 ${min} 到 ${max} 之间的整数`);
+        }
     }
 
     static async next(
@@ -160,7 +185,10 @@ export class TaskService {
                 retryCount: newRetryCount,
                 retryAfter: isDeadLetter
                     ? null
-                    : (options?.retryAfterMs ?? Date.now() + computeBackoff(newRetryCount)),
+                    : (options?.retryAfterMs ?? Date.now() + computeBackoff(
+                        newRetryCount,
+                        current.retryBackoffMs ?? 30000,
+                    )),
             })
             .where(and(...conditions))
             .returning();

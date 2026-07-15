@@ -1,7 +1,7 @@
 // 任务表 Schema
 // 用于存储 AI Agent 的通用任务队列
 
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { index, sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
 
 export const tasks = sqliteTable('tasks', {
     id: integer('id').primaryKey({ autoIncrement: true }),
@@ -35,13 +35,18 @@ export const tasks = sqliteTable('tasks', {
     resultLog: text('result_log'),
     retryCount: integer('retry_count').default(0),
     maxRetries: integer('max_retries').default(3),
+    retryBackoffMs: integer('retry_backoff_ms').default(30000),
 
     // Gateway 扩展字段（毫秒）
     retryAfter: integer('retry_after'),
     timeoutMs: integer('timeout_ms'),
     templateId: integer('template_id'),
     scheduledAt: integer('scheduled_at'),
-});
+}, (table) => [
+    index('tasks_queue_idx').on(table.status, table.retryAfter, table.urgency, table.importance, table.createdAt, table.id),
+    index('tasks_batch_status_idx').on(table.batchId, table.status),
+    index('tasks_template_status_idx').on(table.templateId, table.status),
+]);
 
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
@@ -57,7 +62,7 @@ export const TASK_CATEGORIES = [
 
 export const taskRuns = sqliteTable('task_runs', {
     id: integer('id').primaryKey({ autoIncrement: true }),
-    taskId: integer('task_id').notNull().references(() => tasks.id),
+    taskId: integer('task_id').notNull().references(() => tasks.id, { onDelete: 'cascade' }),
 
     sessionId: text('session_id'),
     model: text('model'),
@@ -75,7 +80,10 @@ export const taskRuns = sqliteTable('task_runs', {
     heartbeatAt: integer('heartbeat_at'),
     workerPid: integer('worker_pid'),
     childPid: integer('child_pid'),
-});
+}, (table) => [
+    index('task_runs_task_started_idx').on(table.taskId, table.startedAt, table.id),
+    index('task_runs_status_heartbeat_idx').on(table.status, table.heartbeatAt),
+]);
 
 export type TaskRun = typeof taskRuns.$inferSelect;
 export type NewTaskRun = typeof taskRuns.$inferInsert;
@@ -91,6 +99,7 @@ export const taskTemplates = sqliteTable('task_templates', {
     category: text('category').default('general'),
     importance: integer('importance').default(3),
     urgency: integer('urgency').default(3),
+    batchId: text('batch_id'),
 
     scheduleType: text('schedule_type').notNull(),
     cronExpr: text('cron_expr'),
@@ -100,13 +109,16 @@ export const taskTemplates = sqliteTable('task_templates', {
     maxInstances: integer('max_instances').default(1),
     maxRetries: integer('max_retries').default(3),
     retryBackoffMs: integer('retry_backoff_ms').default(30000),
+    timeoutMs: integer('timeout_ms'),
     lastRunAt: integer('last_run_at'),
     nextRunAt: integer('next_run_at'),
     enabled: integer('enabled', { mode: 'boolean' }).default(true),
 
     createdAt: integer('created_at').default(0),
     updatedAt: integer('updated_at').default(0),
-});
+}, (table) => [
+    index('task_templates_due_idx').on(table.enabled, table.nextRunAt, table.id),
+]);
 
 export type TaskTemplate = typeof taskTemplates.$inferSelect;
 export type NewTaskTemplate = typeof taskTemplates.$inferInsert;

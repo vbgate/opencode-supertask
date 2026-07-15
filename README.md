@@ -87,7 +87,8 @@ supertask ui                           # open Web Dashboard in browser
 supertask config                       # show current config
 
 # Task management
-supertask add -n "Task" -a "agent" -p "prompt" --importance 5
+supertask add -n "Task" -a "agent" -p "prompt" --importance 5 \
+  --max-retries 3 --retry-backoff "30s" --timeout "30min"
 supertask list [--status pending] [--limit 20]
 supertask get --id 1
 supertask status
@@ -100,7 +101,8 @@ supertask template add --name "Daily" --agent "gen" \
 supertask template add --name "Delayed" --agent "gen" \
   --prompt "..." --type delayed --delay "30min"
 supertask template add --name "Hourly" --agent "gen" \
-  --prompt "..." --type recurring --interval "1h"
+  --prompt "..." --type recurring --interval "1h" \
+  --batch "reports" --retry-backoff "30s" --timeout "30min"
 supertask template list
 supertask template enable --id 1
 ```
@@ -150,7 +152,7 @@ Key mechanisms:
 - **Auto-upgrade** — Plugin detects version changes and auto-reloads Gateway
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance
 - **Heartbeat** — Worker updates every 30s; Watchdog kills stale processes
-- **Exponential backoff** — 30s × 2^n, capped at 30min
+- **Exponential backoff** — configurable base × 2^n, capped at 30min
 - **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
 - **Batch isolation** — Same `batchId` serial; different `batchId` parallel
 - **Priority** — `urgency DESC → importance DESC → createdAt ASC`

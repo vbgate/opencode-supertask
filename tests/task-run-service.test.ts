@@ -60,6 +60,17 @@ describe('TaskRunService', () => {
         });
     });
 
+    test('执行记录终态不能被迟到事件覆盖', async () => {
+        const task = await createTask();
+        const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+        await TaskRunService.fail(run.id, '看门狗已判定失败');
+
+        expect(await TaskRunService.done(run.id, '迟到的 close 事件')).toBeNull();
+        const current = await TaskRunService.getById(run.id);
+        expect(current!.status).toBe('failed');
+        expect(current!.log).toBe('看门狗已判定失败');
+    });
+
     describe('fail', () => {
         test('标记为 failed', async () => {
             const task = await createTask();

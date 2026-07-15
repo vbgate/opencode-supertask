@@ -584,7 +584,10 @@ app.post('/api/templates/:id/trigger', async (c) => {
         category: tmpl.category,
         importance: tmpl.importance,
         urgency: tmpl.urgency,
+        batchId: tmpl.batchId,
         maxRetries: tmpl.maxRetries,
+        retryBackoffMs: tmpl.retryBackoffMs,
+        timeoutMs: tmpl.timeoutMs,
         templateId: tmpl.id,
     });
     return c.json({ success: true, taskId: task.id });

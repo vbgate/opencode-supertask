@@ -36,9 +36,17 @@ program
     .option('-u, --urgency <number>', '紧急程度 (1-5)', '3')
     .option('-b, --batch <batchId>', '批次 ID')
     .option('-d, --depends <taskId>', '依赖的任务 ID')
+    .option('--max-retries <number>', '首次执行之外允许的重试次数', '3')
+    .option('--retry-backoff <duration>', '重试退避基础间隔，如 30s / 5min', '30s')
+    .option('--timeout <duration>', '任务硬超时，如 30min / 2h')
     .option('-w, --cwd <path>', '(已废弃) 工作目录。系统会自动记录提交任务时的当前目录')
     .action(async (options) => withDb(async () => {
         const submitCwd = process.cwd();
+        const retryBackoffMs = parseDuration(options.retryBackoff);
+        const timeoutMs = options.timeout ? parseDuration(options.timeout) : null;
+        if (retryBackoffMs === null || (options.timeout && timeoutMs === null)) {
+            throw new Error('retry-backoff 或 timeout 格式无效');
+        }
         const task = await TaskService.add({
             name: options.name,
             agent: options.agent,
@@ -50,6 +58,9 @@ program
             batchId: options.batch,
             dependsOn: options.depends ? parseInt(options.depends) : undefined,
             cwd: submitCwd,
+            maxRetries: parseInt(options.maxRetries),
+            retryBackoffMs,
+            timeoutMs,
         });
         console.log(JSON.stringify({ id: task.id, status: 'created' }, null, 2));
     }));
@@ -228,12 +239,20 @@ program
             .option('-c, --category <category>', '分类', 'general')
             .option('-i, --importance <number>', '重要程度 1-5', '3')
             .option('-u, --urgency <number>', '紧急程度 1-5', '3')
+            .option('-b, --batch <batchId>', '模板生成任务的批次 ID')
             .option('--max-instances <number>', '最大并发实例数', '1')
             .option('--max-retries <number>', '最大重试次数', '3')
-            .option('--retry-backoff <ms>', '退避基础间隔 ms', '30000')
+            .option('--retry-backoff <duration>', '退避基础间隔，如 30s / 5min', '30s')
+            .option('--timeout <duration>', '每次任务硬超时，如 30min / 2h')
             .action(async (options) => withDb(async () => {
                 let intervalMs: number | null = null;
                 let runAt: number | null = null;
+                const retryBackoffMs = parseDuration(options.retryBackoff);
+                const timeoutMs = options.timeout ? parseDuration(options.timeout) : null;
+
+                if (retryBackoffMs === null || (options.timeout && timeoutMs === null)) {
+                    throw new Error('retry-backoff 或 timeout 格式无效');
+                }
 
                 if (options.interval) {
                     intervalMs = parseDuration(options.interval);
@@ -259,13 +278,16 @@ program
                     category: options.category,
                     importance: parseInt(options.importance),
                     urgency: parseInt(options.urgency),
+                    cwd: process.cwd(),
+                    batchId: options.batch,
                     scheduleType: options.type as ScheduleType,
                     cronExpr: options.cron,
                     intervalMs,
                     runAt,
                     maxInstances: parseInt(options.maxInstances),
                     maxRetries: parseInt(options.maxRetries),
-                    retryBackoffMs: parseInt(options.retryBackoff),
+                    retryBackoffMs,
+                    timeoutMs,
                 });
                 console.log(JSON.stringify({ id: tmpl.id, status: 'created', nextRunAt: tmpl.nextRunAt }, null, 2));
             })),

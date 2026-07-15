@@ -1,5 +1,5 @@
 import { db, schema } from '@core/db';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, asc, sql } from 'drizzle-orm';
 import { TaskService } from '@core/services/task.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
@@ -48,7 +48,10 @@ export async function cloneTaskFromTemplate(templateId: number) {
         category: tmpl.category ?? 'general',
         importance: tmpl.importance ?? 3,
         urgency: tmpl.urgency ?? 3,
+        batchId: tmpl.batchId,
         maxRetries: tmpl.maxRetries ?? 3,
+        retryBackoffMs: tmpl.retryBackoffMs ?? 30000,
+        timeoutMs: tmpl.timeoutMs,
         templateId: tmpl.id,
         scheduledAt: nowMs,
     });
@@ -78,7 +81,8 @@ export async function getDueTemplates() {
                 sql`${taskTemplates.nextRunAt} IS NOT NULL`,
                 sql`${taskTemplates.nextRunAt} <= ${nowMs}`,
             ),
-        );
+        )
+        .orderBy(asc(taskTemplates.nextRunAt), asc(taskTemplates.id));
 }
 
 export async function initializeNextRunAt(templateId: number) {

@@ -56,8 +56,9 @@ bun run db:migrate    # 手动运行数据库迁移
 - `cwd` 是任务的项目隔离键；插件默认使用提交任务时的 `process.cwd()`，查询和状态变更必须保持同一作用域。
 - 队列顺序保持 `urgency DESC → importance DESC → createdAt ASC → id ASC`；同一 `batchId` 串行，不同批次可并行，依赖任务仅在 `dependsOn` 指向的任务完成后运行。
 - `maxRetries` 表示首次执行之外允许的重试次数；失败任务按指数退避，耗尽后进入 `dead_letter`，手动重试会重置重试预算。
+- `retryBackoffMs` 和 `timeoutMs` 可按任务覆盖；调度模板克隆时必须保留 `cwd/batchId/maxRetries/retryBackoffMs/timeoutMs`。
 - Watchdog 的 `checkIntervalMs` 是心跳检查间隔，`cleanupIntervalMs` 是数据清理间隔，两者不可混用；配置经 `validateConfig` 校验后才允许运行或保存。
-- 调度模板支持 `cron | delayed | recurring`，Scheduler 将模板克隆为普通任务，并受 `maxInstances` 限制。
+- 调度模板支持 `cron | delayed | recurring`，Scheduler 将模板克隆为普通任务并受 `maxInstances` 限制；`delayed` 成功生成一次后必须自动禁用。
 
 ## 代码规范
 

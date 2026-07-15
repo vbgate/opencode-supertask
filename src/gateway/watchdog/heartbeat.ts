@@ -32,7 +32,7 @@ export async function checkHeartbeats(heartbeatTimeoutMs: number) {
                     maxRetries,
                 }));
             } else {
-                const backoffMs = computeBackoff(newRetryCount);
+                const backoffMs = computeBackoff(newRetryCount, run.taskRetryBackoffMs);
                 const retryAfter = Date.now() + backoffMs;
                 await TaskService.markPendingForRetry(run.taskId, retryAfter, newRetryCount);
                 console.log(JSON.stringify({

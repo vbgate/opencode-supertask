@@ -7,6 +7,7 @@ const { taskTemplates } = schema;
 
 export class TaskTemplateService {
     static async create(data: NewTaskTemplate): Promise<TaskTemplate> {
+        this.validate(data);
         const now = Date.now();
         const result = await db.insert(taskTemplates).values({ ...data, createdAt: now, updatedAt: now }).returning();
         const tmpl = result[0];
@@ -23,6 +24,45 @@ export class TaskTemplateService {
         }
 
         return tmpl;
+    }
+
+    private static validate(data: NewTaskTemplate): void {
+        if (!data.name.trim()) throw new Error('name 不能为空');
+        if (!data.agent.trim()) throw new Error('agent 不能为空');
+        if (!data.prompt.trim()) throw new Error('prompt 不能为空');
+
+        const scheduleType = data.scheduleType as ScheduleType;
+        if (!['cron', 'delayed', 'recurring'].includes(scheduleType)) {
+            throw new Error('scheduleType 必须是 cron、delayed 或 recurring');
+        }
+        if (scheduleType === 'cron' && (!data.cronExpr || !isValidCronExpr(data.cronExpr))) {
+            throw new Error('cronExpr 缺失或格式无效');
+        }
+        if (scheduleType === 'recurring' && (!Number.isInteger(data.intervalMs) || (data.intervalMs ?? 0) <= 0)) {
+            throw new Error('intervalMs 必须是正整数');
+        }
+        if (scheduleType === 'delayed' && (!Number.isInteger(data.runAt) || (data.runAt ?? 0) <= 0)) {
+            throw new Error('runAt 必须是正整数时间戳');
+        }
+
+        this.validateInteger('importance', data.importance, 1, 5);
+        this.validateInteger('urgency', data.urgency, 1, 5);
+        this.validateInteger('maxInstances', data.maxInstances, 1, 1000);
+        this.validateInteger('maxRetries', data.maxRetries, 0, 1000);
+        this.validateInteger('retryBackoffMs', data.retryBackoffMs, 0, 86_400_000);
+        this.validateInteger('timeoutMs', data.timeoutMs, 1000, 604_800_000);
+    }
+
+    private static validateInteger(
+        name: string,
+        value: number | null | undefined,
+        min: number,
+        max: number,
+    ): void {
+        if (value === undefined || value === null) return;
+        if (!Number.isInteger(value) || value < min || value > max) {
+            throw new Error(`${name} 必须是 ${min} 到 ${max} 之间的整数`);
+        }
     }
 
     static async list(limit = 50): Promise<TaskTemplate[]> {

@@ -27,6 +27,30 @@ describe('job-templates', () => {
             expect(task!.status).toBe('pending');
         });
 
+        test('完整传递项目、批次、超时和重试配置', async () => {
+            const tmpl = await TaskTemplateService.create({
+                name: '项目内定时任务',
+                agent: 'reviewer',
+                prompt: '检查项目',
+                cwd: '/tmp/中文项目',
+                batchId: '每日检查',
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+                maxRetries: 4,
+                retryBackoffMs: 12_345,
+                timeoutMs: 90_000,
+            });
+
+            const task = await cloneTaskFromTemplate(tmpl.id);
+            expect(task).toMatchObject({
+                cwd: '/tmp/中文项目',
+                batchId: '每日检查',
+                maxRetries: 4,
+                retryBackoffMs: 12_345,
+                timeoutMs: 90_000,
+            });
+        });
+
         test('不存在的模板返回 null', async () => {
             const result = await cloneTaskFromTemplate(99999);
             expect(result).toBeNull();
@@ -126,6 +150,31 @@ describe('job-templates', () => {
 
             const due = await getDueTemplates();
             expect(due.length).toBe(0);
+        });
+    });
+
+    describe('模板参数校验', () => {
+        const base = { name: '校验模板', agent: 'a', prompt: 'p' };
+
+        test('拒绝缺少对应调度参数的模板', async () => {
+            await expect(TaskTemplateService.create({ ...base, scheduleType: 'cron' })).rejects.toThrow('cronExpr');
+            await expect(TaskTemplateService.create({ ...base, scheduleType: 'recurring' })).rejects.toThrow('intervalMs');
+            await expect(TaskTemplateService.create({ ...base, scheduleType: 'delayed' })).rejects.toThrow('runAt');
+        });
+
+        test('拒绝无效数值，避免不可运行模板进入数据库', async () => {
+            await expect(TaskTemplateService.create({
+                ...base,
+                scheduleType: 'recurring',
+                intervalMs: 1000,
+                maxInstances: 0,
+            })).rejects.toThrow('maxInstances');
+            await expect(TaskTemplateService.create({
+                ...base,
+                scheduleType: 'recurring',
+                intervalMs: 1000,
+                retryBackoffMs: -1,
+            })).rejects.toThrow('retryBackoffMs');
         });
     });
 

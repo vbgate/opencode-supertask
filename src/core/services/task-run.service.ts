@@ -10,6 +10,7 @@ export interface StaleRunInfo {
     childPid: number | null;
     taskRetryCount: number;
     taskMaxRetries: number;
+    taskRetryBackoffMs: number;
 }
 
 export class TaskRunService {
@@ -22,7 +23,7 @@ export class TaskRunService {
         const result = await db
             .update(taskRuns)
             .set({ sessionId })
-            .where(eq(taskRuns.id, id))
+            .where(and(eq(taskRuns.id, id), eq(taskRuns.status, 'running')))
             .returning();
         return result[0] || null;
     }
@@ -35,7 +36,7 @@ export class TaskRunService {
                 finishedAt: new Date(),
                 log,
             })
-            .where(eq(taskRuns.id, id))
+            .where(and(eq(taskRuns.id, id), eq(taskRuns.status, 'running')))
             .returning();
         return result[0] || null;
     }
@@ -48,7 +49,7 @@ export class TaskRunService {
                 finishedAt: new Date(),
                 log,
             })
-            .where(eq(taskRuns.id, id))
+            .where(and(eq(taskRuns.id, id), eq(taskRuns.status, 'running')))
             .returning();
         return result[0] || null;
     }
@@ -71,7 +72,7 @@ export class TaskRunService {
                 lockedAt: Date.now(),
                 lockedBy: `gateway-${process.pid}`,
             })
-            .where(eq(taskRuns.id, id))
+            .where(and(eq(taskRuns.id, id), eq(taskRuns.status, 'running')))
             .returning();
         return result[0] || null;
     }
@@ -128,6 +129,7 @@ export class TaskRunService {
                 childPid: taskRuns.childPid,
                 taskRetryCount: tasksTable.retryCount,
                 taskMaxRetries: tasksTable.maxRetries,
+                taskRetryBackoffMs: tasksTable.retryBackoffMs,
             })
             .from(taskRuns)
             .innerJoin(tasksTable, eq(taskRuns.taskId, tasksTable.id))
@@ -152,6 +154,7 @@ export class TaskRunService {
             childPid: row.childPid,
             taskRetryCount: row.taskRetryCount ?? 0,
             taskMaxRetries: row.taskMaxRetries ?? 3,
+            taskRetryBackoffMs: row.taskRetryBackoffMs ?? 30000,
         }));
     }
 

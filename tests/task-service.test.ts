@@ -47,6 +47,13 @@ describe('TaskService', () => {
             expect(task.cwd).toBe('/project');
             expect(task.maxRetries).toBe(5);
         });
+
+        test('拒绝不可执行的任务参数', async () => {
+            await expect(TaskService.add({ name: '', agent: 'a', prompt: 'p' })).rejects.toThrow('name');
+            await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', importance: 6 })).rejects.toThrow('importance');
+            await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', maxRetries: -1 })).rejects.toThrow('maxRetries');
+            await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', timeoutMs: 999 })).rejects.toThrow('timeoutMs');
+        });
     });
 
     describe('getById', () => {
@@ -401,6 +408,22 @@ describe('TaskService', () => {
             const customRetry = Date.now() + 120000;
             const failed = await TaskService.fail(task.id, '自定义延迟', {}, { retryAfterMs: customRetry });
             expect(failed!.retryAfter).toBe(customRetry);
+        });
+
+        test('任务级 retryBackoffMs 控制自动退避', async () => {
+            const task = await TaskService.add({
+                name: '自定义退避',
+                agent: 'test',
+                prompt: '测试',
+                maxRetries: 1,
+                retryBackoffMs: 5000,
+            });
+            await TaskService.start(task.id);
+            const before = Date.now();
+            const failed = await TaskService.fail(task.id, '失败');
+
+            expect(failed!.retryAfter!).toBeGreaterThanOrEqual(before + 5000);
+            expect(failed!.retryAfter!).toBeLessThanOrEqual(Date.now() + 5000);
         });
 
         test('对不存在任务返回 null', async () => {

@@ -153,6 +153,9 @@ export const SuperTaskPlugin: Plugin = async () => {
                     urgency: tool.schema.number().optional().describe("紧急程度 1-5（5 最紧急）"),
                     batchId: tool.schema.string().optional().describe("批次 ID，用于分组管理"),
                     dependsOn: tool.schema.number().optional().describe("依赖的任务 ID，该任务完成后才会执行"),
+                    max_retries: tool.schema.number().optional().describe("首次执行之外允许的重试次数，默认 3"),
+                    retry_backoff_ms: tool.schema.number().optional().describe("重试退避基础间隔 ms，默认 30000"),
+                    timeout_ms: tool.schema.number().optional().describe("任务硬超时 ms；未传则使用 Gateway 默认值"),
                     cwd: tool.schema
                         .string()
                         .optional()
@@ -175,6 +178,9 @@ export const SuperTaskPlugin: Plugin = async () => {
                             batchId: args.batchId,
                             dependsOn: args.dependsOn,
                             cwd: submitCwd,
+                            maxRetries: args.max_retries,
+                            retryBackoffMs: args.retry_backoff_ms,
+                            timeoutMs: args.timeout_ms,
                         });
                         return JSON.stringify({ id: task.id, status: "created" });
                     } catch (error) {
@@ -467,6 +473,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                     max_instances: tool.schema.number().optional().describe("最大并发实例数，默认 1"),
                     max_retries: tool.schema.number().optional().describe("克隆给 task 的最大重试次数，默认 3"),
                     retry_backoff_ms: tool.schema.number().optional().describe("克隆给 task 的退避基础间隔 ms，默认 30000"),
+                    timeout_ms: tool.schema.number().optional().describe("克隆给 task 的硬超时 ms；未传则使用 Gateway 默认值"),
                 },
                 async execute(args) {
                     try {
@@ -502,6 +509,8 @@ export const SuperTaskPlugin: Plugin = async () => {
                             category: args.category ?? "general",
                             importance: args.importance ?? 3,
                             urgency: args.urgency ?? 3,
+                            cwd: process.cwd(),
+                            batchId: args.batchId,
                             scheduleType,
                             cronExpr,
                             intervalMs,
@@ -509,6 +518,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                             maxInstances: args.max_instances,
                             maxRetries: args.max_retries,
                             retryBackoffMs: args.retry_backoff_ms,
+                            timeoutMs: args.timeout_ms,
                         });
                         return JSON.stringify({
                             id: tmpl.id,
