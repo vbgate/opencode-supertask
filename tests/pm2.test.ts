@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
     ensureGateway,
     getPackageVersion,
+    installMacLaunchAgent,
     isGatewayRunning,
     resolveGatewayEntry,
     upgrade,
@@ -19,6 +20,8 @@ const originalEnv = {
     db: process.env.SUPERTASK_DB_PATH,
     readyTimeout: process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS,
     killTimeout: process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS,
+    launchAgent: process.env.SUPERTASK_LAUNCH_AGENT_PATH,
+    launchctl: process.env.SUPERTASK_LAUNCHCTL_BIN,
 };
 
 afterEach(() => {
@@ -30,6 +33,8 @@ afterEach(() => {
     restoreEnv('SUPERTASK_DB_PATH', originalEnv.db);
     restoreEnv('SUPERTASK_GATEWAY_READY_TIMEOUT_MS', originalEnv.readyTimeout);
     restoreEnv('SUPERTASK_PM2_KILL_TIMEOUT_MS', originalEnv.killTimeout);
+    restoreEnv('SUPERTASK_LAUNCH_AGENT_PATH', originalEnv.launchAgent);
+    restoreEnv('SUPERTASK_LAUNCHCTL_BIN', originalEnv.launchctl);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -38,6 +43,36 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 describe('PM2 Gateway 管理', () => {
+    test('macOS 用户级 LaunchAgent 使用 pm2 resurrect 且无需 sudo', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-launch-agent-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2 & tool');
+        const fakeLaunchctl = join(dir, 'launchctl');
+        const launchctlLog = join(dir, 'launchctl.jsonl');
+        const plist = join(dir, 'LaunchAgents', 'supertask.plist');
+        writeFileSync(fakePm2, '');
+        writeFileSync(fakeLaunchctl, `#!/usr/bin/env bun
+import { appendFileSync } from 'fs';
+appendFileSync(${JSON.stringify(launchctlLog)}, JSON.stringify(Bun.argv.slice(2)) + '\\n');
+`);
+        chmodSync(fakeLaunchctl, 0o755);
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_LAUNCHCTL_BIN = fakeLaunchctl;
+        process.env.SUPERTASK_LAUNCH_AGENT_PATH = plist;
+
+        expect(installMacLaunchAgent()).toBe(plist);
+        const contents = readFileSync(plist, 'utf8');
+        expect(contents).toContain('com.supertask.pm2-resurrect');
+        expect(contents).toContain(`${fakePm2.replace('&', '&amp;')}`);
+        expect(contents).toContain('<string>resurrect</string>');
+        const calls = readFileSync(launchctlLog, 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line) as string[]);
+        expect(calls).toEqual([
+            ['bootout', `gui/${process.getuid()}/com.supertask.pm2-resurrect`],
+            ['bootstrap', `gui/${process.getuid()}`, plist],
+        ]);
+    });
+
     test('源码和构建目录都使用真实包版本与可用 Gateway 入口', () => {
         const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as { version: string };
         expect(getPackageVersion()).toBe(pkg.version);

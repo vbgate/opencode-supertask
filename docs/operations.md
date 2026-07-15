@@ -14,7 +14,7 @@ PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler�
 | 长期后台运行 | `supertask install` | 是；缺失时会显式全局安装 |
 | 打开已运行 Gateway 的 Dashboard | `supertask ui` | 否；该命令只打开浏览器 |
 
-`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次重启，并把 PM2 kill timeout 设为 drain 宽限期加 5 秒；随后执行 `pm2 save` 并尝试配置 `pm2 startup`。如果系统启动项需要管理员命令，必须按 PM2 输出手工完成。
+`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次重启，并把 PM2 kill timeout 设为 drain 宽限期加 5 秒，随后执行 `pm2 save`。macOS 会直接安装用户级 `~/Library/LaunchAgents/com.supertask.pm2-resurrect.plist`，登录时运行 `pm2 resurrect`，不需要 sudo；其他系统继续使用 `pm2 startup`，如果需要管理员命令则按 PM2 输出手工完成。
 
 插件加载时会检查 `gateway_lock`：已有新鲜心跳就不处理；没有运行实例且机器已安装 PM2 时，会启动或按包版本重启 Gateway；没有 PM2 时只提示用户，不会静默安装全局依赖。
 

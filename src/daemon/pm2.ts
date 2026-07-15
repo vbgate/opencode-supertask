@@ -1,13 +1,14 @@
 import { execSync, spawnSync } from "child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, join } from "path";
+import { dirname, isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
 import { Database } from "bun:sqlite";
 import { loadConfig } from "../gateway/config";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROCESS_NAME = "supertask-gateway";
+const MAC_LAUNCH_AGENT_LABEL = "com.supertask.pm2-resurrect";
 
 interface Pm2Process {
     name: string;
@@ -74,6 +75,97 @@ function writeRunningVersion(version: string): void {
 function pm2Bin(): string {
     return process.env.SUPERTASK_PM2_BIN
         ?? (process.platform === "win32" ? "pm2.cmd" : "pm2");
+}
+
+function xmlEscape(value: string): string {
+    return value
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&apos;");
+}
+
+function resolvePm2Bin(): string {
+    const configured = pm2Bin();
+    if (isAbsolute(configured)) return configured;
+    const result = spawnSync("which", [configured], { encoding: "utf8" });
+    const resolved = result.status === 0 ? result.stdout.trim().split("\n")[0] : "";
+    if (!resolved) throw new Error(`[supertask] 无法解析 pm2 可执行文件: ${configured}`);
+    return resolved;
+}
+
+function launchAgentPath(): string {
+    return process.env.SUPERTASK_LAUNCH_AGENT_PATH
+        ?? join(homedir(), "Library/LaunchAgents", `${MAC_LAUNCH_AGENT_LABEL}.plist`);
+}
+
+function launchctlBin(): string {
+    return process.env.SUPERTASK_LAUNCHCTL_BIN ?? "launchctl";
+}
+
+export function installMacLaunchAgent(): string {
+    if (typeof process.getuid !== "function") {
+        throw new Error("[supertask] 当前运行时无法获取 macOS 用户 ID");
+    }
+
+    const path = launchAgentPath();
+    const home = homedir();
+    const pm2Home = process.env.PM2_HOME ?? join(home, ".pm2");
+    const environmentPath = process.env.PATH
+        ?? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>${MAC_LAUNCH_AGENT_LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>${xmlEscape(resolvePm2Bin())}</string>
+      <string>resurrect</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+      <key>SuccessfulExit</key>
+      <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>HOME</key>
+      <string>${xmlEscape(home)}</string>
+      <key>PATH</key>
+      <string>${xmlEscape(environmentPath)}</string>
+      <key>PM2_HOME</key>
+      <string>${xmlEscape(pm2Home)}</string>
+    </dict>
+    <key>StandardErrorPath</key>
+    <string>${xmlEscape(join(pm2Home, "supertask-launchd-error.log"))}</string>
+    <key>StandardOutPath</key>
+    <string>${xmlEscape(join(pm2Home, "supertask-launchd-output.log"))}</string>
+  </dict>
+</plist>
+`;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, plist, { mode: 0o600 });
+    chmodSync(path, 0o600);
+
+    const domain = `gui/${process.getuid()}`;
+    spawnSync(launchctlBin(), ["bootout", `${domain}/${MAC_LAUNCH_AGENT_LABEL}`], {
+        stdio: "ignore",
+    });
+    const loaded = spawnSync(launchctlBin(), ["bootstrap", domain, path], {
+        encoding: "utf8",
+    });
+    if (loaded.status !== 0) {
+        const output = `${loaded.stdout ?? ""}${loaded.stderr ?? ""}`.trim();
+        throw new Error(`[supertask] macOS LaunchAgent 加载失败: ${output || `退出码 ${loaded.status}`}`);
+    }
+    return path;
 }
 
 export function isPm2Installed(): boolean {
@@ -236,10 +328,19 @@ export function install(): void {
     writeRunningVersion(version);
     savePm2State();
 
-    const startup = pm2Exec(["startup"]);
-    if (startup.output) console.log(startup.output);
-    if (!startup.ok) {
-        console.warn("[supertask] pm2 startup 未完成；请按 pm2 输出执行需要管理员权限的命令，然后运行 `pm2 save`。");
+    if (process.platform === "darwin") {
+        try {
+            const path = installMacLaunchAgent();
+            console.log(`[supertask] macOS LaunchAgent installed: ${path}`);
+        } catch (error) {
+            console.warn(error instanceof Error ? error.message : String(error));
+        }
+    } else {
+        const startup = pm2Exec(["startup"]);
+        if (startup.output) console.log(startup.output);
+        if (!startup.ok) {
+            console.warn("[supertask] pm2 startup 未完成；请按 pm2 输出执行需要管理员权限的命令，然后运行 `pm2 save`。");
+        }
     }
 
     console.log("[supertask] Gateway installed and running.");
