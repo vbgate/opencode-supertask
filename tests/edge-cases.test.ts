@@ -65,6 +65,22 @@ describe('边界条件测试', () => {
             expect(found).not.toBeNull();
         });
 
+        test('deleteOlderThan 保留仍被可执行任务依赖的前置任务', async () => {
+            const prerequisite = await TaskService.add({ name: '旧前置任务', agent: 'a', prompt: 'p' });
+            await TaskService.start(prerequisite.id);
+            await TaskService.done(prerequisite.id);
+            const dependent = await TaskService.add({
+                name: '待执行依赖任务',
+                agent: 'a',
+                prompt: 'p',
+                dependsOn: prerequisite.id,
+            });
+
+            expect(await TaskService.deleteOlderThan(-1)).toBe(0);
+            expect(await TaskService.getById(prerequisite.id)).not.toBeNull();
+            expect(await TaskService.getById(dependent.id)).not.toBeNull();
+        });
+
         test('stats 按 batchId 过滤', async () => {
             await TaskService.add({ name: 'T1', agent: 'a', prompt: 'p', batchId: 'b1' });
             await TaskService.add({ name: 'T2', agent: 'a', prompt: 'p', batchId: 'b2' });

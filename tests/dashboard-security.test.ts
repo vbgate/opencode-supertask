@@ -42,6 +42,35 @@ describe('Dashboard 安全边界', () => {
         expect(await TaskService.getById(task.id)).toBeNull();
     });
 
+    test('运行中任务必须先取消，不能从 Dashboard 直接删除', async () => {
+        const task = await TaskService.add({ name: '运行中任务', agent: 'a', prompt: 'p' });
+        await TaskService.start(task.id);
+        await TaskRunService.create({ taskId: task.id, status: 'running' });
+
+        const blocked = await dashboardApp.request(`http://localhost/api/tasks/${task.id}`, {
+            method: 'DELETE',
+            headers: { Origin: 'http://localhost' },
+        });
+        expect(blocked.status).toBe(409);
+        expect((await blocked.json() as { error: string }).error).toContain('请先取消任务');
+
+        const cancelled = await dashboardApp.request(`http://localhost/api/tasks/${task.id}/cancel`, {
+            method: 'POST',
+            headers: { Origin: 'http://localhost' },
+        });
+        expect(cancelled.status).toBe(200);
+        expect((await TaskService.getById(task.id))?.status).toBe('cancelled');
+
+        const cancellingHtml = await (await dashboardApp.request('http://localhost/')).text();
+        expect(cancellingHtml).not.toContain(`onclick="deleteTask(${task.id})"`);
+
+        const stillRunning = await dashboardApp.request(`http://localhost/api/tasks/${task.id}`, {
+            method: 'DELETE',
+            headers: { Origin: 'http://localhost' },
+        });
+        expect(stillRunning.status).toBe(409);
+    });
+
     test('任务、模板和日志字符串在 HTML 中完整转义', async () => {
         const task = await TaskService.add({
             name: '<img src=x onerror=alert(1)>',

@@ -70,6 +70,7 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - `maxRetries` 表示首次执行之外允许的重试次数；失败任务按指数退避，耗尽后进入 `dead_letter`，手动重试会重置重试预算。
 - `retryBackoffMs` 和 `timeoutMs` 可按任务覆盖；调度模板克隆时必须保留 `cwd/batchId/maxRetries/retryBackoffMs/timeoutMs`。
 - 运行中任务进入 `cancelled` 后，Worker 必须在轮询周期内终止对应进程树并关闭 run；Gateway 关闭时先按 `shutdownGracePeriodMs` drain，只有剩余任务才重置为 `pending`。
+- 删除任务必须拒绝 `running` 状态、仍有 `running` 执行记录，或仍被 `pending/running/failed/dead_letter` 任务依赖的前置任务；手动删除与过期清理都必须防止子进程失联和依赖悬空。
 - Watchdog 处理数据库中的旧 PID 前必须校验进程命令与配置的 OpenCode 可执行文件匹配；Unix 上仅对确认的独立进程组发送信号。
 - Watchdog 的 `checkIntervalMs` 是心跳检查间隔，`cleanupIntervalMs` 是数据清理间隔，两者不可混用；配置经 `validateConfig` 校验后才允许运行或保存。
 - 调度模板支持 `cron | delayed | recurring`，Scheduler 将模板克隆为普通任务并受 `maxInstances` 限制；`delayed` 成功生成一次后必须自动禁用。
@@ -92,6 +93,7 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - Service 层测试直接调用静态方法，不经过 CLI
 - CLI 集成测试通过 `execSync` 子进程执行，并用临时 `SUPERTASK_DB_PATH`，不得读写用户真实数据库
 - `db check/backup/clear/restore` 的交互式 stdout 必须人类可读；非 TTY 或显式 `--json` 必须保持可解析 JSON，成功与错误都要覆盖这三种模式
+- `db check` 报告 `ok=false` 时必须返回非零退出码；CLI 数字参数必须完整匹配整数，不得用 `parseInt` 接受尾随字符或截断小数
 - Gateway 构建产物 E2E 必须使用隔离数据库和假 OpenCode 可执行文件覆盖普通任务、失败重试、`delayed`、`recurring` 和 `cron`，不得为测试调用真实模型
 
 ## 发布流程

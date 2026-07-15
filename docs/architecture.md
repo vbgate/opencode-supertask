@@ -93,6 +93,7 @@ pending / running / failed ──cancel──> cancelled
 - 普通失败保存为 `failed`；退避到期后 Worker 可以直接重新抢占。Watchdog 恢复则保存为带 `retryAfter` 的 `pending`。
 - 超出预算进入 `dead_letter`，不会自动执行；手动 retry 将状态改回 `pending`，并把 `retryCount` 清零。
 - 单次任务可覆盖 `maxRetries`、`retryBackoffMs` 和 `timeoutMs`；模板克隆时会复制这些字段。
+- 删除不是运行态迁移：`running` 任务或仍存在 `running` 执行记录的任务必须先取消并等待 Worker 关闭 run；仍被 `pending/running/failed/dead_letter` 任务依赖的前置任务也拒绝删除。手动删除和 Watchdog 过期清理都遵守依赖保护，避免制造悬空任务。
 
 ## 并发、超时与故障恢复
 

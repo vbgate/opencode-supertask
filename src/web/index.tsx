@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { html } from 'hono/html';
-import { TaskService } from '@core/services/task.service';
+import { TaskDeletionConflictError, TaskService } from '@core/services/task.service';
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import {
@@ -208,8 +208,9 @@ const SHARED_STYLES = html`
 function renderLayout(title: string, activeTab: string, body: string): string {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>${title} - SuperTask</title>${SHARED_STYLES}
 <script>
-async function retryTask(id){if(!confirm('确定重试任务 #'+id+'?'))return;await fetch('/api/tasks/'+id+'/retry',{method:'POST'});location.reload();}
-async function deleteTask(id){if(!confirm('确定删除任务 #'+id+'?'))return;await fetch('/api/tasks/'+id,{method:'DELETE'});location.reload();}
+async function retryTask(id){if(!confirm('确定重试任务 #'+id+'?'))return;const r=await fetch('/api/tasks/'+id+'/retry',{method:'POST'});const d=await r.json();if(!r.ok){alert('重试失败: '+d.error);return;}location.reload();}
+async function cancelTask(id){if(!confirm('确定取消任务 #'+id+'?'))return;const r=await fetch('/api/tasks/'+id+'/cancel',{method:'POST'});const d=await r.json();if(!r.ok){alert('取消失败: '+d.error);return;}location.reload();}
+async function deleteTask(id){if(!confirm('确定删除任务 #'+id+'?'))return;const r=await fetch('/api/tasks/'+id,{method:'DELETE'});const d=await r.json();if(!r.ok){alert('删除失败: '+d.error);return;}location.reload();}
 async function showDetail(id){try{const r=await fetch('/api/tasks/'+id);const t=await r.json();document.getElementById('dc').textContent=JSON.stringify(t,null,2);document.getElementById('dd').showModal();}catch(e){alert('获取详情失败');}}
 async function showRunDetail(id){try{const r=await fetch('/api/runs/'+id);const t=await r.json();document.getElementById('dc').textContent=JSON.stringify(t,null,2);document.getElementById('dd').showModal();}catch(e){alert('获取详情失败');}}
 async function showTemplateDetail(id){try{const r=await fetch('/api/templates/'+id);const t=await r.json();document.getElementById('dc').textContent=JSON.stringify(t,null,2);document.getElementById('dd').showModal();}catch(e){alert('获取详情失败');}}
@@ -318,6 +319,7 @@ app.get('/', async (c) => {
     for (const task of tasks) {
         const status = safeStatus(task.status);
         const st = status.toUpperCase();
+        const executionActive = latestRuns.get(task.id)?.status === 'running';
         rows += `<tr>
           <td class="mu">#${task.id}</td>
           <td><div style="font-weight:500">${esc(task.name)}</div><div class="mu sm el">${esc(task.prompt.substring(0, 120))}</div></td>
@@ -328,7 +330,8 @@ app.get('/', async (c) => {
           <td>
             <button class="btn btn-sm" onclick="showDetail(${task.id})">详情</button>
             ${(task.status === 'failed' || task.status === 'dead_letter') ? `<button class="btn btn-sm btn-warn" onclick="retryTask(${task.id})">重试</button>` : ''}
-            <button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id})">删除</button>
+            ${['pending', 'running', 'failed'].includes(task.status ?? '') ? `<button class="btn btn-sm btn-warn" onclick="cancelTask(${task.id})">取消</button>` : ''}
+            ${task.status === 'running' || executionActive ? '' : `<button class="btn btn-sm btn-danger" onclick="deleteTask(${task.id})">删除</button>`}
           </td></tr>`;
     }
 
@@ -624,11 +627,28 @@ app.post('/api/tasks/:id/retry', async (c) => {
         : c.json({ error: 'not found' }, 404);
 });
 
+app.post('/api/tasks/:id/cancel', async (c) => {
+    const id = parsePositiveInteger(c.req.param('id'));
+    if (id === null) return c.json({ error: 'invalid id' }, 400);
+    const task = await TaskService.cancel(id);
+    if (task) return c.json({ success: true });
+    return await TaskService.getById(id)
+        ? c.json({ error: 'task status does not allow cancellation' }, 409)
+        : c.json({ error: 'not found' }, 404);
+});
+
 app.delete('/api/tasks/:id', async (c) => {
     const id = parsePositiveInteger(c.req.param('id'));
     if (id === null) return c.json({ error: 'invalid id' }, 400);
-    const deleted = await TaskService.delete(id);
-    return deleted ? c.json({ success: true }) : c.json({ error: 'not found' }, 404);
+    try {
+        const deleted = await TaskService.delete(id);
+        return deleted ? c.json({ success: true }) : c.json({ error: 'not found' }, 404);
+    } catch (error) {
+        if (error instanceof TaskDeletionConflictError) {
+            return c.json({ error: error.message }, 409);
+        }
+        throw error;
+    }
 });
 
 app.post('/api/templates/:id/enable', async (c) => {

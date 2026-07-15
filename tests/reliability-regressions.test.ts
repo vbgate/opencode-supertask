@@ -93,7 +93,10 @@ describe('可靠性回归', () => {
             agent: 'test-agent',
             prompt: '删除后不能残留运行记录',
         });
+        await TaskService.start(task.id);
         const run = await TaskRunService.create({ taskId: task.id });
+        await TaskRunService.done(run.id, '执行完成');
+        await TaskService.done(task.id, '执行完成');
 
         expect(await TaskService.delete(task.id)).toBe(true);
         expect(await TaskRunService.getById(run.id)).toBeNull();

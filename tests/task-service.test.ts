@@ -667,6 +667,38 @@ describe('TaskService', () => {
             const result = await TaskService.delete(99999);
             expect(result).toBe(false);
         });
+
+        test('拒绝直接删除 running 任务', async () => {
+            const task = await TaskService.add({ name: '运行中任务', agent: 'a', prompt: 'p' });
+            await TaskService.start(task.id);
+
+            expect(TaskService.delete(task.id)).rejects.toThrow('请先取消任务');
+            expect((await TaskService.getById(task.id))?.status).toBe('running');
+        });
+
+        test('取消后仍有 running 执行记录时继续拒绝删除', async () => {
+            const task = await TaskService.add({ name: '取消收敛中任务', agent: 'a', prompt: 'p' });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskService.cancel(task.id);
+
+            expect(TaskService.delete(task.id)).rejects.toThrow('等待执行进程退出');
+            await TaskRunService.fail(run.id, '任务已取消');
+            expect(await TaskService.delete(task.id)).toBe(true);
+        });
+
+        test('仍被可执行任务依赖时拒绝删除前置任务', async () => {
+            const prerequisite = await TaskService.add({ name: '前置任务', agent: 'a', prompt: 'p' });
+            const dependent = await TaskService.add({
+                name: '依赖任务',
+                agent: 'a',
+                prompt: 'p',
+                dependsOn: prerequisite.id,
+            });
+
+            expect(TaskService.delete(prerequisite.id)).rejects.toThrow(`任务 #${dependent.id}`);
+            expect(await TaskService.getById(prerequisite.id)).not.toBeNull();
+        });
     });
 
     describe('markPendingForRetry', () => {

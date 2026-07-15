@@ -8,6 +8,21 @@ import { computeBackoff } from '@core/backoff';
 
 const { tasks, taskRuns } = schema;
 
+export class TaskDeletionConflictError extends Error {
+    constructor(message: string) {
+        super(message);
+        this.name = 'TaskDeletionConflictError';
+    }
+}
+
+function hasNoExecutableDependents() {
+    return sql`NOT EXISTS (
+        SELECT 1 FROM tasks AS dependent_task
+        WHERE dependent_task.depends_on = ${tasks.id}
+          AND dependent_task.status IN ('pending', 'running', 'failed', 'dead_letter')
+    )`;
+}
+
 export class TaskService {
     private static buildScopeWhere(scope?: { cwd?: string }) {
         const conditions: Array<ReturnType<typeof eq>> = [];
@@ -412,17 +427,43 @@ export class TaskService {
     }
 
     static async delete(id: number, scope: { cwd?: string } = {}): Promise<boolean> {
-        const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
-        const existing = await db
+        const conditions = [
+            eq(tasks.id, id),
+            sql`${tasks.status} <> 'running'`,
+            sql`NOT EXISTS (
+                SELECT 1 FROM ${taskRuns}
+                WHERE ${taskRuns.taskId} = ${tasks.id}
+                  AND ${taskRuns.status} = 'running'
+            )`,
+            hasNoExecutableDependents(),
+            ...this.buildScopeWhere(scope),
+        ];
+        const result = await db.delete(tasks).where(and(...conditions)).returning();
+        if (result.length > 0) {
+            // 正式 Schema 使用 ON DELETE CASCADE；测试库未启用外键，仍需显式收敛关联记录。
+            await db.delete(taskRuns).where(eq(taskRuns.taskId, id));
+            return true;
+        }
+
+        if (!await this.getById(id, scope)) return false;
+
+        const dependent = await db
             .select({ id: tasks.id })
             .from(tasks)
-            .where(and(...conditions))
+            .where(and(
+                eq(tasks.dependsOn, id),
+                sql`${tasks.status} IN ('pending', 'running', 'failed', 'dead_letter')`,
+            ))
+            .orderBy(asc(tasks.id))
             .limit(1);
-        if (!existing[0]) return false;
-
-        await db.delete(taskRuns).where(eq(taskRuns.taskId, id));
-        const result = await db.delete(tasks).where(and(...conditions)).returning();
-        return result.length > 0;
+        if (dependent[0]) {
+            throw new TaskDeletionConflictError(
+                `任务 #${id} 仍被可执行任务 #${dependent[0].id} 依赖，请先处理依赖任务`,
+            );
+        }
+        throw new TaskDeletionConflictError(
+            `任务 #${id} 正在运行，请先取消任务并等待执行进程退出`,
+        );
     }
 
     static async deleteOlderThan(retentionDays: number): Promise<number> {
@@ -434,6 +475,7 @@ export class TaskService {
                     sql`${tasks.status} IN ('done', 'failed', 'dead_letter')`,
                     sql`${tasks.finishedAt} IS NOT NULL`,
                     sql`${tasks.finishedAt} < ${cutoffSec}`,
+                    hasNoExecutableDependents(),
                 ),
             )
             .returning();

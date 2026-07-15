@@ -51,6 +51,8 @@ supertask db check   # 完整性、外键、业务表和运行状态检查
 
 数据库连接启用 WAL 和 5 秒 `busy_timeout`。每次新连接初始化会自动执行 migrations、启用外键并检查孤立记录；检查失败会拒绝继续运行，不会自动删除用户数据。
 
+CLI 的任务/模板 ID、优先级、重试次数和列表数量均按完整十进制整数解析；带尾随字符、小数、越界值和未知任务状态会返回非零退出码，不会再由 `parseInt` 静默截断。
+
 ## 完整配置
 
 未写出的字段使用下表默认值。Dashboard 保存配置时会进行分组浅合并和完整校验，写入采用临时文件后原子重命名，权限为 `0600`。
@@ -161,6 +163,10 @@ Watchdog 的恢复时间不是任务超时时间。Worker 的 `taskTimeoutMs` �
 
 运行中 `cancel` 会在下一个 Worker 轮询周期被发现，随后终止对应进程树、保留任务 `cancelled` 状态，并把本次 run 关闭为失败。
 
+运行中任务不能直接删除。执行 `supertask cancel --id <id>` 或在 Dashboard 点击“取消”后，还要等待对应 `running` 执行记录关闭；在此之前 CLI 和 Dashboard 删除接口都会返回冲突。这个保护避免任务记录先消失、Worker 无法再定位并终止仍在运行的子进程。
+
+仍被 `pending/running/failed/dead_letter` 任务引用为 `dependsOn` 的前置任务也不能删除；Watchdog 的过期清理遵循同一保护。先处理或删除下游任务，避免制造永远无法满足的悬空依赖。已终态且不可重试的 `done/cancelled` 下游不会阻塞前置任务清理。
+
 ### 配置无法加载
 
 `supertask config` 会输出具体字段错误。修复 `~/.config/opencode/supertask.json` 后重启 Gateway。不要靠删除字段反复试错；先对照上面的范围和两个跨字段约束。
@@ -191,7 +197,7 @@ supertask db backup
 supertask db backup --output ~/supertask-backup/tasks.db
 ```
 
-- `db check` 运行 `PRAGMA integrity_check`、外键检查、必需表检查，并返回三张业务表和运行中记录的数量。
+- `db check` 运行 `PRAGMA integrity_check`、外键检查、必需表检查，并返回三张业务表和运行中记录的数量；检查不通过时仍输出完整报告，但进程退出码为非零，便于监控和 CI 正确判定失败。
 - `db backup` 使用当前连接生成一致性快照，将其转换为不依赖 `-wal`/`-shm` 的独立 SQLite 文件，再用只读连接复检；目标文件已存在时拒绝覆盖。在线备份可以在 Gateway 运行时执行。
 - 自动备份默认与数据库放在同一目录，名称包含用途、UTC 时间和随机后缀，文件权限为 `0600`。
 - `check/backup/clear/restore` 在交互式终端输出人类可读摘要；stdout 非 TTY 时保持 JSON，终端脚本可传 `--json` 强制 JSON。成功和错误使用同一判断，便于 `supertask db check | jq` 等既有调用继续工作。

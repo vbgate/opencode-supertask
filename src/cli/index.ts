@@ -4,7 +4,7 @@ import { TaskTemplateService } from '@core/services/task-template.service';
 import { DatabaseMaintenanceService } from '@core/services/database-maintenance.service';
 import { closeDb } from '@core/db';
 import { parseDuration } from '@core/duration';
-import type { TaskStatus, ScheduleType } from '@core/db/schema';
+import type { ScheduleType } from '@core/db/schema';
 import {
     getPackageVersion,
     restartGatewayAfterMaintenance,
@@ -15,6 +15,11 @@ import {
     renderDatabaseResult,
     type GatewayMaintenanceReport,
 } from './database-output';
+import {
+    parseBoundedInteger,
+    parsePositiveInteger,
+    parseTaskStatus,
+} from './validation';
 
 async function withDb<T>(
     fn: () => Promise<T>,
@@ -113,12 +118,12 @@ program
             prompt: options.prompt,
             model: options.model,
             category: options.category,
-            importance: parseInt(options.importance),
-            urgency: parseInt(options.urgency),
+            importance: parseBoundedInteger(options.importance, 'importance', 1, 5),
+            urgency: parseBoundedInteger(options.urgency, 'urgency', 1, 5),
             batchId: options.batch,
-            dependsOn: options.depends ? parseInt(options.depends) : undefined,
+            dependsOn: options.depends ? parsePositiveInteger(options.depends, 'depends') : undefined,
             cwd: submitCwd,
-            maxRetries: parseInt(options.maxRetries),
+            maxRetries: parseBoundedInteger(options.maxRetries, 'max-retries', 0, 1000),
             retryBackoffMs,
             timeoutMs,
         });
@@ -152,7 +157,7 @@ program
     .description('开始执行任务（标记为 running）')
     .requiredOption('--id <id>', '任务 ID')
     .action(async (options) => withDb(async () => {
-        const task = await TaskService.start(parseInt(options.id), { cwd: process.cwd() });
+        const task = await TaskService.start(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
         if (task) {
             console.log(JSON.stringify({ id: task.id, status: task.status }));
         } else {
@@ -167,7 +172,7 @@ program
     .requiredOption('--id <id>', '任务 ID')
     .option('-l, --log <log>', '结果日志')
     .action(async (options) => withDb(async () => {
-        const task = await TaskService.done(parseInt(options.id), options.log, { cwd: process.cwd() });
+        const task = await TaskService.done(parsePositiveInteger(options.id, 'id'), options.log, { cwd: process.cwd() });
         if (task) {
             console.log(JSON.stringify({ id: task.id, status: task.status }));
         } else {
@@ -182,7 +187,7 @@ program
     .requiredOption('--id <id>', '任务 ID')
     .option('-l, --log <log>', '错误日志')
     .action(async (options) => withDb(async () => {
-        const task = await TaskService.fail(parseInt(options.id), options.log, { cwd: process.cwd() });
+        const task = await TaskService.fail(parsePositiveInteger(options.id, 'id'), options.log, { cwd: process.cwd() });
         if (task) {
             console.log(JSON.stringify({
                 id: task.id,
@@ -200,7 +205,7 @@ program
     .description('取消任务')
     .requiredOption('--id <id>', '任务 ID')
     .action(async (options) => withDb(async () => {
-        const task = await TaskService.cancel(parseInt(options.id), { cwd: process.cwd() });
+        const task = await TaskService.cancel(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
         if (task) {
             console.log(JSON.stringify({ id: task.id, status: task.status }));
         } else {
@@ -216,7 +221,7 @@ program
     .option('-b, --batch <batchId>', '批次 ID（批量重试）')
     .action(async (options) => withDb(async () => {
         if (options.id) {
-            const task = await TaskService.retry(parseInt(options.id), { cwd: process.cwd() });
+            const task = await TaskService.retry(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
             if (task) {
                 console.log(JSON.stringify({ id: task.id, status: task.status }));
             } else {
@@ -250,11 +255,11 @@ program
     .option('-l, --limit <number>', '限制数量', '20')
     .action(async (options) => withDb(async () => {
         const tasks = await TaskService.list({
-            status: options.status as TaskStatus,
+            status: parseTaskStatus(options.status),
             batchId: options.batch,
             category: options.category,
             cwd: process.cwd(),
-            limit: parseInt(options.limit),
+            limit: parsePositiveInteger(options.limit, 'limit'),
         });
         console.log(JSON.stringify(tasks, null, 2));
     }));
@@ -264,7 +269,7 @@ program
     .description('获取单个任务详情')
     .requiredOption('--id <id>', '任务 ID')
     .action(async (options) => withDb(async () => {
-        const task = await TaskService.getById(parseInt(options.id), { cwd: process.cwd() });
+        const task = await TaskService.getById(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
         if (task) {
             console.log(JSON.stringify(task, null, 2));
         } else {
@@ -278,8 +283,9 @@ program
     .description('删除任务')
     .requiredOption('--id <id>', '任务 ID')
     .action(async (options) => withDb(async () => {
-        const deleted = await TaskService.delete(parseInt(options.id), { cwd: process.cwd() });
-        console.log(JSON.stringify({ deleted, id: parseInt(options.id) }));
+        const id = parsePositiveInteger(options.id, 'id');
+        const deleted = await TaskService.delete(id, { cwd: process.cwd() });
+        console.log(JSON.stringify({ deleted, id }));
     }));
 
 program
@@ -336,16 +342,16 @@ program
                     prompt: options.prompt,
                     model: options.model,
                     category: options.category,
-                    importance: parseInt(options.importance),
-                    urgency: parseInt(options.urgency),
+                    importance: parseBoundedInteger(options.importance, 'importance', 1, 5),
+                    urgency: parseBoundedInteger(options.urgency, 'urgency', 1, 5),
                     cwd: process.cwd(),
                     batchId: options.batch,
                     scheduleType: options.type as ScheduleType,
                     cronExpr: options.cron,
                     intervalMs,
                     runAt,
-                    maxInstances: parseInt(options.maxInstances),
-                    maxRetries: parseInt(options.maxRetries),
+                    maxInstances: parseBoundedInteger(options.maxInstances, 'max-instances', 1, 1000),
+                    maxRetries: parseBoundedInteger(options.maxRetries, 'max-retries', 0, 1000),
                     retryBackoffMs,
                     timeoutMs,
                 });
@@ -365,7 +371,7 @@ program
             .description('启用模板')
             .requiredOption('--id <id>', '模板 ID')
             .action(async (options) => withDb(async () => {
-                const tmpl = await TaskTemplateService.enable(parseInt(options.id));
+                const tmpl = await TaskTemplateService.enable(parsePositiveInteger(options.id, 'id'));
                 if (tmpl) {
                     console.log(JSON.stringify({ id: tmpl.id, enabled: true }));
                 } else {
@@ -379,7 +385,7 @@ program
             .description('禁用模板')
             .requiredOption('--id <id>', '模板 ID')
             .action(async (options) => withDb(async () => {
-                const tmpl = await TaskTemplateService.disable(parseInt(options.id));
+                const tmpl = await TaskTemplateService.disable(parsePositiveInteger(options.id, 'id'));
                 if (tmpl) {
                     console.log(JSON.stringify({ id: tmpl.id, enabled: false }));
                 } else {
@@ -393,8 +399,9 @@ program
             .description('删除模板')
             .requiredOption('--id <id>', '模板 ID')
             .action(async (options) => withDb(async () => {
-                const deleted = await TaskTemplateService.delete(parseInt(options.id));
-                console.log(JSON.stringify({ deleted, id: parseInt(options.id) }));
+                const id = parsePositiveInteger(options.id, 'id');
+                const deleted = await TaskTemplateService.delete(id);
+                console.log(JSON.stringify({ deleted, id }));
             })),
     );
 
@@ -408,6 +415,7 @@ databaseCommand
     .action(async (options: { json?: boolean }) => withDb(async () => {
         const result = DatabaseMaintenanceService.check();
         console.log(renderDatabaseResult('check', result, { forceJson: options.json }));
+        if (!result.ok) process.exitCode = 1;
     }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand

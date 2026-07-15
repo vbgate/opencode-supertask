@@ -25,6 +25,8 @@
 | `core/duration.ts` | CLI 友好时长与 ISO 8601 解析 |
 | `core/process-control.ts` | 校验并终止 Worker/Watchdog 记录的进程树 |
 | `core/services/task-template.service.ts` | 调度模板 CRUD + 计算下次运行时间 |
+| `cli/database-output.ts` | 数据库维护命令的人类可读/JSON 双格式输出 |
+| `cli/validation.ts` | CLI ID、整数范围与任务状态的严格解析 |
 | `gateway/config.ts` | Gateway 配置加载、校验与 v1 兼容 |
 | `gateway/health.ts` | ready 锁与内部循环健康快照 |
 | `gateway/scheduler/job-templates.ts` | 模板克隆 + `maxInstances` 检查 |

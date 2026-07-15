@@ -106,6 +106,7 @@ supertask get --id 1
 supertask status
 supertask cancel --id 1
 supertask retry --id 1
+supertask delete --id 1   # running tasks must be cancelled and fully stopped first
 
 # Scheduled templates (friendly duration format)
 supertask template add --name "Daily" --agent "gen" \
@@ -133,6 +134,8 @@ All four `db` commands print a concise human-readable summary when stdout is an 
 supertask db check --json
 supertask db check | jq '.counts'
 ```
+
+`db check` exits non-zero when integrity, foreign keys, or required tables fail, while still printing the complete report. CLI IDs and integer options are parsed strictly: values such as `12abc` or `3.5` are rejected instead of being truncated.
 
 ### Duration Format
 
@@ -188,6 +191,7 @@ Key mechanisms:
 - **Batch isolation** — Same `batchId` serial; different `batchId` parallel
 - **Priority** — `urgency DESC → importance DESC → createdAt ASC → id ASC`
 - **Local Dashboard boundary** — loopback-only listener, same-origin write checks, escaped database output
+- **Guarded deletion** — active runs and prerequisites of executable dependent tasks cannot be deleted
 
 ## Web Dashboard
 
@@ -197,7 +201,7 @@ Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gatew
 
 | Page | Features |
 |------|----------|
-| Task Queue | Filter by status, retry, delete |
+| Task Queue | Filter by status, retry, cancel, guarded delete |
 | Scheduled Tasks | Template CRUD, enable/disable, manual trigger |
 | Execution Logs | task_runs history with session tracking |
 | System Status | Config editor, concurrency monitor, backup-first transactional database clear |
@@ -289,6 +293,7 @@ supertask template add --type cron --cron "0 9 * * *" ...
 - **定时任务** — cron / delayed / recurring，支持友好时间格式
 - **Web 控制台** — 任务监控、执行日志、在线配置、自动备份后事务性清空数据库
 - **Session 追踪** — 自动从 opencode run 输出中捕获 session ID
+- **安全删除** — 活跃执行必须先取消并收敛；仍被可执行任务依赖的前置任务也不会被误删
 
 ### 数据库维护
 
@@ -307,6 +312,8 @@ supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE [--keep-s
 supertask db check --json
 supertask db check | jq '.counts'
 ```
+
+`db check` 发现完整性、外键或必需表异常时会返回非零退出码，同时保留完整报告。CLI 的 ID 与整数参数采用严格解析，`12abc`、`3.5` 等输入会直接报错，不再截断成另一个合法值。
 
 ### 数据位置
 
