@@ -2,7 +2,7 @@
 
 > 状态：当前有效
 > 最后核对：2026-07-15
-> 适用版本：源码 `main` 分支，当前发布基线 0.1.21
+> 适用版本：源码 `main` 分支，当前开发基线 0.1.22
 
 ## 结论与适用边界
 
@@ -100,6 +100,7 @@ pending / running / failed ──cancel──> cancelled
 - 同一非空 `batchId` 在单个 Gateway 内串行；不同批次和空 `batchId` 可以并行。
 - Worker 硬超时、运行中取消和宽限期后的关闭会终止子进程树；Watchdog 在使用数据库记录的旧 PID 前，还会校验进程命令是否匹配配置的 OpenCode 可执行文件。
 - Worker 定时更新 `task_runs.heartbeatAt`。Watchdog 发现心跳过期时终止记录的 `childPid`、关闭本次 run，并按同一重试预算恢复任务。
+- Gateway 获得单实例锁后、Worker 接单前，会把不存在 active run 的遗留 `running` 任务恢复为 `pending`，覆盖进程在创建 run 前后崩溃留下的孤儿状态。
 - 输出只保留最后 64 KiB，避免单任务无限占用 Gateway 内存；发现 JSON 输出中的 `sessionID` 会写入执行记录。
 
 该实现提供 at-least-once 倾向的本地恢复，不保证 exactly-once。任务执行外部副作用时，应自行设计幂等键或可重复执行策略。

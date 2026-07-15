@@ -242,6 +242,28 @@ export class TaskService {
         return result.length;
     }
 
+    static async resetOrphanRunningToPending(): Promise<number> {
+        const result = await db
+            .update(tasks)
+            .set({
+                status: 'pending',
+                startedAt: null,
+                finishedAt: null,
+            })
+            .where(
+                and(
+                    eq(tasks.status, 'running'),
+                    sql`NOT EXISTS (
+                        SELECT 1 FROM ${taskRuns}
+                        WHERE ${taskRuns.taskId} = ${tasks.id}
+                          AND ${taskRuns.status} = 'running'
+                    )`,
+                ),
+            )
+            .returning();
+        return result.length;
+    }
+
     static async cancel(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
         const conditions = [
             eq(tasks.id, id),

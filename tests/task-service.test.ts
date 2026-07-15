@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { setupTestDb } from './helpers/mock-db';
 import { TaskService } from '../src/core/services/task.service';
+import { TaskRunService } from '../src/core/services/task-run.service';
 
 describe('TaskService', () => {
     beforeEach(() => {
@@ -899,6 +900,23 @@ describe('TaskService', () => {
         test('空数组返回 0', async () => {
             const count = await TaskService.resetRunningToPending([]);
             expect(count).toBe(0);
+        });
+
+        test('启动恢复只重置没有 active run 的孤儿 running 任务', async () => {
+            const orphan = await TaskService.add({ name: '孤儿任务', agent: 'a', prompt: '恢复任务' });
+            const active = await TaskService.add({ name: '执行中任务', agent: 'a', prompt: '保持执行' });
+            const closed = await TaskService.add({ name: '已关闭 run 的任务', agent: 'a', prompt: '重新排队' });
+            await TaskService.start(orphan.id);
+            await TaskService.start(active.id);
+            await TaskService.start(closed.id);
+            await TaskRunService.create({ taskId: active.id });
+            const closedRun = await TaskRunService.create({ taskId: closed.id });
+            await TaskRunService.fail(closedRun.id, 'Gateway 在同步任务状态前退出');
+
+            expect(await TaskService.resetOrphanRunningToPending()).toBe(2);
+            expect((await TaskService.getById(orphan.id))?.status).toBe('pending');
+            expect((await TaskService.getById(closed.id))?.status).toBe('pending');
+            expect((await TaskService.getById(active.id))?.status).toBe('running');
         });
     });
 });

@@ -101,6 +101,16 @@ async function main() {
     const watchdog = new Watchdog(cfg);
     const scheduler = new Scheduler(cfg);
 
+    const recoveredOrphans = await TaskService.resetOrphanRunningToPending();
+    if (recoveredOrphans > 0) {
+        console.log(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'warn',
+            msg: 'reset orphan running tasks to pending',
+            count: recoveredOrphans,
+        }));
+    }
+
     initializeGatewayHealth({
         workerPollIntervalMs: cfg.worker.pollIntervalMs,
         schedulerEnabled: cfg.scheduler.enabled,
