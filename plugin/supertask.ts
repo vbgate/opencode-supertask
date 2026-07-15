@@ -495,7 +495,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                             return JSON.stringify({
                                 success: false,
                                 error: updateError instanceof Error ? updateError.message : String(updateError),
-                                hint: "Try manually: opencode plugin opencode-supertask@latest --global --force",
+                                hint: "Query npm dist-tags.latest, then install that exact version with opencode plugin.",
                             });
                         }
 

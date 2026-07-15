@@ -488,7 +488,7 @@ program
             installed = installLatestPlugin();
         } catch (err) {
             console.error(err instanceof Error ? err.message : String(err));
-            console.error('Try manually: opencode plugin opencode-supertask@latest --global --force');
+            console.error('Try manually: query npm dist-tags.latest, then install that exact version with opencode plugin.');
             process.exit(1);
         }
 

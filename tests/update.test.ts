@@ -7,6 +7,7 @@ import { installLatestPlugin, resolveInstalledPlugin } from '../src/daemon/updat
 const dirs: string[] = [];
 const originalEnv = {
     bin: process.env.SUPERTASK_OPENCODE_BIN,
+    npmBin: process.env.SUPERTASK_NPM_BIN,
     cache: process.env.SUPERTASK_OPENCODE_CACHE_DIR,
     packageDir: process.env.SUPERTASK_PLUGIN_PACKAGE_DIR,
 };
@@ -19,6 +20,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 afterEach(() => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
     restoreEnv('SUPERTASK_OPENCODE_BIN', originalEnv.bin);
+    restoreEnv('SUPERTASK_NPM_BIN', originalEnv.npmBin);
     restoreEnv('SUPERTASK_OPENCODE_CACHE_DIR', originalEnv.cache);
     restoreEnv('SUPERTASK_PLUGIN_PACKAGE_DIR', originalEnv.packageDir);
 });
@@ -50,23 +52,45 @@ describe('OpenCode 插件升级', () => {
         });
     });
 
-    test('使用 OpenCode 官方插件命令刷新缓存后返回已校验包', () => {
+    test('先解析 npm latest 的精确版本，再用 OpenCode 官方命令安装并校验缓存', () => {
         const dir = mkdtempSync(join(tmpdir(), 'supertask-update-'));
         dirs.push(dir);
         const packageDir = join(dir, 'package');
         const argsLog = join(dir, 'args.json');
         const fakeOpencode = join(dir, 'opencode');
-        writePlugin(packageDir, '0.1.21');
+        const fakeNpm = join(dir, 'npm');
+        writePlugin(packageDir, '0.1.23');
         writeFileSync(fakeOpencode, `#!/usr/bin/env bun
 await Bun.write(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
 `);
+        writeFileSync(fakeNpm, '#!/usr/bin/env bun\nconsole.log(JSON.stringify("0.1.23"));\n');
         chmodSync(fakeOpencode, 0o755);
+        chmodSync(fakeNpm, 0o755);
         process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_NPM_BIN = fakeNpm;
         process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
 
-        expect(installLatestPlugin().version).toBe('0.1.21');
+        expect(installLatestPlugin().version).toBe('0.1.23');
         expect(JSON.parse(readFileSync(argsLog, 'utf8'))).toEqual([
-            'plugin', 'opencode-supertask@latest', '--global', '--force',
+            'plugin', 'opencode-supertask@0.1.23', '--global', '--force',
         ]);
+    });
+
+    test('OpenCode 返回成功但缓存仍是旧版本时拒绝重启 Gateway', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-stale-update-'));
+        dirs.push(dir);
+        const packageDir = join(dir, 'package');
+        const fakeOpencode = join(dir, 'opencode');
+        const fakeNpm = join(dir, 'npm');
+        writePlugin(packageDir, '0.1.22');
+        writeFileSync(fakeOpencode, '#!/usr/bin/env bun\nprocess.exit(0);\n');
+        writeFileSync(fakeNpm, '#!/usr/bin/env bun\nconsole.log(JSON.stringify("0.1.23"));\n');
+        chmodSync(fakeOpencode, 0o755);
+        chmodSync(fakeNpm, 0o755);
+        process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_NPM_BIN = fakeNpm;
+        process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
+
+        expect(() => installLatestPlugin()).toThrow('期望 0.1.23，实际 0.1.22');
     });
 });
