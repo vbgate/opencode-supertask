@@ -254,7 +254,11 @@ export class TaskService {
         ];
         const result = await db
             .update(tasks)
-            .set({ status: 'cancelled' })
+            .set({
+                status: 'cancelled',
+                finishedAt: new Date(),
+                retryAfter: null,
+            })
             .where(and(...conditions))
             .returning();
         return result[0] || null;

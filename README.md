@@ -141,7 +141,7 @@ The complete configuration reference and restart semantics are documented in [Op
 ```json
 {
   "configVersion": 2,
-  "worker": { "maxConcurrency": 2, "taskTimeoutMs": 1800000 },
+  "worker": { "maxConcurrency": 2, "taskTimeoutMs": 1800000, "shutdownGracePeriodMs": 30000 },
   "scheduler": { "enabled": true, "checkIntervalMs": 1000 },
   "watchdog": {
     "heartbeatTimeoutMs": 600000,
@@ -159,6 +159,7 @@ Key mechanisms:
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance
 - **Readiness check** — PM2 PID must match a fresh, ready Gateway lock; `/health` also checks component activity
 - **Heartbeat** — Worker updates every 30s; Watchdog kills stale processes
+- **Graceful shutdown** — stop claiming work, drain active tasks for 30s, then interrupt and requeue only unfinished tasks
 - **Exponential backoff** — configurable base × 2^n, capped at 30min
 - **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
 - **Batch isolation** — Same `batchId` serial; different `batchId` parallel
@@ -247,6 +248,7 @@ supertask template add --type cron --cron "0 9 * * *" ...
 ### 核心功能
 
 - **任务队列** — 优先级调度、批次隔离、依赖管理
+- **安全停止** — 默认等待在途任务 30 秒；超时任务才会被中断并重新排队
 - **进程守护** — 可选 pm2 崩溃恢复；插件加载不会安装 pm2，但可复用机器上已有的 PM2
 - **版本感知重启** — 已安装 pm2 时，插件加载会在包版本变化后启动或重启 Gateway
 - **定时任务** — cron / delayed / recurring，支持友好时间格式

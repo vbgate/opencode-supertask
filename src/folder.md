@@ -23,6 +23,7 @@
 | `core/backoff.ts` | 统一指数退避算法 |
 | `core/cron-parser.ts` | cron 表达式校验与下一次运行时间 |
 | `core/duration.ts` | CLI 友好时长与 ISO 8601 解析 |
+| `core/process-control.ts` | 校验并终止 Worker/Watchdog 记录的进程树 |
 | `core/services/task-template.service.ts` | 调度模板 CRUD + 计算下次运行时间 |
 | `gateway/config.ts` | Gateway 配置加载、校验与 v1 兼容 |
 | `gateway/health.ts` | ready 锁与内部循环健康快照 |

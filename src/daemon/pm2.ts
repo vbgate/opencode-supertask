@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { Database } from "bun:sqlite";
+import { loadConfig } from "../gateway/config";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROCESS_NAME = "supertask-gateway";
@@ -188,6 +189,10 @@ function findBunPath(): string {
 }
 
 function pm2StartGateway(): void {
+    const configuredKillTimeout = Number(process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS);
+    const killTimeoutMs = Number.isInteger(configuredKillTimeout) && configuredKillTimeout >= 5000
+        ? configuredKillTimeout
+        : loadConfig().worker.shutdownGracePeriodMs + 5000;
     requirePm2([
         "start",
         findBunPath(),
@@ -199,6 +204,8 @@ function pm2StartGateway(): void {
         "5000",
         "--max-restarts",
         "30",
+        "--kill-timeout",
+        String(killTimeoutMs),
         "--",
         resolveGatewayEntry(),
     ], "pm2 start");

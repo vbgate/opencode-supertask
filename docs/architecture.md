@@ -51,7 +51,7 @@ Gateway 启动时按以下顺序工作：
 2. 用 `BEGIN IMMEDIATE` 更新 `gateway_lock`。锁每 10 秒心跳，30 秒未更新才允许新实例接管；此时 `ready_at` 仍为空。
 3. 加载并校验配置；非法配置直接失败，不静默回退。
 4. 启动 Worker、Watchdog、Scheduler，最后按配置启动内嵌 Dashboard；全部成功后才写入 `ready_at`。
-5. 收到 `SIGINT` 或 `SIGTERM` 时停止调度，终止当前子进程，将本实例的 `running` 任务重置为 `pending`，并把仍为 `running` 的执行记录标为失败。
+5. 收到 `SIGINT` 或 `SIGTERM` 时先停止接单，等待 `worker.shutdownGracePeriodMs`；宽限期内完成的任务正常落库，只有剩余子进程才会终止、重置为 `pending`，对应执行记录标为失败。
 
 单例锁防止两个 Gateway 同时调度，但不构成跨主机租约。SQLite 文件只适合由同一台机器上的进程共享。
 
@@ -98,7 +98,7 @@ pending / running / failed ──cancel──> cancelled
 
 - 全局并发由 `worker.maxConcurrency` 控制，默认 2。
 - 同一非空 `batchId` 在单个 Gateway 内串行；不同批次和空 `batchId` 可以并行。
-- Worker 硬超时和正常关闭在 Unix 上终止子进程组，Windows 上终止直接子进程。
+- Worker 硬超时、运行中取消和宽限期后的关闭会终止子进程树；Watchdog 在使用数据库记录的旧 PID 前，还会校验进程命令是否匹配配置的 OpenCode 可执行文件。
 - Worker 定时更新 `task_runs.heartbeatAt`。Watchdog 发现心跳过期时终止记录的 `childPid`、关闭本次 run，并按同一重试预算恢复任务。
 - 输出只保留最后 64 KiB，避免单任务无限占用 Gateway 内存；发现 JSON 输出中的 `sessionID` 会写入执行记录。
 
@@ -133,9 +133,6 @@ Dashboard 只绑定 `127.0.0.1`，浏览器写请求检查 `Sec-Fetch-Site` 和�
 
 以下是当前源码行为，不应由文档掩盖：
 
-- 运行中 `cancel` 只改变数据库状态，不会立即终止正在执行的子进程；子进程会继续到退出或超时。
-- Watchdog 心跳超时路径目前终止记录的直接 `childPid`，不像 Worker 超时路径那样终止 Unix 进程组；若 Agent 再派生进程，可能留下后代进程。
-- 正常关闭会立即中断在途任务并重置为 `pending`，没有“停止接单并等待全部完成”的 drain 模式。
 - `/health` 会检查 ready 锁与 Worker、Scheduler、Watchdog 活跃时间，但仍没有指标导出、结构化日志轮转策略或告警集成。
 - 单实例锁、任务抢占和状态更新足以覆盖当前单机模型，但不提供分布式租约和 exactly-once 保证。
 

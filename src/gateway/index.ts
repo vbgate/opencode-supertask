@@ -149,8 +149,7 @@ async function main() {
         scheduler.stop();
         watchdog.stop();
 
-        const runningIds = worker.getRunningTaskIds();
-        await worker.stop();
+        const runningIds = await worker.stop(cfg.worker.shutdownGracePeriodMs);
 
         if (runningIds.length > 0) {
             const resetCount = await TaskService.resetRunningToPending(runningIds);

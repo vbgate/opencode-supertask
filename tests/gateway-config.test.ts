@@ -29,6 +29,7 @@ describe('Gateway 配置', () => {
 
         expect(config.worker.maxConcurrency).toBe(5);
         expect(config.worker.pollIntervalMs).toBe(1000);
+        expect(config.worker.shutdownGracePeriodMs).toBe(30_000);
         expect('catchUp' in config.scheduler).toBe(false);
         expect('logging' in config).toBe(false);
         expect('unknown' in config).toBe(false);
@@ -55,6 +56,7 @@ describe('Gateway 配置', () => {
         expect(() => validateConfig({ worker: { maxConcurrency: 0 } })).toThrow('worker.maxConcurrency');
         expect(() => validateConfig({ dashboard: { port: 70000 } })).toThrow('dashboard.port');
         expect(() => validateConfig({ worker: { pollIntervalMs: 10.5 } })).toThrow('worker.pollIntervalMs');
+        expect(() => validateConfig({ worker: { shutdownGracePeriodMs: -1 } })).toThrow('worker.shutdownGracePeriodMs');
         expect(() => validateConfig({
             worker: { heartbeatIntervalMs: 10_000 },
             watchdog: { heartbeatTimeoutMs: 5_000 },

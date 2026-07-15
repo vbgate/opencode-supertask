@@ -17,6 +17,7 @@ const originalEnv = {
     version: process.env.SUPERTASK_VERSION_FILE,
     db: process.env.SUPERTASK_DB_PATH,
     readyTimeout: process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS,
+    killTimeout: process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS,
 };
 
 afterEach(() => {
@@ -27,6 +28,7 @@ afterEach(() => {
     restoreEnv('SUPERTASK_VERSION_FILE', originalEnv.version);
     restoreEnv('SUPERTASK_DB_PATH', originalEnv.db);
     restoreEnv('SUPERTASK_GATEWAY_READY_TIMEOUT_MS', originalEnv.readyTimeout);
+    restoreEnv('SUPERTASK_PM2_KILL_TIMEOUT_MS', originalEnv.killTimeout);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -82,13 +84,14 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
         process.env.SUPERTASK_VERSION_FILE = versionFile;
         process.env.SUPERTASK_DB_PATH = dbPath;
         process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '200';
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '35000';
 
         expect(ensureGateway()).toEqual({ ok: true, action: 'started' });
         expect(isGatewayRunning()).toBe(true);
         const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
         expect(calls[0]).toEqual([
             'start', '/tmp/bun executable', '--name', 'supertask-gateway', '--interpreter', 'none',
-            '--restart-delay', '5000', '--max-restarts', '30', '--', gateway,
+            '--restart-delay', '5000', '--max-restarts', '30', '--kill-timeout', '35000', '--', gateway,
         ]);
         expect(calls[1]).toEqual(['save']);
         expect(readFileSync(versionFile, 'utf8')).toBe(getPackageVersion());
@@ -114,6 +117,7 @@ if (args[0] === 'start') process.exit(0);
         process.env.SUPERTASK_GATEWAY_ENTRY = gateway;
         process.env.SUPERTASK_DB_PATH = dbPath;
         process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '50';
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '35000';
 
         expect(isGatewayRunning()).toBe(false);
         expect(() => ensureGateway()).toThrow('未在限定时间内就绪');

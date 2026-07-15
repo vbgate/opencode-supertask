@@ -14,7 +14,7 @@ PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler�
 | 长期后台运行 | `supertask install` | 是；缺失时会显式全局安装 |
 | 打开已运行 Gateway 的 Dashboard | `supertask ui` | 否；该命令只打开浏览器 |
 
-`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟和最多 30 次重启，执行 `pm2 save`，并尝试配置 `pm2 startup`。如果系统启动项需要管理员命令，必须按 PM2 输出手工完成。
+`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次重启，并把 PM2 kill timeout 设为 drain 宽限期加 5 秒；随后执行 `pm2 save` 并尝试配置 `pm2 startup`。如果系统启动项需要管理员命令，必须按 PM2 输出手工完成。
 
 插件加载时会检查 `gateway_lock`：已有新鲜心跳就不处理；没有运行实例且机器已安装 PM2 时，会启动或按包版本重启 Gateway；没有 PM2 时只提示用户，不会静默安装全局依赖。
 
@@ -33,7 +33,7 @@ pm2 logs supertask-gateway
 pm2 restart supertask-gateway
 ```
 
-前台模式则用 `Ctrl-C` 停止后重新运行。停止会中断在途任务并把它们重置为 `pending`，因此有外部副作用的任务应保证幂等。
+前台模式则用 `Ctrl-C` 停止后重新运行。停止会先等待 drain 宽限期，随后中断未完成任务并把它们重置为 `pending`，因此有外部副作用的任务仍应保证幂等。
 
 ## 初始化与数据位置
 
@@ -61,6 +61,7 @@ supertask migrate    # 手动触发迁移；正常初始化也会自动迁移
 | `worker.pollIntervalMs` | `1000` | 50–60000 ms |
 | `worker.heartbeatIntervalMs` | `30000` | 1000–3600000 ms，必须小于心跳超时 |
 | `worker.taskTimeoutMs` | `1800000` | 1000–604800000 ms；单任务可覆盖 |
+| `worker.shutdownGracePeriodMs` | `30000` | 0–3600000 ms；Gateway 停止接单后等待在途任务的时间 |
 | `scheduler.enabled` | `true` | 是否克隆到期模板 |
 | `scheduler.checkIntervalMs` | `1000` | 100–60000 ms |
 | `watchdog.heartbeatTimeoutMs` | `600000` | 1000–86400000 ms |
@@ -79,7 +80,8 @@ supertask migrate    # 手动触发迁移；正常初始化也会自动迁移
     "maxConcurrency": 2,
     "pollIntervalMs": 1000,
     "heartbeatIntervalMs": 30000,
-    "taskTimeoutMs": 1800000
+    "taskTimeoutMs": 1800000,
+    "shutdownGracePeriodMs": 30000
   },
   "scheduler": {
     "enabled": true,
@@ -156,7 +158,7 @@ curl -fsS http://127.0.0.1:4680/health
 
 Watchdog 的恢复时间不是任务超时时间。Worker 的 `taskTimeoutMs` 控制正常运行时的硬超时；Watchdog 在心跳停止超过 `heartbeatTimeoutMs` 后，下一次检查才恢复任务。
 
-运行中 `cancel` 当前只改变任务状态，不会立即终止子进程。若必须立即停止，需要停止 Gateway；这会同时中断其他在途任务并将它们重新排队。
+运行中 `cancel` 会在下一个 Worker 轮询周期被发现，随后终止对应进程树、保留任务 `cancelled` 状态，并把本次 run 关闭为失败。
 
 ### 配置无法加载
 

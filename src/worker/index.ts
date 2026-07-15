@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'child_process';
 import type { GatewayConfig } from '@gateway/config';
 import type { Task } from '@core/db/schema';
 import { markGatewayActivity } from '@gateway/health';
+import { signalSpawnedProcessTree } from '@core/process-control';
 
 const DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024;
 const FORBIDDEN_AGENT = 'supertask-runner';
@@ -30,6 +31,7 @@ export class WorkerEngine {
     private stopped = false;
     private pollTimer: ReturnType<typeof setTimeout> | null = null;
     private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    private pollCyclePromise: Promise<void> | null = null;
     private cfg: GatewayConfig['worker'];
     private opencodeBin: string;
     private maxOutputChars: number;
@@ -47,23 +49,35 @@ export class WorkerEngine {
         this.heartbeatTimer = setInterval(() => this.updateHeartbeats(), this.cfg.heartbeatIntervalMs);
     }
 
-    stop(): Promise<void> {
+    async stop(gracePeriodMs = 0): Promise<number[]> {
         this.stopped = true;
         if (this.pollTimer) {
             clearTimeout(this.pollTimer);
             this.pollTimer = null;
         }
+
+        if (this.pollCyclePromise) await this.pollCyclePromise;
+
+        if (gracePeriodMs > 0 && this.runningTasks.size > 0) {
+            const deadline = Date.now() + gracePeriodMs;
+            while (this.runningTasks.size > 0 && Date.now() < deadline) {
+                await Bun.sleep(Math.min(50, deadline - Date.now()));
+            }
+        }
+
         if (this.heartbeatTimer) {
             clearInterval(this.heartbeatTimer);
             this.heartbeatTimer = null;
         }
 
+        const interruptedTaskIds = [...this.runningTasks.keys()];
         const killPromises: Promise<void>[] = [];
         for (const entry of this.runningTasks.values()) {
             entry.shutdown = true;
             killPromises.push(this.killEntry(entry));
         }
-        return Promise.allSettled(killPromises).then(() => {});
+        await Promise.allSettled(killPromises);
+        return interruptedTaskIds;
     }
 
     getRunningTaskIds(): number[] {
@@ -78,13 +92,16 @@ export class WorkerEngine {
         if (this.stopped) return;
         markGatewayActivity('worker');
 
-        this.tryDispatch().then(() => {
+        this.pollCyclePromise = this.tryDispatch().finally(() => {
+            this.pollCyclePromise = null;
             if (this.stopped) return;
             this.pollTimer = setTimeout(() => this.poll(), this.cfg.pollIntervalMs);
         });
     }
 
     private async tryDispatch() {
+        await this.reconcileCancelledTasks();
+
         while (!this.stopped && this.runningTasks.size < this.cfg.maxConcurrency) {
             let task: Task | null;
             try {
@@ -94,9 +111,16 @@ export class WorkerEngine {
                 break;
             }
             if (!task) break;
+            if (this.stopped) break;
 
             if (!await TaskService.start(task.id)) continue;
             if (task.batchId) this.activeBatchIds.add(task.batchId);
+
+            if (this.stopped) {
+                await TaskService.resetRunningToPending([task.id]);
+                this.releaseBatch(task);
+                break;
+            }
 
             try {
                 const run = await TaskRunService.create({
@@ -104,6 +128,13 @@ export class WorkerEngine {
                     model: this.resolveModel(task.model),
                     status: 'running',
                 });
+
+                if (this.stopped) {
+                    await TaskRunService.fail(run.id, 'Gateway shutdown before spawn');
+                    await TaskService.resetRunningToPending([task.id]);
+                    this.releaseBatch(task);
+                    break;
+                }
 
                 if (task.agent === FORBIDDEN_AGENT) {
                     const message = `禁止执行递归 Agent: ${FORBIDDEN_AGENT}`;
@@ -196,48 +227,86 @@ export class WorkerEngine {
             clearTimeout(entry.timeoutTimer);
             entry.timeoutTimer = null;
         }
-        this.runningTasks.delete(entry.task.id);
-        this.releaseBatch(entry.task);
+        try {
+            if (entry.shutdown) return;
 
-        if (entry.shutdown) return;
+            const currentRun = await TaskRunService.getById(entry.runId);
+            if (!currentRun || currentRun.status !== 'running') return;
 
-        const currentRun = await TaskRunService.getById(entry.runId);
-        if (!currentRun || currentRun.status !== 'running') return;
+            const output = entry.output.trim();
+            const log = failure
+                ? `${failure}${output ? `\n${output}` : ''}`
+                : output;
 
-        const output = entry.output.trim();
-        const log = failure
-            ? `${failure}${output ? `\n${output}` : ''}`
-            : output;
+            if (code === 0 && !failure) {
+                const completed = await TaskService.done(entry.task.id, log);
+                if (completed) {
+                    await TaskRunService.done(entry.runId, log);
+                    console.log(JSON.stringify({
+                        ts: new Date().toISOString(),
+                        level: 'info',
+                        msg: 'task done',
+                        taskId: entry.task.id,
+                    }));
+                    return;
+                }
 
-        if (code === 0 && !failure) {
-            const completed = await TaskService.done(entry.task.id, log);
-            if (completed) {
-                await TaskRunService.done(entry.runId, log);
-                console.log(JSON.stringify({
-                    ts: new Date().toISOString(),
-                    level: 'info',
-                    msg: 'task done',
-                    taskId: entry.task.id,
-                }));
+                await TaskRunService.fail(entry.runId, '任务状态已被其他操作改变');
                 return;
             }
 
-            await TaskRunService.fail(entry.runId, '任务状态已被其他操作改变');
-            return;
+            await TaskRunService.fail(entry.runId, log);
+            const failed = await TaskService.fail(entry.task.id, log);
+            if (!failed) {
+                this.logError('task failure state transition rejected', failure ?? 'unknown failure', entry.task.id);
+            }
+            console.error(JSON.stringify({
+                ts: new Date().toISOString(),
+                level: 'error',
+                msg: 'task failed',
+                taskId: entry.task.id,
+                error: failure,
+            }));
+        } finally {
+            this.runningTasks.delete(entry.task.id);
+            this.releaseBatch(entry.task);
+        }
+    }
+
+    private async reconcileCancelledTasks() {
+        for (const entry of [...this.runningTasks.values()]) {
+            try {
+                const task = await TaskService.getById(entry.task.id);
+                if (task?.status === 'cancelled') await this.cancelEntry(entry);
+            } catch (err) {
+                this.logError('cancel reconciliation failed', err, entry.task.id);
+            }
+        }
+    }
+
+    private async cancelEntry(entry: RunningTask) {
+        if (entry.settled) return;
+        entry.settled = true;
+        if (entry.timeoutTimer) {
+            clearTimeout(entry.timeoutTimer);
+            entry.timeoutTimer = null;
         }
 
-        await TaskRunService.fail(entry.runId, log);
-        const failed = await TaskService.fail(entry.task.id, log);
-        if (!failed) {
-            this.logError('task failure state transition rejected', failure ?? 'unknown failure', entry.task.id);
+        try {
+            await this.killEntry(entry);
+            const output = entry.output.trim();
+            const log = `任务已取消${output ? `\n${output}` : ''}`;
+            await TaskRunService.fail(entry.runId, log);
+            console.log(JSON.stringify({
+                ts: new Date().toISOString(),
+                level: 'info',
+                msg: 'running task cancelled',
+                taskId: entry.task.id,
+            }));
+        } finally {
+            this.runningTasks.delete(entry.task.id);
+            this.releaseBatch(entry.task);
         }
-        console.error(JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'error',
-            msg: 'task failed',
-            taskId: entry.task.id,
-            error: failure,
-        }));
     }
 
     private async updateHeartbeats() {
@@ -274,18 +343,7 @@ export class WorkerEngine {
         const pid = entry.child.pid;
         if (!pid) return;
 
-        if (process.platform !== 'win32') {
-            try {
-                process.kill(-pid, signal);
-                return;
-            } catch {
-            }
-        }
-
-        try {
-            entry.child.kill(signal);
-        } catch {
-        }
+        signalSpawnedProcessTree(pid, signal);
     }
 
     private releaseBatch(task: Task) {

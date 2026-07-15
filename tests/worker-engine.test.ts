@@ -37,6 +37,7 @@ function createConfig(taskTimeoutMs = 2_000): GatewayConfig {
             pollIntervalMs: 10,
             heartbeatIntervalMs: 20,
             taskTimeoutMs,
+            shutdownGracePeriodMs: 500,
         },
         scheduler: {
             enabled: false,
@@ -143,5 +144,75 @@ describe('WorkerEngine', () => {
         expect(failed.resultLog).toContain('任务超时');
         expect(runs[0].status).toBe('failed');
         expect(runs[0].log).toContain('任务超时');
+    });
+
+    test('运行中任务被取消后终止子进程并关闭 run', async () => {
+        const fake = createFakeOpencode({ delayMs: 10_000 });
+        const task = await TaskService.add({
+            name: '运行中取消测试',
+            agent: 'test-agent',
+            prompt: '等待取消',
+            maxRetries: 0,
+        });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        workers.push(worker);
+
+        worker.start();
+        await waitForStatus(task.id, ['running']);
+        await TaskService.cancel(task.id);
+
+        const cancelled = await waitForStatus(task.id, ['cancelled']);
+        const deadline = Date.now() + 3000;
+        let runs = await TaskRunService.listByTaskId(task.id);
+        while (runs[0]?.status === 'running' && Date.now() < deadline) {
+            await Bun.sleep(20);
+            runs = await TaskRunService.listByTaskId(task.id);
+        }
+
+        expect(cancelled.status).toBe('cancelled');
+        expect(cancelled.finishedAt).not.toBeNull();
+        expect(runs[0].status).toBe('failed');
+        expect(runs[0].log).toContain('任务已取消');
+        expect(worker.getRunningCount()).toBe(0);
+    });
+
+    test('优雅停止在宽限期内等待任务自然完成', async () => {
+        const fake = createFakeOpencode({ delayMs: 120 });
+        const task = await TaskService.add({
+            name: '优雅停止测试',
+            agent: 'test-agent',
+            prompt: '短任务自然完成',
+            maxRetries: 0,
+        });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        workers.push(worker);
+
+        worker.start();
+        await waitForStatus(task.id, ['running']);
+        const interrupted = await worker.stop(1000);
+        const completed = await waitForStatus(task.id, ['done']);
+
+        expect(interrupted).toEqual([]);
+        expect(completed.status).toBe('done');
+        expect(worker.getRunningCount()).toBe(0);
+    });
+
+    test('优雅停止超过宽限期后返回被中断任务', async () => {
+        const fake = createFakeOpencode({ delayMs: 10_000 });
+        const task = await TaskService.add({
+            name: '宽限期超时测试',
+            agent: 'test-agent',
+            prompt: '必须被中断',
+            maxRetries: 0,
+        });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        workers.push(worker);
+
+        worker.start();
+        await waitForStatus(task.id, ['running']);
+        const interrupted = await worker.stop(50);
+
+        expect(interrupted).toEqual([task.id]);
+        expect(worker.getRunningCount()).toBe(0);
     });
 });

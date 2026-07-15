@@ -9,6 +9,7 @@ export interface GatewayConfig {
         pollIntervalMs: number;
         heartbeatIntervalMs: number;
         taskTimeoutMs: number;
+        shutdownGracePeriodMs: number;
     };
     scheduler: {
         enabled: boolean;
@@ -33,6 +34,7 @@ const DEFAULT_CONFIG: GatewayConfig = {
         pollIntervalMs: 1000,
         heartbeatIntervalMs: 30_000,
         taskTimeoutMs: 1_800_000,
+        shutdownGracePeriodMs: 30_000,
     },
     scheduler: {
         enabled: true,
@@ -127,6 +129,7 @@ export function validateConfig(input: unknown): GatewayConfig {
             pollIntervalMs: integerAt(worker, 'pollIntervalMs', DEFAULT_CONFIG.worker.pollIntervalMs, 50, 60_000, 'worker'),
             heartbeatIntervalMs,
             taskTimeoutMs: integerAt(worker, 'taskTimeoutMs', DEFAULT_CONFIG.worker.taskTimeoutMs, 1000, 604_800_000, 'worker'),
+            shutdownGracePeriodMs: integerAt(worker, 'shutdownGracePeriodMs', DEFAULT_CONFIG.worker.shutdownGracePeriodMs, 0, 3_600_000, 'worker'),
         },
         scheduler: {
             enabled: booleanAt(scheduler, 'enabled', DEFAULT_CONFIG.scheduler.enabled, 'scheduler'),

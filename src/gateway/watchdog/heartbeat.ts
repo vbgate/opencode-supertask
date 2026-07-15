@@ -1,6 +1,7 @@
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskService } from '@core/services/task.service';
 import { computeBackoff } from '@core/backoff';
+import { signalRecordedProcessTree } from '@core/process-control';
 
 export async function checkHeartbeats(heartbeatTimeoutMs: number) {
     const staleRuns = await TaskRunService.getStaleRuns(heartbeatTimeoutMs);
@@ -9,9 +10,17 @@ export async function checkHeartbeats(heartbeatTimeoutMs: number) {
     for (const run of staleRuns) {
         try {
             if (run.childPid != null && run.childPid > 0) {
-                try {
-                    process.kill(run.childPid, 'SIGKILL');
-                } catch {
+                const expectedExecutable = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
+                const killed = signalRecordedProcessTree(run.childPid, 'SIGKILL', expectedExecutable);
+                if (!killed) {
+                    console.warn(JSON.stringify({
+                        ts: new Date().toISOString(),
+                        level: 'warn',
+                        msg: 'stale child process was not killed because identity validation failed',
+                        taskId: run.taskId,
+                        runId: run.runId,
+                        childPid: run.childPid,
+                    }));
                 }
             }
 
