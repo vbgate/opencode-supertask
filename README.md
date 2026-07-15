@@ -36,10 +36,11 @@ The plugin never installs global dependencies by itself. Without a running Gatew
 2. Remove `"opencode-supertask"` from `~/.config/opencode/opencode.json`
 3. Restart OpenCode
 
-To clean up all data, delete the database:
+To clear all task data safely, stop the Gateway and use the backup-first database command:
 
 ```bash
-rm ~/.local/share/opencode/tasks.db
+pm2 stop supertask-gateway
+supertask db clear --confirm CLEAR
 ```
 
 ### CLI Install / Uninstall
@@ -109,7 +110,15 @@ supertask template add --name "Hourly" --agent "gen" \
   --batch "reports" --retry-backoff "30s" --timeout "30min"
 supertask template list
 supertask template enable --id 1
+
+# Database maintenance
+supertask db check
+supertask db backup [--output /path/to/tasks-backup.db]
+supertask db clear --confirm CLEAR
+supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE
 ```
+
+`db backup` creates and validates a standalone SQLite snapshot. `db clear` and `db restore` refuse to run while another Gateway or task is active; both create a safety backup before changing data. Stop the PM2 Gateway before using the destructive CLI commands.
 
 ### Duration Format
 
@@ -177,7 +186,7 @@ Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gatew
 | Task Queue | Filter by status, retry, delete |
 | Scheduled Tasks | Template CRUD, enable/disable, manual trigger |
 | Execution Logs | task_runs history with session tracking |
-| System Status | Config editor, concurrency monitor, clear database |
+| System Status | Config editor, concurrency monitor, backup-first transactional database clear |
 
 ## Data
 
@@ -228,7 +237,12 @@ supertask gateway   # 前台运行：不需要 pm2
 2. 从 `~/.config/opencode/opencode.json` 中移除 `"opencode-supertask"`
 3. 重启 OpenCode
 
-清理所有数据：`rm ~/.local/share/opencode/tasks.db`
+安全清理所有任务数据：
+
+```bash
+pm2 stop supertask-gateway
+supertask db clear --confirm CLEAR
+```
 
 ### 定时任务
 
@@ -252,8 +266,19 @@ supertask template add --type cron --cron "0 9 * * *" ...
 - **进程守护** — 可选 pm2 崩溃恢复；插件加载不会安装 pm2，但可复用机器上已有的 PM2
 - **版本感知重启** — 已安装 pm2 时，插件加载会在包版本变化后启动或重启 Gateway
 - **定时任务** — cron / delayed / recurring，支持友好时间格式
-- **Web 控制台** — 任务监控、执行日志、在线配置、清空数据库
+- **Web 控制台** — 任务监控、执行日志、在线配置、自动备份后事务性清空数据库
 - **Session 追踪** — 自动从 opencode run 输出中捕获 session ID
+
+### 数据库维护
+
+```bash
+supertask db check
+supertask db backup [--output /path/to/tasks-backup.db]
+supertask db clear --confirm CLEAR
+supertask db restore --from /path/to/tasks-backup.db --confirm RESTORE
+```
+
+`db backup` 会生成并校验可独立恢复的 SQLite 快照。CLI 清空和恢复会拒绝活跃 Gateway 或运行中任务，并在修改数据前自动保留安全备份；执行这两个危险命令前应先停止 PM2 Gateway。
 
 ### 数据位置
 

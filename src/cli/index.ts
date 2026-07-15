@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { TaskService } from '@core/services/task.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
+import { DatabaseMaintenanceService } from '@core/services/database-maintenance.service';
 import { closeDb } from '@core/db';
 import { parseDuration } from '@core/duration';
 import type { TaskStatus, ScheduleType } from '@core/db/schema';
@@ -338,6 +339,49 @@ program
                 console.log(JSON.stringify({ deleted, id: parseInt(options.id) }));
             })),
     );
+
+const databaseCommand = new Command('db')
+    .description('数据库检查、备份、清空与恢复');
+
+databaseCommand
+    .command('check')
+    .description('检查数据库完整性、外键和业务表统计')
+    .action(async () => withDb(async () => {
+        console.log(JSON.stringify(DatabaseMaintenanceService.check(), null, 2));
+    }));
+
+databaseCommand
+    .command('backup')
+    .description('创建经过完整性校验的一致性备份')
+    .option('-o, --output <path>', '备份文件路径（默认写入数据库目录）')
+    .action(async (options: { output?: string }) => withDb(async () => {
+        console.log(JSON.stringify(DatabaseMaintenanceService.backup(options.output), null, 2));
+    }));
+
+databaseCommand
+    .command('clear')
+    .description('备份后事务性清空任务、执行记录和调度模板')
+    .option('--confirm <word>', '危险操作确认，必须填写 CLEAR')
+    .action(async (options: { confirm?: string }) => withDb(async () => {
+        if (options.confirm !== 'CLEAR') {
+            throw new Error('清空数据库必须显式传入 --confirm CLEAR');
+        }
+        console.log(JSON.stringify(DatabaseMaintenanceService.clear(), null, 2));
+    }));
+
+databaseCommand
+    .command('restore')
+    .description('自动备份当前库后，从指定备份恢复数据库')
+    .requiredOption('--from <path>', '要恢复的 SQLite 备份文件')
+    .option('--confirm <word>', '危险操作确认，必须填写 RESTORE')
+    .action(async (options: { from: string; confirm?: string }) => withDb(async () => {
+        if (options.confirm !== 'RESTORE') {
+            throw new Error('恢复数据库必须显式传入 --confirm RESTORE');
+        }
+        console.log(JSON.stringify(DatabaseMaintenanceService.restore(options.from), null, 2));
+    }));
+
+program.addCommand(databaseCommand);
 
 program
     .command('init')

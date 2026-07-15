@@ -2,7 +2,7 @@
 
 > 状态：当前有效
 > 最后核对：2026-07-15
-> 适用版本：源码 `main` 分支，当前开发基线 0.1.22
+> 适用版本：源码 `main` 分支，当前开发基线 0.1.23
 
 ## 结论与适用边界
 
@@ -35,7 +35,7 @@ Dashboard ─────┘       ↑                 ↑
 
 | 组件 | 职责 | 主要源码 |
 |---|---|---|
-| Service 层 | 校验、CRUD、状态流转、队列排序 | [`src/core/services/`](../src/core/services/) |
+| Service 层 | 校验、CRUD、状态流转、队列排序、数据库维护 | [`src/core/services/`](../src/core/services/) |
 | 数据层 | SQLite 连接、WAL、迁移、外键校验、单例锁表 | [`src/core/db/index.ts`](../src/core/db/index.ts) |
 | Worker | 抢占任务、启动目标 Agent、心跳、超时和结果落库 | [`src/worker/index.ts`](../src/worker/index.ts) |
 | Scheduler | 检查到期模板并克隆普通任务 | [`src/gateway/scheduler/`](../src/gateway/scheduler/) |
@@ -124,11 +124,14 @@ pending / running / failed ──cancel──> cancelled
 | 持久化 | SQLite WAL | 零服务依赖，适合单机队列 | 多机消费、高写入并发或 HA 时 |
 | 配置错误 | 校验失败并拒绝启动 | 避免错误配置被默认值掩盖 | 不改变；可增加更友好的诊断 |
 | 调度补偿 | 不回放全部错过周期 | 避免恢复时瞬间制造积压 | 业务明确要求补账并定义上限时 |
+| 数据库维护 | Service 统一检查、备份、清空和恢复 | 避免 CLI、Dashboard 各自实现不完整的危险 SQL | 存储迁移到外部数据库时重做维护协议 |
 | Dashboard | 嵌入 Gateway，仅监听 loopback | 少一个常驻进程，默认不暴露网络面 | 需要公网/团队访问时拆分并加鉴权 |
 
 ## 安全边界
 
 Dashboard 只绑定 `127.0.0.1`，浏览器写请求检查 `Sec-Fetch-Site` 和同源 `Origin`，数据库字符串输出到 HTML 前转义。这是本机可信用户边界，不是完整鉴权系统；不要通过反向代理或端口转发直接暴露到不可信网络。
+
+数据库危险操作集中在 `DatabaseMaintenanceService`：备份通过 SQLite 序列化得到一致快照，并转换成无需 WAL sidecar 的独立文件；清空在 `BEGIN IMMEDIATE` 内完成备份和三张业务表删除；恢复先校验来源、备份当前库，再暂存、替换、迁移和复检。CLI 清空/恢复拒绝活跃 Gateway 和运行中任务，Dashboard 清空只允许当前 Gateway 且仍拒绝运行中任务。恢复会清理运行时锁，并把快照中的遗留运行状态收敛为可重新调度的状态。
 
 ## 已知限制与后续触发点
 

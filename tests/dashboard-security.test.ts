@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { rmSync } from 'fs';
 import { eq } from 'drizzle-orm';
 import { setupTestDb } from './helpers/mock-db';
 import { dashboardApp } from '../src/web/index';
@@ -9,10 +10,17 @@ import { initializeGatewayHealth, resetGatewayHealth } from '../src/gateway/heal
 
 describe('Dashboard 安全边界', () => {
     let testDb: ReturnType<typeof setupTestDb>;
+    const maintenanceBackups: string[] = [];
 
     beforeEach(() => {
         testDb = setupTestDb();
         resetGatewayHealth();
+    });
+
+    afterEach(() => {
+        for (const path of maintenanceBackups.splice(0)) {
+            rmSync(path, { force: true });
+        }
     });
 
     test('拒绝跨站写请求，但允许同源 Dashboard 请求', async () => {
@@ -74,6 +82,53 @@ describe('Dashboard 安全边界', () => {
             body: JSON.stringify({ worker: { maxConcurrency: 0 } }),
         });
         expect(invalidConfig.status).toBe(400);
+    });
+
+    test('清空数据库需要服务端确认、拒绝运行中任务并生成可恢复备份', async () => {
+        const task = await TaskService.add({ name: '数据库维护任务', agent: 'a', prompt: 'p' });
+        await TaskTemplateService.create({
+            name: '数据库维护模板',
+            agent: 'a',
+            prompt: 'p',
+            scheduleType: 'cron',
+            cronExpr: '0 9 * * *',
+        });
+
+        const missingConfirmation = await dashboardApp.request('http://localhost/api/database/clear', {
+            method: 'POST',
+            headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        expect(missingConfirmation.status).toBe(400);
+        expect(await TaskService.getById(task.id)).not.toBeNull();
+
+        await TaskService.start(task.id);
+        const running = await dashboardApp.request('http://localhost/api/database/clear', {
+            method: 'POST',
+            headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirmation: 'CLEAR' }),
+        });
+        expect(running.status).toBe(409);
+        expect(await TaskService.getById(task.id)).not.toBeNull();
+
+        await TaskService.done(task.id, '测试完成');
+        const cleared = await dashboardApp.request('http://localhost/api/database/clear', {
+            method: 'POST',
+            headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ confirmation: 'CLEAR' }),
+        });
+        expect(cleared.status).toBe(200);
+        const body = await cleared.json() as {
+            success: boolean;
+            backupPath: string;
+            deleted: { tasks: number; taskRuns: number; taskTemplates: number };
+        };
+        maintenanceBackups.push(body.backupPath);
+        expect(body.success).toBe(true);
+        expect(body.deleted.tasks).toBe(1);
+        expect(body.deleted.taskTemplates).toBe(1);
+        expect(await TaskService.getById(task.id)).toBeNull();
+        expect(await TaskTemplateService.list()).toHaveLength(0);
     });
 
     test('健康检查同时要求组件活跃和匹配当前进程的 ready 锁', async () => {

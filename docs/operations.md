@@ -40,6 +40,7 @@ pm2 restart supertask-gateway
 ```bash
 supertask init       # 首次创建最小配置并执行数据库迁移
 supertask migrate    # 手动触发迁移；正常初始化也会自动迁移
+supertask db check   # 完整性、外键、业务表和运行状态检查
 ```
 
 | 数据 | 默认位置 | 覆盖方式 |
@@ -180,17 +181,48 @@ sqlite3 ~/.local/share/opencode/tasks.db 'PRAGMA foreign_key_check;'
 - Dashboard 不对局域网地址监听；这是安全边界，不是网络配置遗漏。
 - 浏览器写请求必须同源。经过反向代理、不同主机名或不同端口访问会被拒绝。
 
-## 备份与恢复
+## 数据库检查、备份、清空与恢复
 
-一致性最简单的做法是在没有运行中任务时停止 Gateway，再复制数据库和配置。停止 PM2 进程可用 `pm2 stop supertask-gateway`，恢复后用 `pm2 start supertask-gateway`。
+数据库维护统一经过 `DatabaseMaintenanceService`，CLI 和 Dashboard 清空不再直接操作业务表。
+
+```bash
+supertask db check
+supertask db backup
+supertask db backup --output ~/supertask-backup/tasks.db
+```
+
+- `db check` 运行 `PRAGMA integrity_check`、外键检查、必需表检查，并返回三张业务表和运行中记录的数量。
+- `db backup` 使用当前连接生成一致性快照，将其转换为不依赖 `-wal`/`-shm` 的独立 SQLite 文件，再用只读连接复检；目标文件已存在时拒绝覆盖。在线备份可以在 Gateway 运行时执行。
+- 自动备份默认与数据库放在同一目录，名称包含用途、UTC 时间和随机后缀，文件权限为 `0600`。
+
+清空全部任务、执行记录和调度模板：
+
+```bash
+pm2 stop supertask-gateway
+supertask db clear --confirm CLEAR
+pm2 start supertask-gateway
+```
+
+`db clear` 会拒绝活跃 Gateway 和任何 `running` 任务/执行记录，在一个 `BEGIN IMMEDIATE` 事务内先生成 `pre-clear` 备份，再删除三张业务表；任一步失败都会回滚事务。它保留数据库结构、迁移记录、配置和自增序列。Dashboard 的“清空数据库”复用同一服务，要求服务端确认并拒绝运行中任务；因为 Dashboard 本身位于当前 Gateway 内，它只豁免当前 Gateway PID，不豁免其他进程。
+
+从备份恢复：
+
+```bash
+pm2 stop supertask-gateway
+supertask db restore --from ~/.local/share/opencode/tasks.pre-clear-<time>-<id>.db --confirm RESTORE
+pm2 start supertask-gateway
+supertask db check
+curl -fsS http://127.0.0.1:4680/health
+```
+
+恢复会先校验来源文件并自动创建当前库的 `pre-restore` 安全备份，然后用同目录暂存文件替换数据库、自动执行缺失 migration，再复检完整性。备份中遗留的 `running` 任务会恢复为 `pending`，对应运行记录关闭为 `failed`，旧 `gateway_lock` 不会继续生效。恢复失败时会尝试原子回滚，并在错误信息中给出安全备份路径。
+
+不要在 Gateway 运行时删除或只复制 `tasks.db`；WAL 模式下最新事务可能还在 `tasks.db-wal`。配置文件仍需单独备份：
 
 ```bash
 mkdir -p ~/supertask-backup
-cp ~/.local/share/opencode/tasks.db ~/supertask-backup/tasks.db
 cp ~/.config/opencode/supertask.json ~/supertask-backup/supertask.json
 ```
-
-若不能停止 Gateway，单独复制 WAL 模式下的主数据库文件不保证包含最新事务，应使用 SQLite 在线备份能力，或同时正确处理 `-wal`/`-shm` 文件。恢复前先保留现有文件，不要覆盖唯一副本。
 
 ## 升级与卸载
 

@@ -3,6 +3,10 @@ import { html } from 'hono/html';
 import { TaskService } from '@core/services/task.service';
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
+import {
+    DatabaseMaintenanceConflictError,
+    DatabaseMaintenanceService,
+} from '@core/services/database-maintenance.service';
 import { desc, sql, eq } from 'drizzle-orm';
 import { db, schema } from '@core/db';
 import { getConfigPath, loadConfig, validateConfig, type GatewayConfig } from '@gateway/config';
@@ -216,12 +220,12 @@ async function triggerTmpl(id){if(!confirm('立即触发一次?'))return;const r
 function toggleLog(id){const el=document.getElementById('log-'+id);el.style.display=el.style.display==='none'?'block':'none';}
 
 async function clearDatabase(){
-  if(!confirm('确定清空所有任务数据？此操作不可恢复！'))return;
-  if(!confirm('再次确认：将删除所有任务、执行记录和调度模板。'))return;
+  if(!confirm('确定清空所有任务数据？系统会先自动创建备份。'))return;
+  if(!confirm('再次确认：将事务性删除所有任务、执行记录和调度模板。'))return;
   try{
-    const r=await fetch('/api/database/clear',{method:'POST'});
+    const r=await fetch('/api/database/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'CLEAR'})});
     const d=await r.json();
-    if(d.success){alert('数据库已清空');location.reload();}
+    if(d.success){alert('数据库已清空，自动备份：'+d.backupPath);location.reload();}
     else{alert('清空失败: '+d.error);}
   }catch(e){alert('清空失败: '+e.message);}
 }
@@ -578,7 +582,7 @@ app.get('/system', async (c) => {
 
       <div class="card mt16" style="border-color:var(--red)">
         <h3 style="margin:0 0 12px;font-size:14px;color:var(--red)">危险操作</h3>
-        <p class="sm mu" style="margin:0 0 12px">清空所有任务数据（tasks + task_runs + task_templates），不可恢复。</p>
+        <p class="sm mu" style="margin:0 0 12px">自动备份后事务性清空 tasks、task_runs 和 task_templates；存在运行中任务时会拒绝执行。</p>
         <button class="btn btn-danger" style="border-color:var(--red);color:var(--red);padding:6px 16px" onclick="clearDatabase()">清空数据库</button>
       </div>`;
 
@@ -697,14 +701,17 @@ app.put('/api/config', async (c) => {
 });
 
 app.post('/api/database/clear', async (c) => {
+    const body = await c.req.json<{ confirmation?: string }>()
+        .catch((): { confirmation?: string } => ({}));
+    if (body.confirmation !== 'CLEAR') {
+        return c.json({ success: false, error: 'confirmation must be CLEAR' }, 400);
+    }
     try {
-        const { tasks, taskRuns, taskTemplates } = schema;
-        await db.delete(taskRuns);
-        await db.delete(taskTemplates);
-        await db.delete(tasks);
-        return c.json({ success: true });
+        const result = DatabaseMaintenanceService.clear({ allowCurrentGateway: true });
+        return c.json({ success: true, ...result });
     } catch (err) {
-        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) }, 500);
+        const status = err instanceof DatabaseMaintenanceConflictError ? 409 : 500;
+        return c.json({ success: false, error: err instanceof Error ? err.message : String(err) }, status);
     }
 });
 
