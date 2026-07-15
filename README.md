@@ -19,12 +19,14 @@ Add the plugin to `~/.config/opencode/opencode.json`:
 }
 ```
 
-Restart OpenCode. That's it.
+Restart OpenCode to load 11 `supertask_*` tools. Then choose how to run the Gateway:
 
-The plugin auto-starts a Gateway process (via pm2) and injects:
-- 10 MCP tools (`supertask_add`, `supertask_next`, `supertask_start`, `supertask_done`, `supertask_fail`, `supertask_get`, `supertask_list`, `supertask_status`, `supertask_retry`, `supertask_schedule`)
-- A `supertask-runner` agent (used internally by the Gateway)
-- A Web Dashboard at http://localhost:4680
+```bash
+supertask install   # recommended for long-running use: explicit pm2 setup
+supertask gateway   # foreground mode: no pm2 required
+```
+
+The plugin never installs global dependencies by itself. Without a running Gateway, queue-management tools still work, but scheduled and queued tasks are not executed and the Dashboard is unavailable.
 
 ### Uninstall
 
@@ -41,7 +43,7 @@ rm ~/.local/share/opencode/tasks.db
 ### CLI Install / Uninstall
 
 ```bash
-supertask install     # Install Gateway as pm2 service (auto-start, crash recovery)
+supertask install     # Explicitly install/configure pm2 and start Gateway
 supertask uninstall   # Stop and remove Gateway from pm2
 ```
 
@@ -123,7 +125,7 @@ Schedule supports friendly duration strings:
 ## Architecture
 
 ```
-Gateway (managed by pm2)
+Gateway (foreground or optionally managed by pm2)
 ├── Worker     → claim tasks, execute the target agent via opencode run
 ├── Scheduler  → clone tasks from templates (cron / delayed / recurring)
 ├── Watchdog   → heartbeat timeout, auto-retry, data cleanup
@@ -148,7 +150,7 @@ Config file: `~/.config/opencode/supertask.json`
 ```
 
 Key mechanisms:
-- **Auto-start** — Plugin auto-installs pm2 and starts Gateway on first use
+- **Process supervision** — optional pm2 crash recovery; installation is always explicit
 - **Auto-upgrade** — Plugin detects version changes and auto-reloads Gateway
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance
 - **Heartbeat** — Worker updates every 30s; Watchdog kills stale processes
@@ -200,10 +202,14 @@ SuperTask 是一个基于 SQLite 的 AI Agent 任务调度系统，专为 [OpenC
 }
 ```
 
-重启 OpenCode 即可。插件会自动：
-- 安装 pm2 并启动 Gateway 常驻进程
-- 注入 10 个 MCP 工具和 supertask-runner Agent
-- 启动 Web 控制台（http://localhost:4680）
+重启 OpenCode 后会注入 11 个 `supertask_*` 工具。随后选择一种 Gateway 运行方式：
+
+```bash
+supertask install   # 长期运行推荐：显式安装/配置 pm2 并启动 Gateway
+supertask gateway   # 前台运行：不需要 pm2
+```
+
+插件不会自行安装全局依赖。Gateway 未运行时仍可管理队列，但不会执行排队/定时任务，也不会启动 Web 控制台。
 
 ### 卸载
 
@@ -231,7 +237,7 @@ supertask template add --type cron --cron "0 9 * * *" ...
 ### 核心功能
 
 - **任务队列** — 优先级调度、批次隔离、依赖管理
-- **自动启动** — 插件首次加载时自动安装 pm2 并启动 Gateway
+- **进程守护** — 可选 pm2 崩溃恢复，安装动作必须由用户显式触发
 - **自动升级** — 插件更新后自动检测版本变化并 reload Gateway
 - **定时任务** — cron / delayed / recurring，支持友好时间格式
 - **Web 控制台** — 任务监控、执行日志、在线配置、清空数据库

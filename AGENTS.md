@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-opencode-supertask — 面向 OpenCode Agent 的 SQLite 任务队列与调度器。发布形态包括 OpenCode 插件、`supertask` CLI，以及由 pm2 托管的单实例 Gateway；Gateway 内部同时运行 Worker、Scheduler、Watchdog 和 Web Dashboard。
+opencode-supertask — 面向 OpenCode Agent 的 SQLite 任务队列与调度器。发布形态包括 OpenCode 插件、`supertask` CLI，以及可前台运行或由 pm2 托管的单实例 Gateway；Gateway 内部同时运行 Worker、Scheduler、Watchdog 和 Web Dashboard。
 
 ## 系统链路
 
@@ -16,9 +16,10 @@ SQLite（tasks / task_runs / task_templates）
 Gateway ─ Worker + Scheduler + Watchdog + Dashboard
 ```
 
-- 插件在 `plugin/supertask.ts` 注册隐藏的 `supertask-runner` Agent 和 11 个 `supertask_*` 工具：`add/next/start/done/fail/status/retry/list/get/schedule/upgrade`。
-- Worker 不直接执行任务提示词；它启动 `opencode run --agent supertask-runner`，再由 runner 调用任务指定的 Agent。
-- `plugin/task.ts` 是旧的 `task_*` 工具实现，不是当前 npm 构建入口；运行时 runner 提示词以 `plugin/supertask.ts` 中的 `RUNNER_PROMPT` 为准。
+- 插件在 `plugin/supertask.ts` 注册 11 个 `supertask_*` 工具：`add/next/start/done/fail/status/retry/list/get/schedule/upgrade`。
+- Worker 通过参数数组直接执行 `opencode run --agent <task.agent> --format json <task.prompt>`；退出码决定成功或失败，Gateway 统一写任务状态和执行记录。
+- `agents/supertask-runner.md` 与 `plugin/task.ts` 是旧架构遗留，不是当前 npm 运行链路；不得重新接入嵌套 runner。
+- pm2 是可选守护层：仅显式运行 `supertask install` 时允许安装；插件加载不得静默安装全局依赖。前台运行使用 `supertask gateway`。
 
 ## 技术栈
 

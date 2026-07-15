@@ -4,6 +4,7 @@ import { TaskTemplateService } from '@core/services/task-template.service';
 import { closeDb } from '@core/db';
 import { parseDuration } from '@core/duration';
 import type { TaskStatus, ScheduleType } from '@core/db/schema';
+import { getPackageVersion } from '../daemon/pm2';
 
 async function withDb<T>(fn: () => Promise<T>): Promise<T> {
     try {
@@ -22,7 +23,7 @@ const program = new Command();
 program
     .name('supertask')
     .description('通用任务管理系统 - AI Agent 任务调度器')
-    .version('0.1.0');
+    .version(getPackageVersion());
 
 program
     .command('add')
@@ -351,6 +352,7 @@ program
             const dir = dirname(CONFIG_PATH);
             if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
             writeFileSync(CONFIG_PATH, JSON.stringify({
+                configVersion: 2,
                 worker: { maxConcurrency: 2 },
                 scheduler: { enabled: true },
             }, null, 2) + '\n');
@@ -360,11 +362,7 @@ program
         }
 
         const { getDb } = await import('@core/db');
-        const { migrate } = await import('drizzle-orm/bun-sqlite/migrator');
-        const { join: pJoin, dirname: pDirname } = await import('path');
-        const { fileURLToPath } = await import('url');
-        const __dirname = pDirname(fileURLToPath(import.meta.url));
-        migrate(getDb(), { migrationsFolder: pJoin(__dirname, '../../drizzle') });
+        getDb();
         console.log(JSON.stringify({ migrated: true }));
     }));
 
@@ -373,11 +371,7 @@ program
     .description('Run database migrations')
     .action(async () => withDb(async () => {
         const { getDb } = await import('@core/db');
-        const { migrate } = await import('drizzle-orm/bun-sqlite/migrator');
-        const { join, dirname } = await import('path');
-        const { fileURLToPath } = await import('url');
-        const __dirname = dirname(fileURLToPath(import.meta.url));
-        migrate(getDb(), { migrationsFolder: join(__dirname, '../../drizzle') });
+        getDb();
         console.log(JSON.stringify({ migrated: true }));
     }));
 

@@ -1,51 +1,82 @@
 import { execSync, spawnSync } from "child_process";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-import { readFileSync, writeFileSync, existsSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const GATEWAY_ENTRY = join(__dirname, "../gateway/index.js");
 const PROCESS_NAME = "supertask-gateway";
-const VERSION_FILE = join(homedir(), ".local/share/opencode/supertask-gateway-version");
 
-function getPackageVersion(): string {
+interface Pm2Process {
+    name: string;
+    pm2_env?: { status?: string };
+}
+
+export type EnsureGatewayResult =
+    | { ok: true; action: "already-running" | "started" | "restarted" }
+    | { ok: false; reason: "pm2-not-installed" };
+
+export function getPackageVersion(): string {
+    const envVersion = process.env.npm_package_version;
+    if (envVersion) return envVersion;
+
     try {
-        const pkgPath = join(__dirname, "../package.json");
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        return pkg.version || "0.0.0";
+        const pkgPath = join(__dirname, "../../package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: unknown };
+        return typeof pkg.version === "string" ? pkg.version : "0.0.0";
     } catch {
         return "0.0.0";
     }
 }
 
+export function resolveGatewayEntry(): string {
+    const override = process.env.SUPERTASK_GATEWAY_ENTRY;
+    if (override) {
+        if (!existsSync(override)) throw new Error(`[supertask] Gateway entry not found: ${override}`);
+        return override;
+    }
+
+    const candidates = [
+        join(__dirname, "../gateway/index.js"),
+        join(__dirname, "../gateway/index.ts"),
+    ];
+    const entry = candidates.find((candidate) => existsSync(candidate));
+    if (!entry) throw new Error(`[supertask] Gateway entry not found. Checked: ${candidates.join(", ")}`);
+    return entry;
+}
+
+function versionFile(): string {
+    return process.env.SUPERTASK_VERSION_FILE
+        ?? join(homedir(), ".local/share/opencode/supertask-gateway-version");
+}
+
 function getRunningVersion(): string | null {
     try {
-        if (!existsSync(VERSION_FILE)) return null;
-        return readFileSync(VERSION_FILE, "utf-8").trim() || null;
+        const path = versionFile();
+        if (!existsSync(path)) return null;
+        return readFileSync(path, "utf-8").trim() || null;
     } catch {
         return null;
     }
 }
 
 function writeRunningVersion(version: string): void {
-    try {
-        writeFileSync(VERSION_FILE, version, "utf-8");
-    } catch {}
+    const path = versionFile();
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, version, "utf-8");
 }
 
 function pm2Bin(): string {
-    return process.platform === "win32" ? "pm2.cmd" : "pm2";
+    return process.env.SUPERTASK_PM2_BIN
+        ?? (process.platform === "win32" ? "pm2.cmd" : "pm2");
 }
 
-function isPm2Installed(): boolean {
-    try {
-        const cmd = process.platform === "win32" ? "where pm2" : "which pm2";
-        execSync(cmd, { stdio: "pipe" });
-        return true;
-    } catch {
-        return false;
-    }
+export function isPm2Installed(): boolean {
+    const result = spawnSync(pm2Bin(), ["--version"], {
+        stdio: "ignore",
+        shell: process.platform === "win32",
+    });
+    return result.status === 0;
 }
 
 function installPm2(): boolean {
@@ -64,51 +95,55 @@ function installPm2(): boolean {
 }
 
 function pm2Exec(args: string[]): { ok: boolean; output: string } {
-    const bin = pm2Bin();
-    try {
-        const result = spawnSync(bin, args, {
-            stdio: ["pipe", "pipe", "pipe"],
-            encoding: "utf-8",
-            shell: process.platform === "win32",
-        });
-        const output = (result.stdout ?? "") + (result.stderr ?? "");
-        return { ok: result.status === 0, output };
-    } catch (err) {
-        return { ok: false, output: err instanceof Error ? err.message : String(err) };
-    }
+    const result = spawnSync(pm2Bin(), args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        encoding: "utf-8",
+        shell: process.platform === "win32",
+    });
+    const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+    if (result.error) return { ok: false, output: result.error.message };
+    return { ok: result.status === 0, output };
 }
 
-function pm2JsonList(): Array<{ name: string; pm2_env?: { status: string } }> {
-    const { ok, output } = pm2Exec(["jlist"]);
-    if (!ok) return [];
+function requirePm2(args: string[], action: string): string {
+    const result = pm2Exec(args);
+    if (!result.ok) throw new Error(`[supertask] ${action} failed: ${result.output || "unknown pm2 error"}`);
+    return result.output;
+}
+
+function pm2JsonList(): Pm2Process[] {
+    const output = requirePm2(["jlist"], "pm2 jlist");
     try {
-        return JSON.parse(output);
-    } catch {
-        return [];
+        const parsed = JSON.parse(output) as unknown;
+        if (!Array.isArray(parsed)) throw new Error("result is not an array");
+        return parsed as Pm2Process[];
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`[supertask] Invalid pm2 jlist output: ${message}`);
     }
 }
 
 export function isGatewayRunning(): boolean {
-    const list = pm2JsonList();
-    const proc = list.find((p) => p.name === PROCESS_NAME);
-    if (!proc) return false;
-    return proc.pm2_env?.status === "online";
+    if (!isPm2Installed()) return false;
+    const proc = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    return proc?.pm2_env?.status === "online";
 }
 
 function findBunPath(): string {
+    const override = process.env.SUPERTASK_BUN_BIN;
+    if (override) return override;
     try {
-        const cmd = process.platform === "win32" ? "where bun" : "which bun";
-        return execSync(cmd, { stdio: "pipe" }).toString().trim().split("\n")[0];
+        const command = process.platform === "win32" ? "where bun" : "which bun";
+        return execSync(command, { stdio: "pipe" }).toString().trim().split("\n")[0];
     } catch {
         return process.execPath;
     }
 }
 
-function pm2StartGateway(version: string): { ok: boolean; output: string } {
-    const bunPath = findBunPath();
-    return pm2Exec([
+function pm2StartGateway(): void {
+    requirePm2([
         "start",
-        bunPath,
+        findBunPath(),
         "--name",
         PROCESS_NAME,
         "--interpreter",
@@ -118,142 +153,80 @@ function pm2StartGateway(version: string): { ok: boolean; output: string } {
         "--max-restarts",
         "30",
         "--",
-        GATEWAY_ENTRY,
-    ]);
+        resolveGatewayEntry(),
+    ], "pm2 start");
+    const started = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    if (started?.pm2_env?.status !== "online") {
+        throw new Error(`[supertask] Gateway did not become online (status: ${started?.pm2_env?.status ?? "missing"})`);
+    }
+}
+
+function savePm2State(): void {
+    requirePm2(["save"], "pm2 save");
 }
 
 export function install(): void {
-    if (!isPm2Installed()) {
-        if (!installPm2()) {
-            throw new Error("[supertask] Failed to install pm2. Please install it manually: npm install -g pm2");
-        }
-    }
-    console.log("[supertask] pm2 ready");
-
-    const list = pm2JsonList();
-    const existing = list.find((p) => p.name === PROCESS_NAME);
-
-    if (existing) {
-        console.log("[supertask] Gateway process already registered, reloading...");
-        const { ok } = pm2Exec(["reload", PROCESS_NAME]);
-        if (!ok) {
-            console.error("[supertask] pm2 reload failed, trying restart...");
-            pm2Exec(["restart", PROCESS_NAME]);
-        }
-    } else {
-        console.log("[supertask] Starting Gateway with pm2...");
-        const version = getPackageVersion();
-        const { ok, output } = pm2StartGateway(version);
-        if (!ok) {
-            throw new Error(`[supertask] pm2 start failed: ${output}`);
-        }
-        writeRunningVersion(version);
+    if (!isPm2Installed() && !installPm2()) {
+        throw new Error("[supertask] Failed to install pm2. Please install it manually: npm install -g pm2");
     }
 
-    pm2Exec(["save"]);
+    const existing = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    if (existing) requirePm2(["delete", PROCESS_NAME], "pm2 delete existing Gateway");
 
-    console.log("[supertask] Configuring startup...");
-    const { ok: startupOk, output: startupOutput } = pm2Exec(["startup"]);
-    if (!startupOk) {
-        if (startupOutput.includes("sudo") || startupOutput.includes("run as root")) {
-            console.log("[supertask] pm2 startup requires elevated permissions.");
-            console.log("[supertask] Run the command shown above, or manually execute:");
-            console.log(`  pm2 startup`);
-            console.log(`  pm2 save`);
-        } else if (process.platform === "win32") {
-            console.log("[supertask] On Windows, use pm2-installer for startup:");
-            console.log("  npm install -g pm2-windows-startup");
-            console.log("  pm2-startup install");
-        }
+    const version = getPackageVersion();
+    pm2StartGateway();
+    writeRunningVersion(version);
+    savePm2State();
+
+    const startup = pm2Exec(["startup"]);
+    if (!startup.ok) {
+        console.warn("[supertask] pm2 startup 未完成；请按 pm2 输出执行需要管理员权限的命令，然后运行 `pm2 save`。");
+        if (startup.output) console.warn(startup.output);
     }
 
-    console.log("\n[supertask] Gateway installed and running!");
+    console.log("[supertask] Gateway installed and running.");
     console.log("[supertask] Manage with: pm2 status / pm2 logs supertask-gateway");
 }
 
 export function uninstall(): void {
-    console.log("[supertask] Stopping Gateway...");
-    pm2Exec(["stop", PROCESS_NAME]);
-
-    console.log("[supertask] Removing Gateway from pm2...");
-    pm2Exec(["delete", PROCESS_NAME]);
-
-    pm2Exec(["save"]);
-
-    console.log("\n[supertask] Gateway removed from pm2.");
-    console.log("[supertask] Note: pm2 startup config was not removed (you may have other pm2 processes).");
-    console.log("[supertask] To fully remove pm2 startup: pm2 unstartup");
+    if (!isPm2Installed()) throw new Error("[supertask] pm2 is not installed");
+    const existing = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    if (existing) requirePm2(["delete", PROCESS_NAME], "pm2 delete Gateway");
+    savePm2State();
+    console.log("[supertask] Gateway removed from pm2. Other pm2 startup entries were preserved.");
 }
 
 export function upgrade(): { before: string | null; after: string; restarted: boolean } {
+    if (!isPm2Installed()) {
+        throw new Error("[supertask] pm2 is not installed. Run `supertask install` first.");
+    }
+
     const before = getRunningVersion();
     const currentVersion = getPackageVersion();
+    const existing = pm2JsonList().find((item) => item.name === PROCESS_NAME);
+    if (existing) requirePm2(["delete", PROCESS_NAME], "pm2 delete old Gateway");
 
-    const list = pm2JsonList();
-    const proc = list.find((p) => p.name === PROCESS_NAME);
-
-    if (proc) {
-        console.log(`[supertask] Stopping Gateway (version ${before ?? "unknown"})...`);
-        pm2Exec(["delete", PROCESS_NAME]);
-    }
-
-    console.log(`[supertask] Starting Gateway (version ${currentVersion})...`);
-    const { ok } = pm2StartGateway(currentVersion);
-    if (ok) {
-        writeRunningVersion(currentVersion);
-        pm2Exec(["save"]);
-        console.log(`[supertask] Gateway upgraded: ${before ?? "unknown"} → ${currentVersion}`);
-    } else {
-        throw new Error(`[supertask] Failed to start Gateway after upgrade`);
-    }
-
+    pm2StartGateway();
+    writeRunningVersion(currentVersion);
+    savePm2State();
     return { before, after: currentVersion, restarted: true };
 }
 
-export function ensureGateway(): void {
-    const currentVersion = getPackageVersion();
-
-    try {
-        const list = pm2JsonList();
-        const proc = list.find((p) => p.name === PROCESS_NAME);
-        if (proc && proc.pm2_env?.status === "online") {
-            const runningVersion = getRunningVersion();
-            if (runningVersion === currentVersion) {
-                return;
-            }
-            console.log(`[supertask] Version changed: ${runningVersion ?? "unknown"} → ${currentVersion}, reloading Gateway...`);
-            pm2Exec(["delete", PROCESS_NAME]);
-            const { ok } = pm2StartGateway(currentVersion);
-            if (ok) writeRunningVersion(currentVersion);
-            pm2Exec(["save"]);
-            return;
-        }
-    } catch {}
-
+export function ensureGateway(): EnsureGatewayResult {
     if (!isPm2Installed()) {
-        console.log("[supertask] Installing pm2 for Gateway process management...");
-        try {
-            execSync("npm install -g pm2", { stdio: "pipe" });
-        } catch {
-            try {
-                execSync("bun install -g pm2", { stdio: "pipe" });
-            } catch {
-                console.warn("[supertask] Could not install pm2. Gateway will not auto-start. Run `supertask install` manually.");
-                return;
-            }
-        }
+        return { ok: false, reason: "pm2-not-installed" };
     }
 
-    const pm2List = pm2JsonList();
-    const existing = pm2List.find((p) => p.name === PROCESS_NAME);
-
-    if (existing) {
-        pm2Exec(["restart", PROCESS_NAME]);
-    } else {
-        const version = getPackageVersion();
-        const { ok } = pm2StartGateway(version);
-        if (ok) writeRunningVersion(version);
+    const currentVersion = getPackageVersion();
+    const processList = pm2JsonList();
+    const existing = processList.find((item) => item.name === PROCESS_NAME);
+    if (existing?.pm2_env?.status === "online" && getRunningVersion() === currentVersion) {
+        return { ok: true, action: "already-running" };
     }
 
-    pm2Exec(["save"]);
+    if (existing) requirePm2(["delete", PROCESS_NAME], "pm2 delete stale Gateway");
+    pm2StartGateway();
+    writeRunningVersion(currentVersion);
+    savePm2State();
+    return { ok: true, action: existing ? "restarted" : "started" };
 }
