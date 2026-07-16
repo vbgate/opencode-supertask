@@ -1,72 +1,98 @@
 import { db, schema } from '@core/db';
 import { eq, and, asc, sql } from 'drizzle-orm';
-import { TaskService } from '@core/services/task.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
-import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
 import type { ScheduleType } from '@core/db/schema';
 
 const { taskTemplates } = schema;
 
 export async function cloneTaskFromTemplate(templateId: number) {
-    const rows = await db
-        .select()
-        .from(taskTemplates)
-        .where(eq(taskTemplates.id, templateId))
-        .limit(1);
-    const tmpl = rows[0];
-    if (!tmpl || !tmpl.enabled) return null;
+    return createTaskFromTemplate(templateId, { advanceSchedule: true });
+}
 
-    const activeCount = await db
-        .select({ count: sql<number>`count(*)` })
-        .from(schema.tasks)
-        .where(
-            and(
-                eq(schema.tasks.templateId, templateId),
-                sql`${schema.tasks.status} IN ('pending', 'running')`,
-            ),
-        )
-        .then((r) => r[0].count);
-
-    if (activeCount >= (tmpl.maxInstances ?? 1)) return null;
-
-    const nowMs = Date.now();
-    const isDelayed = tmpl.scheduleType === 'delayed';
-    const nextRunAt = isDelayed
-        ? null
-        : TaskTemplateService.calculateNextRunAt(
-            tmpl.scheduleType as ScheduleType,
-            tmpl,
-            nowMs,
-        );
-
-    const task = await TaskService.add({
-        name: tmpl.name,
-        agent: tmpl.agent,
-        model: tmpl.model ?? 'default',
-        prompt: tmpl.prompt,
-        cwd: tmpl.cwd ?? null,
-        category: tmpl.category ?? 'general',
-        importance: tmpl.importance ?? 3,
-        urgency: tmpl.urgency ?? 3,
-        batchId: tmpl.batchId,
-        maxRetries: tmpl.maxRetries ?? 3,
-        retryBackoffMs: tmpl.retryBackoffMs ?? 30000,
-        timeoutMs: tmpl.timeoutMs,
-        templateId: tmpl.id,
-        scheduledAt: nowMs,
+export async function triggerTaskFromTemplate(templateId: number) {
+    return createTaskFromTemplate(templateId, {
+        advanceSchedule: false,
+        namePrefix: '[手动触发] ',
     });
+}
 
-    await db
-        .update(taskTemplates)
-        .set({
-            lastRunAt: nowMs,
-            nextRunAt,
-            enabled: isDelayed ? false : tmpl.enabled,
-            updatedAt: nowMs,
-        })
-        .where(eq(taskTemplates.id, templateId));
+function createTaskFromTemplate(
+    templateId: number,
+    options: { advanceSchedule: boolean; namePrefix?: string },
+) {
+    const nowMs = Date.now();
+    return db.transaction((tx) => {
+        const tmpl = tx
+            .select()
+            .from(taskTemplates)
+            .where(eq(taskTemplates.id, templateId))
+            .limit(1)
+            .get();
+        if (!tmpl || (options.advanceSchedule && !tmpl.enabled)) return null;
 
-    return task;
+        const active = tx
+            .select({ count: sql<number>`count(*)` })
+            .from(schema.tasks)
+            .where(and(
+                eq(schema.tasks.templateId, templateId),
+                sql`(
+                    ${schema.tasks.status} IN ('pending', 'running')
+                    OR (
+                        ${schema.tasks.status} = 'failed'
+                        AND ${schema.tasks.retryCount} <= ${schema.tasks.maxRetries}
+                    )
+                    OR EXISTS (
+                        SELECT 1 FROM task_runs AS active_template_run
+                        WHERE active_template_run.task_id = ${schema.tasks.id}
+                          AND active_template_run.status = 'running'
+                    )
+                )`,
+            ))
+            .get();
+        if (Number(active?.count ?? 0) >= (tmpl.maxInstances ?? 1)) return null;
+
+        const isDelayed = tmpl.scheduleType === 'delayed';
+        const nextRunAt = isDelayed
+            ? null
+            : TaskTemplateService.calculateNextRunAt(
+                tmpl.scheduleType as ScheduleType,
+                tmpl,
+                nowMs,
+            );
+        const task = tx
+            .insert(schema.tasks)
+            .values({
+                name: `${options.namePrefix ?? ''}${tmpl.name}`,
+                agent: tmpl.agent,
+                model: tmpl.model ?? 'default',
+                prompt: tmpl.prompt,
+                cwd: tmpl.cwd ?? null,
+                category: tmpl.category ?? 'general',
+                importance: tmpl.importance ?? 3,
+                urgency: tmpl.urgency ?? 3,
+                batchId: tmpl.batchId,
+                maxRetries: tmpl.maxRetries ?? 3,
+                retryBackoffMs: tmpl.retryBackoffMs ?? 30000,
+                timeoutMs: tmpl.timeoutMs,
+                templateId: tmpl.id,
+                scheduledAt: options.advanceSchedule ? (tmpl.nextRunAt ?? nowMs) : nowMs,
+            })
+            .returning()
+            .get();
+
+        if (options.advanceSchedule) {
+            tx.update(taskTemplates)
+                .set({
+                    lastRunAt: nowMs,
+                    nextRunAt,
+                    enabled: isDelayed ? false : tmpl.enabled,
+                    updatedAt: nowMs,
+                })
+                .where(and(eq(taskTemplates.id, templateId), eq(taskTemplates.enabled, true)))
+                .run();
+        }
+        return task;
+    }, { behavior: 'immediate' });
 }
 
 export async function getDueTemplates() {

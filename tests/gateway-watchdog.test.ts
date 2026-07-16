@@ -4,6 +4,7 @@ import { checkHeartbeats } from '../src/gateway/watchdog/heartbeat';
 import { cleanupOldRecords } from '../src/gateway/watchdog/cleanup';
 import { TaskService } from '../src/core/services/task.service';
 import { TaskRunService } from '../src/core/services/task-run.service';
+import { spawn } from 'child_process';
 
 async function createTask(overrides: Record<string, unknown> = {}) {
     return TaskService.add({
@@ -91,6 +92,34 @@ describe('checkHeartbeats', () => {
         const updatedRun = await TaskRunService.getById(run.id);
         expect(updatedRun!.status).toBe('failed');
         expect(updatedRun!.log).toContain('心跳超时');
+    });
+
+    test('子进程身份不匹配时保持隔离，不重派也不误杀', async () => {
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+            stdio: 'ignore',
+        });
+        if (!child.pid) throw new Error('无法启动隔离测试子进程');
+
+        try {
+            const task = await createTask({ maxRetries: 3 });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskRunService.updatePid(run.id, 999_999_999, child.pid);
+
+            const result = await checkHeartbeats(600_000);
+
+            const updatedTask = await TaskService.getById(task.id);
+            const updatedRun = await TaskRunService.getById(run.id);
+            expect(updatedTask!.status).toBe('running');
+            expect(updatedTask!.retryCount).toBe(0);
+            expect(updatedRun!.status).toBe('running');
+            expect(child.exitCode).toBeNull();
+            expect(result.quarantinedRuns).toBe(1);
+            expect(result.recoveredRuns).toBe(0);
+        } finally {
+            child.kill('SIGKILL');
+            await new Promise<void>((resolve) => child.once('close', () => resolve()));
+        }
     });
 });
 

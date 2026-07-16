@@ -6,7 +6,12 @@ import { dashboardApp } from '../src/web/index';
 import { TaskService } from '../src/core/services/task.service';
 import { TaskRunService } from '../src/core/services/task-run.service';
 import { TaskTemplateService } from '../src/core/services/task-template.service';
-import { initializeGatewayHealth, resetGatewayHealth } from '../src/gateway/health';
+import {
+    initializeGatewayHealth,
+    markGatewayFailure,
+    markGatewaySuccess,
+    resetGatewayHealth,
+} from '../src/gateway/health';
 
 describe('Dashboard 安全边界', () => {
     let testDb: ReturnType<typeof setupTestDb>;
@@ -181,5 +186,36 @@ describe('Dashboard 安全边界', () => {
         const body = await healthy.json() as { status: string; lock: { pid: number } };
         expect(body.status).toBe('ok');
         expect(body.lock.pid).toBe(process.pid);
+    });
+
+    test('组件连续失败会降级，下一次成功后恢复并保留最近错误', async () => {
+        initializeGatewayHealth({
+            workerPollIntervalMs: 1000,
+            schedulerEnabled: true,
+            schedulerCheckIntervalMs: 1000,
+            watchdogCheckIntervalMs: 60_000,
+        });
+        const now = Date.now();
+        testDb.sqlite.query(
+            'INSERT INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)',
+        ).run(process.pid, now, now, now);
+
+        markGatewayFailure('worker', new Error('database busy'));
+        const degraded = await dashboardApp.request('http://localhost/health');
+        expect(degraded.status).toBe(503);
+        const degradedBody = await degraded.json() as {
+            components: { worker: { consecutiveFailures: number; lastError: { message: string } } };
+        };
+        expect(degradedBody.components.worker.consecutiveFailures).toBe(1);
+        expect(degradedBody.components.worker.lastError.message).toBe('database busy');
+
+        markGatewaySuccess('worker');
+        const recovered = await dashboardApp.request('http://localhost/health');
+        expect(recovered.status).toBe(200);
+        const recoveredBody = await recovered.json() as {
+            components: { worker: { consecutiveFailures: number; lastError: { message: string } } };
+        };
+        expect(recoveredBody.components.worker.consecutiveFailures).toBe(0);
+        expect(recoveredBody.components.worker.lastError.message).toBe('database busy');
     });
 });

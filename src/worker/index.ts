@@ -3,7 +3,11 @@ import { TaskRunService } from '@core/services/task-run.service';
 import { spawn, type ChildProcess } from 'child_process';
 import type { GatewayConfig } from '@gateway/config';
 import type { Task } from '@core/db/schema';
-import { markGatewayActivity } from '@gateway/health';
+import {
+    markGatewayActivity,
+    markGatewayFailure,
+    markGatewaySuccess,
+} from '@gateway/health';
 import { signalSpawnedProcessTree } from '@core/process-control';
 
 const DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024;
@@ -92,23 +96,34 @@ export class WorkerEngine {
         if (this.stopped) return;
         markGatewayActivity('worker');
 
-        this.pollCyclePromise = this.tryDispatch().finally(() => {
-            this.pollCyclePromise = null;
-            if (this.stopped) return;
-            this.pollTimer = setTimeout(() => this.poll(), this.cfg.pollIntervalMs);
-        });
+        this.pollCyclePromise = this.tryDispatch()
+            .then(() => markGatewaySuccess('worker'))
+            .catch((err) => {
+                markGatewayFailure('worker', err);
+                this.logError('worker poll failed', err);
+            })
+            .finally(() => {
+                this.pollCyclePromise = null;
+                if (this.stopped) return;
+                this.pollTimer = setTimeout(() => this.poll(), this.cfg.pollIntervalMs);
+            });
     }
 
     private async tryDispatch() {
+        await TaskService.resolveBlockedDependencies();
+        await TaskService.resetOrphanRunningToPending();
         await this.reconcileCancelledTasks();
 
         while (!this.stopped && this.runningTasks.size < this.cfg.maxConcurrency) {
+            const databaseRunningCount = await TaskService.countRunning();
+            if (databaseRunningCount >= this.cfg.maxConcurrency) break;
+
             let task: Task | null;
             try {
                 task = await TaskService.next({ excludedBatchIds: [...this.activeBatchIds] });
             } catch (err) {
                 this.logError('task claim failed', err);
-                break;
+                throw err;
             }
             if (!task) break;
             if (this.stopped) break;
@@ -122,12 +137,17 @@ export class WorkerEngine {
                 break;
             }
 
+            let runId: number | null = null;
             try {
                 const run = await TaskRunService.create({
                     taskId: task.id,
                     model: this.resolveModel(task.model),
                     status: 'running',
+                    workerPid: process.pid,
+                    lockedAt: Date.now(),
+                    lockedBy: `gateway-${process.pid}`,
                 });
+                runId = run.id;
 
                 if (this.stopped) {
                     await TaskRunService.fail(run.id, 'Gateway shutdown before spawn');
@@ -138,8 +158,7 @@ export class WorkerEngine {
 
                 if (task.agent === FORBIDDEN_AGENT) {
                     const message = `禁止执行递归 Agent: ${FORBIDDEN_AGENT}`;
-                    await TaskRunService.fail(run.id, message);
-                    await TaskService.fail(task.id, message, {}, { setDeadLetter: true });
+                    await TaskService.failRun(task.id, run.id, message, { setDeadLetter: true });
                     this.releaseBatch(task);
                     continue;
                 }
@@ -149,7 +168,14 @@ export class WorkerEngine {
                 this.releaseBatch(task);
                 const message = `Worker 启动任务失败：${err instanceof Error ? err.message : String(err)}`;
                 try {
-                    await TaskService.fail(task.id, message);
+                    if (runId == null) {
+                        await TaskService.fail(task.id, message);
+                    } else {
+                        const failed = await TaskService.failRun(task.id, runId, message);
+                        if (!failed) {
+                            await TaskRunService.fail(runId, `${message}\n任务状态已被其他操作改变`);
+                        }
+                    }
                 } catch (failErr) {
                     this.logError('failed to compensate task startup', failErr, task.id);
                 }
@@ -184,7 +210,6 @@ export class WorkerEngine {
         const handleData = (data: Buffer) => {
             const text = data.toString();
             entry.output = (entry.output + text).slice(-this.maxOutputChars);
-            process.stdout.write(text);
 
             const match = entry.output.match(/"sessionID"\s*:\s*"(ses_[^"]+)"/);
             if (match?.[1] && match[1] !== entry.sessionId) {
@@ -239,9 +264,8 @@ export class WorkerEngine {
                 : output;
 
             if (code === 0 && !failure) {
-                const completed = await TaskService.done(entry.task.id, log);
+                const completed = await TaskService.completeRun(entry.task.id, entry.runId, log);
                 if (completed) {
-                    await TaskRunService.done(entry.runId, log);
                     console.log(JSON.stringify({
                         ts: new Date().toISOString(),
                         level: 'info',
@@ -251,13 +275,16 @@ export class WorkerEngine {
                     return;
                 }
 
-                await TaskRunService.fail(entry.runId, '任务状态已被其他操作改变');
+                await TaskRunService.fail(entry.runId, '任务或执行记录状态已被其他操作改变');
                 return;
             }
 
-            await TaskRunService.fail(entry.runId, log);
-            const failed = await TaskService.fail(entry.task.id, log);
+            const failed = await TaskService.failRun(entry.task.id, entry.runId, log);
             if (!failed) {
+                await TaskRunService.fail(
+                    entry.runId,
+                    `${log}${log ? '\n' : ''}任务状态已被其他操作改变`,
+                );
                 this.logError('task failure state transition rejected', failure ?? 'unknown failure', entry.task.id);
             }
             console.error(JSON.stringify({

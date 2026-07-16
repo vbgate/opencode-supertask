@@ -29,6 +29,15 @@ function runFailure(args: string[]): string {
     return `${result.stdout}${result.stderr}`;
 }
 
+function setTaskStatus(taskId: number, status: 'running' | 'done'): void {
+    const sqlite = new Database(testDbPath);
+    const now = Math.floor(Date.now() / 1000);
+    sqlite.query(
+        'UPDATE tasks SET status = ?, started_at = ?, finished_at = ? WHERE id = ?',
+    ).run(status, now, status === 'done' ? now : null, taskId);
+    sqlite.close();
+}
+
 beforeAll(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'supertask-db-maintenance-'));
     testDbPath = join(tempDir, 'tasks.db');
@@ -79,9 +88,9 @@ describe('数据库维护 CLI', () => {
         unlockDb.exec('DELETE FROM gateway_lock');
         unlockDb.close();
 
-        runJson<{ id: number; status: string }>(['start', '--id', String(task.id)]);
+        setTaskStatus(task.id, 'running');
         expect(runFailure(['db', 'clear', '--confirm', 'CLEAR'])).toContain('运行中');
-        runJson<{ id: number; status: string }>(['done', '--id', String(task.id)]);
+        setTaskStatus(task.id, 'done');
 
         const cleared = runJson<{
             backupPath: string;
@@ -123,7 +132,7 @@ describe('数据库维护 CLI', () => {
         const interruptedTask = runJson<{ id: number }>([
             'add', '--name', '恢复中断任务', '--agent', 'test-agent', '--prompt', '验证运行态收敛',
         ]);
-        runJson<{ id: number; status: string }>(['start', '--id', String(interruptedTask.id)]);
+        setTaskStatus(interruptedTask.id, 'running');
         const runningDb = new Database(testDbPath);
         runningDb.query(
             "INSERT INTO task_runs (task_id, status, started_at) VALUES (?, 'running', ?)",
@@ -132,7 +141,7 @@ describe('数据库维护 CLI', () => {
 
         const runningBackupPath = join(tempDir, 'running-backup.db');
         runJson<{ path: string }>(['db', 'backup', '--output', runningBackupPath]);
-        runJson<{ id: number; status: string }>(['done', '--id', String(interruptedTask.id)]);
+        setTaskStatus(interruptedTask.id, 'done');
         const closedDb = new Database(testDbPath);
         closedDb.exec("UPDATE task_runs SET status = 'failed' WHERE status = 'running'");
         closedDb.close();

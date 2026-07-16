@@ -34,8 +34,22 @@ export class TaskService {
 
     static async add(data: NewTask): Promise<Task> {
         this.validateNewTask(data);
-        const result = await db.insert(tasks).values(data).returning();
-        return result[0];
+        return db.transaction((tx) => {
+            if (data.dependsOn != null) {
+                const dependency = tx
+                    .select({ id: tasks.id, cwd: tasks.cwd })
+                    .from(tasks)
+                    .where(eq(tasks.id, data.dependsOn))
+                    .get();
+                if (!dependency) {
+                    throw new Error(`dependsOn 指向的任务 #${data.dependsOn} 不存在`);
+                }
+                if ((dependency.cwd ?? null) !== (data.cwd ?? null)) {
+                    throw new Error('dependsOn 必须指向同一 cwd 的任务');
+                }
+            }
+            return tx.insert(tasks).values(data).returning().get();
+        }, { behavior: 'immediate' });
     }
 
     private static validateNewTask(data: NewTask): void {
@@ -101,29 +115,60 @@ export class TaskService {
             conditions.push(batchFilter);
         }
 
-        const allTasks = await db
+        const result = await db
             .select()
             .from(tasks)
-            .where(and(...conditions))
+            .where(and(
+                ...conditions,
+                or(
+                    isNull(tasks.dependsOn),
+                    sql`EXISTS (
+                        SELECT 1 FROM tasks AS dependency_task
+                        WHERE dependency_task.id = ${tasks.dependsOn}
+                          AND dependency_task.status = 'done'
+                          AND dependency_task.cwd IS ${tasks.cwd}
+                    )`,
+                ),
+                or(
+                    isNull(tasks.batchId),
+                    sql`NOT EXISTS (
+                        SELECT 1 FROM tasks AS running_batch_task
+                        WHERE running_batch_task.batch_id = ${tasks.batchId}
+                          AND (
+                              running_batch_task.status = 'running'
+                              OR EXISTS (
+                                  SELECT 1 FROM task_runs AS running_batch_run
+                                  WHERE running_batch_run.task_id = running_batch_task.id
+                                    AND running_batch_run.status = 'running'
+                              )
+                          )
+                    )`,
+                ),
+            ))
             .orderBy(
                 desc(tasks.urgency),
                 desc(tasks.importance),
                 asc(tasks.createdAt),
                 asc(tasks.id),
-            );
+            )
+            .limit(1);
 
-        for (const task of allTasks) {
-            if (task.dependsOn) {
-                const depTask = await this.getById(task.dependsOn, scope);
-                if (depTask && depTask.status === 'done') {
-                    return task;
-                }
-                continue;
-            }
-            return task;
-        }
+        return result[0] ?? null;
+    }
 
-        return null;
+    static async countRunning(): Promise<number> {
+        const result = await db
+            .select({ count: sql<number>`count(*)` })
+            .from(tasks)
+            .where(or(
+                eq(tasks.status, 'running'),
+                sql`EXISTS (
+                    SELECT 1 FROM task_runs AS active_run
+                    WHERE active_run.task_id = ${tasks.id}
+                      AND active_run.status = 'running'
+                )`,
+            ));
+        return Number(result[0]?.count ?? 0);
     }
 
     static async start(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
@@ -208,6 +253,190 @@ export class TaskService {
             .where(and(...conditions))
             .returning();
         return result[0] || null;
+    }
+
+    static async completeRun(taskId: number, runId: number, log?: string): Promise<Task | null> {
+        return db.transaction((tx) => {
+            const currentTask = tx
+                .select()
+                .from(tasks)
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .get();
+            const currentRun = tx
+                .select({ id: taskRuns.id })
+                .from(taskRuns)
+                .where(and(
+                    eq(taskRuns.id, runId),
+                    eq(taskRuns.taskId, taskId),
+                    eq(taskRuns.status, 'running'),
+                ))
+                .get();
+            if (!currentTask || !currentRun) return null;
+
+            const finishedAt = new Date();
+            const completed = tx
+                .update(tasks)
+                .set({
+                    status: 'done',
+                    finishedAt,
+                    resultLog: log,
+                    retryAfter: null,
+                })
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .returning()
+                .get();
+            if (!completed) return null;
+
+            tx.update(taskRuns)
+                .set({ status: 'done', finishedAt, log })
+                .where(and(eq(taskRuns.id, runId), eq(taskRuns.status, 'running')))
+                .run();
+            return completed;
+        }, { behavior: 'immediate' });
+    }
+
+    static async failRun(
+        taskId: number,
+        runId: number,
+        log?: string,
+        options?: { setDeadLetter?: boolean; retryAfterMs?: number },
+    ): Promise<Task | null> {
+        return db.transaction((tx) => {
+            const currentTask = tx
+                .select()
+                .from(tasks)
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .get();
+            const currentRun = tx
+                .select({ id: taskRuns.id })
+                .from(taskRuns)
+                .where(and(
+                    eq(taskRuns.id, runId),
+                    eq(taskRuns.taskId, taskId),
+                    eq(taskRuns.status, 'running'),
+                ))
+                .get();
+            if (!currentTask || !currentRun) return null;
+
+            const newRetryCount = (currentTask.retryCount ?? 0) + 1;
+            const maxRetries = currentTask.maxRetries ?? 3;
+            const isDeadLetter = options?.setDeadLetter ?? newRetryCount > maxRetries;
+            const finishedAt = new Date();
+            const retryAfter = isDeadLetter
+                ? null
+                : (options?.retryAfterMs ?? Date.now() + computeBackoff(
+                    newRetryCount,
+                    currentTask.retryBackoffMs ?? 30000,
+                ));
+
+            const failed = tx
+                .update(tasks)
+                .set({
+                    status: isDeadLetter ? 'dead_letter' : 'failed',
+                    finishedAt,
+                    resultLog: log,
+                    retryCount: newRetryCount,
+                    retryAfter,
+                })
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .returning()
+                .get();
+            if (!failed) return null;
+
+            tx.update(taskRuns)
+                .set({ status: 'failed', finishedAt, log })
+                .where(and(eq(taskRuns.id, runId), eq(taskRuns.status, 'running')))
+                .run();
+            return failed;
+        }, { behavior: 'immediate' });
+    }
+
+    static async recoverRun(
+        taskId: number,
+        runId: number,
+        log: string,
+    ): Promise<{ status: 'pending' | 'dead_letter'; retryCount: number; retryAfterMs: number | null } | null> {
+        return db.transaction((tx) => {
+            const currentTask = tx
+                .select()
+                .from(tasks)
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .get();
+            const currentRun = tx
+                .select({ id: taskRuns.id })
+                .from(taskRuns)
+                .where(and(
+                    eq(taskRuns.id, runId),
+                    eq(taskRuns.taskId, taskId),
+                    eq(taskRuns.status, 'running'),
+                ))
+                .get();
+            if (!currentRun) return null;
+
+            const finishedAt = new Date();
+            tx.update(taskRuns)
+                .set({ status: 'failed', finishedAt, log })
+                .where(and(eq(taskRuns.id, runId), eq(taskRuns.status, 'running')))
+                .run();
+
+            if (!currentTask) return null;
+            const retryCount = (currentTask.retryCount ?? 0) + 1;
+            const maxRetries = currentTask.maxRetries ?? 3;
+            const isDeadLetter = retryCount > maxRetries;
+            const retryAfterMs = isDeadLetter
+                ? null
+                : Date.now() + computeBackoff(
+                    retryCount,
+                    currentTask.retryBackoffMs ?? 30000,
+                );
+
+            tx.update(tasks)
+                .set({
+                    status: isDeadLetter ? 'dead_letter' : 'pending',
+                    startedAt: null,
+                    finishedAt: isDeadLetter ? finishedAt : null,
+                    retryCount,
+                    retryAfter: retryAfterMs,
+                    resultLog: log,
+                })
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .run();
+            return {
+                status: isDeadLetter ? 'dead_letter' : 'pending',
+                retryCount,
+                retryAfterMs,
+            };
+        }, { behavior: 'immediate' });
+    }
+
+    static async resolveBlockedDependencies(): Promise<number> {
+        const finishedAt = new Date();
+        const result = await db
+            .update(tasks)
+            .set({
+                status: 'dead_letter',
+                finishedAt,
+                retryAfter: null,
+                resultLog: '依赖任务不存在、跨项目或已进入不可恢复终态',
+            })
+            .where(and(
+                or(eq(tasks.status, 'pending'), eq(tasks.status, 'failed')),
+                sql`${tasks.dependsOn} IS NOT NULL`,
+                sql`NOT EXISTS (
+                    SELECT 1 FROM tasks AS viable_dependency
+                    WHERE viable_dependency.id = ${tasks.dependsOn}
+                      AND viable_dependency.cwd IS ${tasks.cwd}
+                      AND (
+                          viable_dependency.status IN ('pending', 'running', 'done')
+                          OR (
+                              viable_dependency.status = 'failed'
+                              AND viable_dependency.retry_count <= viable_dependency.max_retries
+                          )
+                      )
+                )`,
+            ))
+            .returning();
+        return result.length;
     }
 
     static async markPendingForRetry(

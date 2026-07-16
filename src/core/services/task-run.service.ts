@@ -1,6 +1,7 @@
 import { db, schema } from '@core/db';
-import { eq, desc, and, or, inArray, sql } from 'drizzle-orm';
+import { eq, desc, and, inArray } from 'drizzle-orm';
 import type { TaskRun, NewTaskRun } from '@core/db/schema';
+import { isProcessAlive } from '@core/process-control';
 
 const { taskRuns } = schema;
 
@@ -8,6 +9,7 @@ export interface StaleRunInfo {
     runId: number;
     taskId: number;
     childPid: number | null;
+    workerPid: number | null;
     taskRetryCount: number;
     taskMaxRetries: number;
     taskRetryBackoffMs: number;
@@ -120,38 +122,35 @@ export class TaskRunService {
 
     static async getStaleRuns(heartbeatTimeoutMs: number): Promise<StaleRunInfo[]> {
         const cutoffMs = Date.now() - heartbeatTimeoutMs;
-        const cutoffSec = Math.floor(cutoffMs / 1000);
         const { tasks: tasksTable } = schema;
         const result = await db
             .select({
                 runId: taskRuns.id,
                 taskId: taskRuns.taskId,
                 childPid: taskRuns.childPid,
+                workerPid: taskRuns.workerPid,
+                startedAt: taskRuns.startedAt,
+                heartbeatAt: taskRuns.heartbeatAt,
                 taskRetryCount: tasksTable.retryCount,
                 taskMaxRetries: tasksTable.maxRetries,
                 taskRetryBackoffMs: tasksTable.retryBackoffMs,
             })
             .from(taskRuns)
             .innerJoin(tasksTable, eq(taskRuns.taskId, tasksTable.id))
-            .where(
-                and(
-                    eq(taskRuns.status, 'running'),
-                    or(
-                        and(
-                            sql`${taskRuns.heartbeatAt} IS NULL`,
-                            sql`${taskRuns.startedAt} < ${cutoffSec}`,
-                        ),
-                        and(
-                            sql`${taskRuns.heartbeatAt} IS NOT NULL`,
-                            sql`${taskRuns.heartbeatAt} < ${cutoffMs}`,
-                        ),
-                    ),
-                ),
-            );
-        return result.map((row) => ({
+            .where(eq(taskRuns.status, 'running'));
+        return result.filter((row) => {
+            const heartbeatExpired = row.heartbeatAt == null
+                ? row.startedAt != null && row.startedAt.getTime() < cutoffMs
+                : row.heartbeatAt < cutoffMs;
+            const ownerExited = row.workerPid != null
+                && row.workerPid > 0
+                && !isProcessAlive(row.workerPid);
+            return heartbeatExpired || ownerExited;
+        }).map((row) => ({
             runId: row.runId,
             taskId: row.taskId,
             childPid: row.childPid,
+            workerPid: row.workerPid,
             taskRetryCount: row.taskRetryCount ?? 0,
             taskMaxRetries: row.taskMaxRetries ?? 3,
             taskRetryBackoffMs: row.taskRetryBackoffMs ?? 30000,

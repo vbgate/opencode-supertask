@@ -15,6 +15,9 @@ interface HealthState {
     startedAt: number;
     config: GatewayHealthConfig;
     lastActivityAt: Record<GatewayComponent, number>;
+    lastSuccessAt: Record<GatewayComponent, number>;
+    consecutiveFailures: Record<GatewayComponent, number>;
+    lastError: Record<GatewayComponent, { at: number; message: string } | null>;
 }
 
 let state: HealthState | null = null;
@@ -29,11 +32,45 @@ export function initializeGatewayHealth(config: GatewayHealthConfig): void {
             scheduler: now,
             watchdog: now,
         },
+        lastSuccessAt: {
+            worker: now,
+            scheduler: now,
+            watchdog: now,
+        },
+        consecutiveFailures: {
+            worker: 0,
+            scheduler: 0,
+            watchdog: 0,
+        },
+        lastError: {
+            worker: null,
+            scheduler: null,
+            watchdog: null,
+        },
     };
 }
 
 export function markGatewayActivity(component: GatewayComponent): void {
     if (state) state.lastActivityAt[component] = Date.now();
+}
+
+export function markGatewaySuccess(component: GatewayComponent): void {
+    if (!state) return;
+    const now = Date.now();
+    state.lastActivityAt[component] = now;
+    state.lastSuccessAt[component] = now;
+    state.consecutiveFailures[component] = 0;
+}
+
+export function markGatewayFailure(component: GatewayComponent, error: unknown): void {
+    if (!state) return;
+    const now = Date.now();
+    state.lastActivityAt[component] = now;
+    state.consecutiveFailures[component] += 1;
+    state.lastError[component] = {
+        at: now,
+        message: error instanceof Error ? error.message : String(error),
+    };
 }
 
 export function resetGatewayHealth(): void {
@@ -48,10 +85,18 @@ function componentStatus(
 ) {
     const lastActivityAt = state?.lastActivityAt[component] ?? null;
     const ageMs = lastActivityAt == null ? null : Math.max(0, now - lastActivityAt);
+    const consecutiveFailures = state?.consecutiveFailures[component] ?? 0;
     return {
         enabled,
-        healthy: !enabled || (ageMs != null && ageMs <= maxAgeMs),
+        healthy: !enabled || (
+            ageMs != null
+            && ageMs <= maxAgeMs
+            && consecutiveFailures === 0
+        ),
         lastActivityAt,
+        lastSuccessAt: state?.lastSuccessAt[component] ?? null,
+        consecutiveFailures,
+        lastError: state?.lastError[component] ?? null,
         ageMs,
         maxAgeMs,
     };

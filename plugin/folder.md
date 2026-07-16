@@ -8,14 +8,15 @@
 
 | 文件 | 导出 | 工具前缀 | 工具数量 |
 |------|------|---------|---------|
-| `supertask.ts` | `SuperTaskPlugin` | `supertask_` | 11 个（add/next/start/done/fail/status/retry/list/get/schedule/upgrade） |
+| `supertask.ts` | `SuperTaskPlugin` | `supertask_` | 8 个（add/next/status/retry/list/get/schedule/upgrade） |
 | `task.ts` | `TaskPlugin` | `task_` | 7 个；旧架构兼容文件，不在当前 npm 导出链路 |
 
 ## 设计
 
 - 使用 `@opencode-ai/plugin` SDK 的 `tool()` 注册
 - 参数 schema 使用 zod 风格定义
-- 创建任务和查询时使用当前 `process.cwd()` 作为项目隔离 cwd
+- 创建任务和查询时使用 OpenCode 工具上下文中的 `context.directory` 作为项目隔离 cwd；调用者传入的旧 `cwd` 参数不会改变作用域
+- 任务的 `running/done/failed` 状态只允许 Gateway Worker 写入，插件不再暴露绕过执行器的生命周期工具
 - 插件初始化会迁移数据库；Gateway 未运行时只在 PM2 已存在的前提下尝试启动，不会安装全局依赖
 - 返回值统一为 JSON 字符串
 

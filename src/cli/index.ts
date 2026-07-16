@@ -6,10 +6,13 @@ import { closeDb } from '@core/db';
 import { parseDuration } from '@core/duration';
 import type { ScheduleType } from '@core/db/schema';
 import {
+    getGatewayDiagnostic,
     getPackageVersion,
     restartGatewayAfterMaintenance,
     stopGatewayForMaintenance,
 } from '../daemon/pm2';
+import { getConfigPath, loadConfig } from '@gateway/config';
+import { spawnSync } from 'child_process';
 import {
     renderDatabaseError,
     renderDatabaseResult,
@@ -149,54 +152,6 @@ program
             }, null, 2));
         } else {
             console.log(JSON.stringify({ id: null, message: 'No executable tasks' }));
-        }
-    }));
-
-program
-    .command('start')
-    .description('开始执行任务（标记为 running）')
-    .requiredOption('--id <id>', '任务 ID')
-    .action(async (options) => withDb(async () => {
-        const task = await TaskService.start(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
-        if (task) {
-            console.log(JSON.stringify({ id: task.id, status: task.status }));
-        } else {
-            console.log(JSON.stringify({ error: 'Task not found' }));
-            process.exit(1);
-        }
-    }));
-
-program
-    .command('done')
-    .description('完成任务（标记为 done）')
-    .requiredOption('--id <id>', '任务 ID')
-    .option('-l, --log <log>', '结果日志')
-    .action(async (options) => withDb(async () => {
-        const task = await TaskService.done(parsePositiveInteger(options.id, 'id'), options.log, { cwd: process.cwd() });
-        if (task) {
-            console.log(JSON.stringify({ id: task.id, status: task.status }));
-        } else {
-            console.log(JSON.stringify({ error: 'Task not found' }));
-            process.exit(1);
-        }
-    }));
-
-program
-    .command('fail')
-    .description('标记任务失败')
-    .requiredOption('--id <id>', '任务 ID')
-    .option('-l, --log <log>', '错误日志')
-    .action(async (options) => withDb(async () => {
-        const task = await TaskService.fail(parsePositiveInteger(options.id, 'id'), options.log, { cwd: process.cwd() });
-        if (task) {
-            console.log(JSON.stringify({
-                id: task.id,
-                status: task.status,
-                retryCount: task.retryCount,
-            }));
-        } else {
-            console.log(JSON.stringify({ error: 'Task not found' }));
-            process.exit(1);
         }
     }));
 
@@ -534,8 +489,87 @@ program
     });
 
 program
+    .command('doctor')
+    .description('检查 OpenCode、数据库、Gateway、Dashboard 和日志轮转')
+    .option('--json', '强制输出 JSON')
+    .action(async (options: { json?: boolean }) => withDb(async () => {
+        const config = loadConfig();
+        const database = DatabaseMaintenanceService.check();
+        const gateway = getGatewayDiagnostic();
+        const opencodeBin = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
+        const opencodeResult = spawnSync(opencodeBin, ['--version'], {
+            encoding: 'utf8',
+            env: process.env,
+        });
+        const opencode = {
+            ok: opencodeResult.status === 0,
+            executable: opencodeBin,
+            version: opencodeResult.status === 0
+                ? opencodeResult.stdout.trim()
+                : null,
+            error: opencodeResult.status === 0
+                ? null
+                : (opencodeResult.error?.message || opencodeResult.stderr.trim() || `退出码 ${opencodeResult.status}`),
+        };
+
+        let dashboard: { enabled: boolean; ok: boolean; url: string; status: number | null; error: string | null } = {
+            enabled: config.dashboard.enabled,
+            ok: !config.dashboard.enabled,
+            url: `http://127.0.0.1:${config.dashboard.port}/health`,
+            status: null,
+            error: null,
+        };
+        if (config.dashboard.enabled) {
+            try {
+                const response = await fetch(dashboard.url, { signal: AbortSignal.timeout(2000) });
+                dashboard = { ...dashboard, ok: response.ok, status: response.status };
+            } catch (error) {
+                dashboard = {
+                    ...dashboard,
+                    error: error instanceof Error ? error.message : String(error),
+                };
+            }
+        }
+
+        const warnings = gateway.pm2Installed && !gateway.logRotationInstalled
+            ? ['未检测到 pm2-logrotate；长期运行前建议安装并限制日志保留量']
+            : [];
+        const ok = opencode.ok
+            && database.ok
+            && gateway.pm2Installed
+            && gateway.status === 'online'
+            && gateway.ready
+            && gateway.logRotationInstalled
+            && dashboard.ok;
+        const report = {
+            ok,
+            packageVersion: getPackageVersion(),
+            configPath: getConfigPath(),
+            opencode,
+            database,
+            gateway,
+            dashboard,
+            warnings,
+        };
+
+        const json = options.json || !process.stdout.isTTY;
+        if (json) {
+            console.log(JSON.stringify(report, null, 2));
+        } else {
+            const mark = (value: boolean) => value ? '✓' : '✗';
+            console.log(`SuperTask doctor: ${ok ? '正常' : '异常'}`);
+            console.log(`${mark(opencode.ok)} OpenCode ${opencode.version ?? opencode.error ?? '不可用'}`);
+            console.log(`${mark(database.ok)} 数据库 ${database.path}（任务 ${database.counts.tasks}，运行中 ${database.runningTasks}）`);
+            console.log(`${mark(gateway.status === 'online' && gateway.ready)} Gateway ${gateway.status ?? 'missing'}${gateway.pid ? `，PID ${gateway.pid}` : ''}${gateway.runningVersion ? `，v${gateway.runningVersion}` : ''}`);
+            console.log(`${mark(dashboard.ok)} Dashboard ${dashboard.enabled ? dashboard.url : '已禁用'}`);
+            for (const warning of warnings) console.log(`! ${warning}`);
+        }
+        if (!ok) process.exitCode = 1;
+    }));
+
+program
     .command('install')
-    .description('Install Gateway as pm2 service (auto-start on boot, crash recovery)')
+    .description('Install Gateway as pm2 service (auto-start, crash recovery, log rotation)')
     .action(async () => {
         try {
             const { install: pm2Install } = await import('../daemon/pm2');

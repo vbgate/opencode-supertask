@@ -1,12 +1,20 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { setupTestDb } from './helpers/mock-db';
-import { cloneTaskFromTemplate, getDueTemplates, initializeNextRunAt } from '../src/gateway/scheduler/job-templates';
+import {
+    cloneTaskFromTemplate,
+    getDueTemplates,
+    initializeNextRunAt,
+    triggerTaskFromTemplate,
+} from '../src/gateway/scheduler/job-templates';
 import { TaskTemplateService } from '../src/core/services/task-template.service';
 import { TaskService } from '../src/core/services/task.service';
+import { TaskRunService } from '../src/core/services/task-run.service';
+
+let testDb: ReturnType<typeof setupTestDb>;
 
 describe('job-templates', () => {
     beforeEach(() => {
-        setupTestDb();
+        testDb = setupTestDb();
     });
 
     describe('cloneTaskFromTemplate', () => {
@@ -73,6 +81,49 @@ describe('job-templates', () => {
             expect(task2).toBeNull();
         });
 
+        test('等待自动重试的 failed 实例仍占用 maxInstances', async () => {
+            const tmpl = await TaskTemplateService.create({
+                name: '失败重试受限模板', agent: 'a', prompt: 'p',
+                scheduleType: 'recurring', intervalMs: 1000, maxInstances: 1, maxRetries: 2,
+            });
+            const first = await cloneTaskFromTemplate(tmpl.id);
+            await TaskService.start(first!.id);
+            await TaskService.fail(first!.id, '等待自动重试');
+
+            expect(await cloneTaskFromTemplate(tmpl.id)).toBeNull();
+        });
+
+        test('已取消但 run 未关闭的实例仍占用 maxInstances', async () => {
+            const tmpl = await TaskTemplateService.create({
+                name: '取消收敛模板', agent: 'a', prompt: 'p',
+                scheduleType: 'recurring', intervalMs: 1000, maxInstances: 1,
+            });
+            const first = await cloneTaskFromTemplate(tmpl.id);
+            await TaskService.start(first!.id);
+            await TaskRunService.create({ taskId: first!.id, status: 'running' });
+            await TaskService.cancel(first!.id);
+
+            expect(await cloneTaskFromTemplate(tmpl.id)).toBeNull();
+            expect(await triggerTaskFromTemplate(tmpl.id)).toBeNull();
+        });
+
+        test('模板更新失败时回滚已插入任务', async () => {
+            const tmpl = await TaskTemplateService.create({
+                name: '事务回滚模板', agent: 'a', prompt: 'p',
+                scheduleType: 'recurring', intervalMs: 1000,
+            });
+            testDb.sqlite.exec(`
+                CREATE TRIGGER reject_template_update
+                BEFORE UPDATE ON task_templates
+                BEGIN
+                    SELECT RAISE(ABORT, '模拟模板更新失败');
+                END;
+            `);
+
+            await expect(cloneTaskFromTemplate(tmpl.id)).rejects.toThrow('模拟模板更新失败');
+            expect(await TaskService.list()).toHaveLength(0);
+        });
+
         test('模板完成时允许再次克隆', async () => {
             const tmpl = await TaskTemplateService.create({
                 name: '可重复模板',
@@ -91,6 +142,26 @@ describe('job-templates', () => {
 
             const task2 = await cloneTaskFromTemplate(tmpl.id);
             expect(task2).not.toBeNull();
+        });
+
+        test('手动触发服从 maxInstances 且不推进模板调度时间', async () => {
+            const template = await TaskTemplateService.create({
+                name: '手动触发模板',
+                agent: 'test-agent',
+                prompt: '执行',
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+                maxInstances: 1,
+            });
+            const before = await TaskTemplateService.getById(template.id);
+
+            const task = await triggerTaskFromTemplate(template.id);
+            expect(task?.name).toBe('[手动触发] 手动触发模板');
+            expect(await triggerTaskFromTemplate(template.id)).toBeNull();
+
+            const after = await TaskTemplateService.getById(template.id);
+            expect(after?.lastRunAt).toBe(before?.lastRunAt);
+            expect(after?.nextRunAt).toBe(before?.nextRunAt);
         });
 
         test('更新模板的 lastRunAt 和 nextRunAt', async () => {

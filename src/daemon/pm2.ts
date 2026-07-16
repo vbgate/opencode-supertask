@@ -1,7 +1,7 @@
 import { execSync, spawnSync } from "child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { dirname, isAbsolute, join } from "path";
+import { delimiter, dirname, isAbsolute, join } from "path";
 import { fileURLToPath } from "url";
 import { Database } from "bun:sqlite";
 import { loadConfig } from "../gateway/config";
@@ -14,6 +14,16 @@ interface Pm2Process {
     name: string;
     pid?: number;
     pm2_env?: { status?: string };
+}
+
+export interface GatewayDiagnostic {
+    pm2Installed: boolean;
+    processFound: boolean;
+    status: string | null;
+    pid: number | null;
+    ready: boolean;
+    runningVersion: string | null;
+    logRotationInstalled: boolean;
 }
 
 const GATEWAY_LOCK_STALE_MS = 30_000;
@@ -68,6 +78,35 @@ function getRunningVersion(): string | null {
     } catch {
         return null;
     }
+}
+
+export function getGatewayDiagnostic(): GatewayDiagnostic {
+    if (!isPm2Installed()) {
+        return {
+            pm2Installed: false,
+            processFound: false,
+            status: null,
+            pid: null,
+            ready: false,
+            runningVersion: getRunningVersion(),
+            logRotationInstalled: false,
+        };
+    }
+
+    const processes = pm2JsonList();
+    const gateway = processes.find((item) => item.name === PROCESS_NAME);
+    const pid = typeof gateway?.pid === "number" ? gateway.pid : null;
+    return {
+        pm2Installed: true,
+        processFound: gateway != null,
+        status: gateway?.pm2_env?.status ?? null,
+        pid,
+        ready: pid != null && isGatewayReady(pid),
+        runningVersion: getRunningVersion(),
+        logRotationInstalled: processes.some((item) => (
+            item.name === "pm2-logrotate" && item.pm2_env?.status === "online"
+        )),
+    };
 }
 
 function writeRunningVersion(version: string): void {
@@ -195,11 +234,38 @@ function installPm2(): boolean {
     }
 }
 
-function pm2Exec(args: string[]): { ok: boolean; output: string } {
-    const result = spawnSync(pm2Bin(), args, {
+function resolveCommand(command: string): string | null {
+    const lookup = process.platform === "win32" ? "where" : "which";
+    const result = spawnSync(lookup, [command], { encoding: "utf8" });
+    return result.status === 0 ? result.stdout.trim().split("\n")[0] || null : null;
+}
+
+function npmPreferredEnvironment(): { command: string; env: NodeJS.ProcessEnv } | null {
+    if (process.platform === "win32") return null;
+    const npm = resolveCommand("npm");
+    const node = resolveCommand("node");
+    if (!npm || !node) return null;
+    const command = resolvePm2Bin();
+    const path = [...new Set([
+        dirname(command),
+        dirname(npm),
+        dirname(node),
+        "/usr/local/bin",
+        "/usr/bin",
+        "/bin",
+    ])].join(delimiter);
+    return { command, env: { ...process.env, PATH: path } };
+}
+
+function pm2Exec(
+    args: string[],
+    options: { preferNpm?: boolean } = {},
+): { ok: boolean; output: string } {
+    const npmEnvironment = options.preferNpm ? npmPreferredEnvironment() : null;
+    const result = spawnSync(npmEnvironment?.command ?? pm2Bin(), args, {
         stdio: ["pipe", "pipe", "pipe"],
         encoding: "utf-8",
-        env: process.env,
+        env: npmEnvironment?.env ?? process.env,
         shell: process.platform === "win32",
     });
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
@@ -211,6 +277,26 @@ function requirePm2(args: string[], action: string): string {
     const result = pm2Exec(args);
     if (!result.ok) throw new Error(`[supertask] ${action} failed: ${result.output || "unknown pm2 error"}`);
     return result.output;
+}
+
+export function ensurePm2LogRotation(): boolean {
+    if (!isPm2Installed()) return false;
+    const installed = pm2JsonList().some((item) => item.name === "pm2-logrotate");
+    if (!installed) {
+        const result = pm2Exec(["install", "pm2-logrotate"], { preferNpm: true });
+        if (!result.ok) return false;
+    }
+
+    for (const [key, value] of [
+        ["max_size", "10M"],
+        ["retain", "7"],
+        ["compress", "true"],
+        ["workerInterval", "3600"],
+    ] as const) {
+        const result = pm2Exec(["set", `pm2-logrotate:${key}`, value]);
+        if (!result.ok) return false;
+    }
+    return true;
 }
 
 function pm2JsonList(): Pm2Process[] {
@@ -314,6 +400,14 @@ function findBunPath(): string {
     }
 }
 
+function pm2MaxMemoryRestart(): string {
+    const value = process.env.SUPERTASK_PM2_MAX_MEMORY ?? "512M";
+    if (!/^\d+(?:K|M|G)$/i.test(value)) {
+        throw new Error("[supertask] SUPERTASK_PM2_MAX_MEMORY 必须使用 512M / 1G 这类格式");
+    }
+    return value;
+}
+
 function pm2StartGateway(gatewayEntry = resolveGatewayEntry()): void {
     const configuredKillTimeout = Number(process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS);
     const killTimeoutMs = Number.isInteger(configuredKillTimeout) && configuredKillTimeout >= 5000
@@ -330,6 +424,8 @@ function pm2StartGateway(gatewayEntry = resolveGatewayEntry()): void {
         "5000",
         "--max-restarts",
         "30",
+        "--max-memory-restart",
+        pm2MaxMemoryRestart(),
         "--kill-timeout",
         String(killTimeoutMs),
         "--",
@@ -359,6 +455,9 @@ export function install(): void {
     const version = getPackageVersion();
     pm2StartGateway();
     writeRunningVersion(version);
+    if (!ensurePm2LogRotation()) {
+        console.warn("[supertask] pm2-logrotate 安装或配置失败；Gateway 已运行，但请执行 `supertask doctor` 检查日志治理。");
+    }
     savePm2State();
 
     if (process.platform === "darwin") {

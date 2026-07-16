@@ -1,8 +1,8 @@
 # SuperTask 当前架构与决策
 
 > 状态：当前有效
-> 最后核对：2026-07-15
-> 适用版本：源码 `main` 分支，当前开发基线 0.1.26
+> 最后核对：2026-07-16
+> 适用版本：源码 `main` 分支，当前开发基线 0.1.27
 
 ## 结论与适用边界
 
@@ -61,7 +61,7 @@ Gateway 启动时按以下顺序工作：
 TaskService.next()
   ├─ 状态：pending，或已到 retryAfter 的 failed
   ├─ 依赖：dependsOn 指向的任务必须 done
-  ├─ 批次：排除当前 Worker 已运行的非空 batchId
+  ├─ 批次：排除数据库中已有 running 任务的非空 batchId
   └─ 排序：urgency DESC → importance DESC → createdAt ASC → id ASC
           ↓
 TaskService.start() 条件更新，pending/failed → running
@@ -74,7 +74,9 @@ opencode run --agent <task.agent> --format json [-m <model>] <task.prompt>
 
 Worker 直接执行目标 Agent，不再嵌套 `supertask-runner`。这减少了一层 LLM 决策、递归风险和 PID 追踪歧义；`task.agent=supertask-runner` 会被明确拒绝并进入死信。`agents/supertask-runner.md` 仅是历史备份。
 
-`cwd` 是任务的项目隔离键，也是子进程工作目录。插件创建任务时强制记录当前 `process.cwd()`；插件侧查询和状态变更按同一 `cwd` 限定。
+`cwd` 是任务的项目隔离键，也是子进程工作目录。插件使用 OpenCode 工具上下文的 `directory`，不信任模型传入的 `cwd`；插件侧查询和状态变更按同一目录限定。
+
+`running`、任务终态和 `task_runs` 执行终态只由 Gateway 写入。CLI 和插件不暴露 `start/done/fail`，避免外部调用制造没有 owner/PID 的运行记录或让任务与 run 状态分裂。
 
 ## 状态与重试语义
 
@@ -97,11 +99,11 @@ pending / running / failed ──cancel──> cancelled
 
 ## 并发、超时与故障恢复
 
-- 全局并发由 `worker.maxConcurrency` 控制，默认 2。
-- 同一非空 `batchId` 在单个 Gateway 内串行；不同批次和空 `batchId` 可以并行。
-- Worker 硬超时、运行中取消和宽限期后的关闭会终止子进程树；Watchdog 在使用数据库记录的旧 PID 前，还会校验进程命令是否匹配配置的 OpenCode 可执行文件。
-- Worker 定时更新 `task_runs.heartbeatAt`。Watchdog 发现心跳过期时终止记录的 `childPid`、关闭本次 run，并按同一重试预算恢复任务。
-- Gateway 获得单实例锁后、Worker 接单前，会把不存在 active run 的遗留 `running` 任务恢复为 `pending`，覆盖进程在创建 run 前后崩溃留下的孤儿状态。
+- 全局并发由 `worker.maxConcurrency` 控制，默认 2；Worker 每次接单前同时统计 `running` 任务和仍未关闭的 running run，因此 Gateway 重启或取消收敛期间不会暂时突破额度。
+- 同一非空 `batchId` 依据数据库中的任务/run 运行态全局串行；Gateway 重启后旧任务尚未收敛时，同批次新任务仍不会启动。不同批次和空 `batchId` 可以并行。
+- Worker 硬超时、运行中取消和宽限期后的关闭会终止子进程树；Watchdog 在使用数据库记录的旧 PID 前，会校验命令同时包含目标 OpenCode 可执行文件、`run`、`--agent` 和 `--format json`。无法确认身份或无法确认退出时保持隔离，不重派任务。
+- Worker 定时更新 `task_runs.heartbeatAt`。Watchdog 在 owner PID 已退出或心跳过期时立即检查子进程，确认其结束后在一个事务内关闭 run，并按同一重试预算恢复任务。
+- Gateway 获得单实例锁后、Worker 接单前，会把不存在 active run 的遗留 `running` 任务恢复为 `pending`；run 创建时立即记录 owner PID，覆盖进程在创建 run 或启动子进程前后崩溃留下的窗口。
 - 输出只保留最后 64 KiB，避免单任务无限占用 Gateway 内存；发现 JSON 输出中的 `sessionID` 会写入执行记录。
 
 该实现提供 at-least-once 倾向的本地恢复，不保证 exactly-once。任务执行外部副作用时，应自行设计幂等键或可重复执行策略。
@@ -111,7 +113,7 @@ pending / running / failed ──cancel──> cancelled
 模板支持 `cron`、`recurring` 和一次性 `delayed`：
 
 - Scheduler 只克隆普通任务，实际执行仍遵循队列优先级、批次、重试和超时规则。
-- `maxInstances` 统计同模板下 `pending` 和 `running` 数量；达到上限时本轮不克隆。
+- `maxInstances` 统计同模板下 `pending`、`running` 和仍有自动重试预算的 `failed`；自动调度和 Dashboard 手动触发都服从该上限。
 - `delayed` 成功克隆一次后自动禁用。
 - `cron` 与 `recurring` 的下一次时间基于本次成功克隆时的当前时间计算。
 - 当前没有可配置的 catch-up/backfill；Gateway 离线期间错过的多个周期不会逐个补跑。恢复后最多生成一个到期实例，再从当前时间计算下一次。
@@ -138,7 +140,7 @@ Dashboard 只绑定 `127.0.0.1`，浏览器写请求检查 `Sec-Fetch-Site` 和�
 
 以下是当前源码行为，不应由文档掩盖：
 
-- `/health` 会检查 ready 锁与 Worker、Scheduler、Watchdog 活跃时间，但仍没有指标导出、结构化日志轮转策略或告警集成。
+- `/health` 检查 ready 锁、Worker/Scheduler/Watchdog 活跃时间和连续失败，并保留最近错误；`supertask doctor` 汇总 OpenCode、数据库、PM2、Dashboard 与日志轮转。显式 `supertask install` 会配置 `pm2-logrotate`，但仍没有指标导出和告警集成。
 - 单实例锁、任务抢占和状态更新足以覆盖当前单机模型，但不提供分布式租约和 exactly-once 保证。
 
 这些限制一旦成为真实故障来源，应先写复现测试，再调整实现与本文档。

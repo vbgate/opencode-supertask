@@ -2,7 +2,11 @@ import { getDueTemplates, cloneTaskFromTemplate, initializeNextRunAt } from './j
 import type { GatewayConfig } from '@gateway/config';
 import { db, schema } from '@core/db';
 import { isNull } from 'drizzle-orm';
-import { markGatewayActivity } from '../health';
+import {
+    markGatewayActivity,
+    markGatewayFailure,
+    markGatewaySuccess,
+} from '../health';
 
 export class Scheduler {
     private stopped = false;
@@ -17,6 +21,7 @@ export class Scheduler {
         markGatewayActivity('scheduler');
 
         await this.initializeTemplates();
+        markGatewaySuccess('scheduler');
 
         this.timer = setInterval(() => this.tick(), this.cfg.scheduler.checkIntervalMs);
     }
@@ -33,6 +38,7 @@ export class Scheduler {
         if (this.stopped || this.ticking) return;
         markGatewayActivity('scheduler');
         this.ticking = true;
+        let hadFailure = false;
         try {
             const dueTemplates = await getDueTemplates();
             for (const tmpl of dueTemplates) {
@@ -48,6 +54,8 @@ export class Scheduler {
                         }));
                     }
                 } catch (err) {
+                    hadFailure = true;
+                    markGatewayFailure('scheduler', err);
                     console.error(JSON.stringify({
                         ts: new Date().toISOString(),
                         level: 'error',
@@ -57,7 +65,9 @@ export class Scheduler {
                     }));
                 }
             }
+            if (!hadFailure) markGatewaySuccess('scheduler');
         } catch (err) {
+            markGatewayFailure('scheduler', err);
             console.error(JSON.stringify({
                 ts: new Date().toISOString(),
                 level: 'error',

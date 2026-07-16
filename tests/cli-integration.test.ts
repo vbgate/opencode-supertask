@@ -33,8 +33,6 @@ afterAll(() => {
 
 describe('CLI integration', () => {
     let taskId1: number;
-    let taskId2: number;
-    let batchTaskId: number;
 
     test('add task', () => {
         const result = runJson<{ id: number; status: string }>(
@@ -50,7 +48,6 @@ describe('CLI integration', () => {
             `add --name "批次任务B" --agent "test-agent" --prompt "批次测试" --batch "batch-test-001"`,
         );
         expect(result.id).toBeGreaterThan(0);
-        batchTaskId = result.id;
     });
 
     test('list tasks', () => {
@@ -72,32 +69,6 @@ describe('CLI integration', () => {
         expect(task).toBeDefined();
     });
 
-    test('start task', () => {
-        const task = runJson<{ id: number; status: string }>(`start --id ${taskId1}`);
-        expect(task.status).toBe('running');
-    });
-
-    test('done task', () => {
-        const task = runJson<{ id: number; status: string }>(`done --id ${taskId1} --log "测试完成"`);
-        expect(task.status).toBe('done');
-    });
-
-    test('fail and retry task', () => {
-        const added = runJson<{ id: number }>(
-            `add --name "失败重试测试" --agent "test-agent" --prompt "失败测试"`,
-        );
-        taskId2 = added.id;
-
-        run(`start --id ${taskId2}`);
-        const failed = runJson<{ id: number; status: string; retryCount: number }>(
-            `fail --id ${taskId2} --log "模拟失败"`,
-        );
-        expect(failed.status).toBe('failed');
-
-        const retried = runJson<{ id: number; status: string }>(`retry --id ${taskId2}`);
-        expect(retried.status).toBe('pending');
-    });
-
     test('cancel task', () => {
         const added = runJson<{ id: number }>(
             `add --name "取消测试" --agent "test-agent" --prompt "取消"`,
@@ -110,13 +81,6 @@ describe('CLI integration', () => {
         const stats = runJson<Record<string, number>>('status');
         expect(stats.total).toBeGreaterThan(0);
         expect(typeof stats.done).toBe('number');
-    });
-
-    test('batch retry', () => {
-        run(`start --id ${batchTaskId}`);
-        run(`fail --id ${batchTaskId} --log "批次失败"`);
-        const result = runJson<{ retried: number; batchId: string }>(`retry --batch batch-test-001`);
-        expect(result.retried).toBeGreaterThanOrEqual(1);
     });
 
     test('delete task', () => {

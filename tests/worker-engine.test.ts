@@ -102,6 +102,7 @@ describe('WorkerEngine', () => {
         expect(completed.resultLog).toContain('任务执行完成');
         expect(runs).toHaveLength(1);
         expect(runs[0].status).toBe('done');
+        expect(runs[0].workerPid).toBe(process.pid);
         expect(runs[0].sessionId).toBe('ses_worker_test');
         expect(runs[0].log).toContain('任务执行完成');
     });
@@ -176,6 +177,56 @@ describe('WorkerEngine', () => {
         expect(worker.getRunningCount()).toBe(0);
     });
 
+    test('取消与子进程失败竞态仍会立即关闭 run', async () => {
+        const fake = createFakeOpencode({ exitCode: 7, delayMs: 100 });
+        const task = await TaskService.add({
+            name: '取消失败竞态测试',
+            agent: 'test-agent',
+            prompt: '取消后立即失败',
+            maxRetries: 0,
+        });
+        const config = createConfig();
+        config.worker.pollIntervalMs = 10_000;
+        const worker = new WorkerEngine(config, { opencodeBin: fake.executable });
+        workers.push(worker);
+
+        worker.start();
+        await waitForStatus(task.id, ['running']);
+        await TaskService.cancel(task.id);
+        const deadline = Date.now() + 3_000;
+        let runs = await TaskRunService.listByTaskId(task.id);
+        while (runs[0]?.status === 'running' && Date.now() < deadline) {
+            await Bun.sleep(20);
+            runs = await TaskRunService.listByTaskId(task.id);
+        }
+        expect((await TaskService.getById(task.id))!.status).toBe('cancelled');
+        expect(runs[0].status).toBe('failed');
+        expect(runs[0].log).toContain('任务状态已被其他操作改变');
+        expect(worker.getRunningCount()).toBe(0);
+    });
+
+    test('spawn 同步失败会同时关闭任务和已创建的 run', async () => {
+        const fake = createFakeOpencode({});
+        const task = await TaskService.add({
+            name: 'spawn 同步失败测试',
+            agent: 'test-agent',
+            prompt: '无效工作目录',
+            cwd: 'invalid\0cwd',
+            maxRetries: 0,
+        });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        workers.push(worker);
+
+        worker.start();
+        const failed = await waitForStatus(task.id, ['dead_letter']);
+        const runs = await TaskRunService.listByTaskId(task.id);
+
+        expect(failed.resultLog).toContain('Worker 启动任务失败');
+        expect(runs).toHaveLength(1);
+        expect(runs[0].status).toBe('failed');
+        expect(worker.getRunningCount()).toBe(0);
+    });
+
     test('优雅停止在宽限期内等待任务自然完成', async () => {
         const fake = createFakeOpencode({ delayMs: 120 });
         const task = await TaskService.add({
@@ -214,5 +265,36 @@ describe('WorkerEngine', () => {
 
         expect(interrupted).toEqual([task.id]);
         expect(worker.getRunningCount()).toBe(0);
+    });
+
+    test('重启后数据库中的运行任务继续占用全局并发额度', async () => {
+        const fake = createFakeOpencode({});
+        const existing = await TaskService.add({
+            name: '旧 Gateway 正在执行',
+            agent: 'test-agent',
+            prompt: '不能与新任务并发',
+        });
+        await TaskService.start(existing.id);
+        const existingRun = await TaskRunService.create({
+            taskId: existing.id,
+            status: 'running',
+        });
+        await TaskRunService.updatePid(existingRun.id, process.pid, process.pid);
+
+        const pending = await TaskService.add({
+            name: '等待全局额度',
+            agent: 'test-agent',
+            prompt: '必须保持等待',
+        });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        workers.push(worker);
+
+        worker.start();
+        await Bun.sleep(100);
+
+        expect((await TaskService.getById(existing.id))!.status).toBe('running');
+        expect((await TaskService.getById(pending.id))!.status).toBe('pending');
+        expect(worker.getRunningCount()).toBe(0);
+        expect(existsSync(fake.argsFile)).toBe(false);
     });
 });

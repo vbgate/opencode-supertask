@@ -1,60 +1,91 @@
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskService } from '@core/services/task.service';
-import { computeBackoff } from '@core/backoff';
-import { signalRecordedProcessTree } from '@core/process-control';
+import {
+    signalRecordedProcessTreeWithResult,
+    waitForProcessExit,
+} from '@core/process-control';
 
 export async function checkHeartbeats(heartbeatTimeoutMs: number) {
     const staleRuns = await TaskRunService.getStaleRuns(heartbeatTimeoutMs);
-    if (staleRuns.length === 0) return;
+    const result = {
+        staleRuns: staleRuns.length,
+        recoveredRuns: 0,
+        quarantinedRuns: 0,
+        failedRuns: 0,
+    };
+    if (staleRuns.length === 0) return result;
 
     for (const run of staleRuns) {
         try {
             if (run.childPid != null && run.childPid > 0) {
                 const expectedExecutable = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
-                const killed = signalRecordedProcessTree(run.childPid, 'SIGKILL', expectedExecutable);
-                if (!killed) {
+                const signalResult = signalRecordedProcessTreeWithResult(
+                    run.childPid,
+                    'SIGKILL',
+                    expectedExecutable,
+                );
+                if (signalResult === 'signalled') {
+                    const exited = await waitForProcessExit(run.childPid);
+                    if (!exited) {
+                        console.warn(JSON.stringify({
+                            ts: new Date().toISOString(),
+                            level: 'warn',
+                            msg: 'stale child process did not exit; task remains quarantined',
+                            taskId: run.taskId,
+                            runId: run.runId,
+                            childPid: run.childPid,
+                        }));
+                        result.quarantinedRuns += 1;
+                        continue;
+                    }
+                } else if (signalResult !== 'not-running') {
                     console.warn(JSON.stringify({
                         ts: new Date().toISOString(),
                         level: 'warn',
-                        msg: 'stale child process was not killed because identity validation failed',
+                        msg: 'stale child process could not be safely terminated; task remains quarantined',
                         taskId: run.taskId,
                         runId: run.runId,
                         childPid: run.childPid,
+                        reason: signalResult,
                     }));
+                    result.quarantinedRuns += 1;
+                    continue;
                 }
             }
 
-            await TaskRunService.fail(run.runId, `心跳超时 (${heartbeatTimeoutMs / 1000}s)，Watchdog kill`);
+            const recovery = await TaskService.recoverRun(
+                run.taskId,
+                run.runId,
+                `执行所有者退出或心跳超时 (${heartbeatTimeoutMs / 1000}s)，Watchdog 已确认子进程结束`,
+            );
+            if (!recovery) continue;
+            result.recoveredRuns += 1;
 
-            const newRetryCount = run.taskRetryCount + 1;
-            const maxRetries = run.taskMaxRetries;
-
-            if (newRetryCount > maxRetries) {
-                await TaskService.markDeadLetter(run.taskId, newRetryCount);
+            if (recovery.status === 'dead_letter') {
                 console.log(JSON.stringify({
                     ts: new Date().toISOString(),
                     level: 'warn',
                     msg: 'task dead_letter',
                     taskId: run.taskId,
                     runId: run.runId,
-                    retryCount: newRetryCount,
-                    maxRetries,
+                    retryCount: recovery.retryCount,
+                    maxRetries: run.taskMaxRetries,
                 }));
             } else {
-                const backoffMs = computeBackoff(newRetryCount, run.taskRetryBackoffMs);
-                const retryAfter = Date.now() + backoffMs;
-                await TaskService.markPendingForRetry(run.taskId, retryAfter, newRetryCount);
                 console.log(JSON.stringify({
                     ts: new Date().toISOString(),
                     level: 'warn',
                     msg: 'task retry scheduled',
                     taskId: run.taskId,
                     runId: run.runId,
-                    retryCount: newRetryCount,
-                    retryAfterMs: backoffMs,
+                    retryCount: recovery.retryCount,
+                    retryAfterMs: recovery.retryAfterMs == null
+                        ? null
+                        : Math.max(0, recovery.retryAfterMs - Date.now()),
                 }));
             }
         } catch (err) {
+            result.failedRuns += 1;
             console.error(JSON.stringify({
                 ts: new Date().toISOString(),
                 level: 'error',
@@ -65,4 +96,5 @@ export async function checkHeartbeats(heartbeatTimeoutMs: number) {
             }));
         }
     }
+    return result;
 }

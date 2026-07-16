@@ -117,16 +117,10 @@ describe('边界条件测试', () => {
             expect(next!.id).toBe(t2.id);
         });
 
-        test('next 处理 dependsOn 指向不存在任务的情况', async () => {
-            await TaskService.add({
-                name: '悬空依赖',
-                agent: 'a',
-                prompt: 'p',
-                dependsOn: 99999,
-            });
-
-            const next = await TaskService.next();
-            expect(next).toBeNull();
+        test('add 拒绝 dependsOn 指向不存在任务', async () => {
+            await expect(TaskService.add({
+                name: '悬空依赖', agent: 'a', prompt: 'p', dependsOn: 99999,
+            })).rejects.toThrow('不存在');
         });
     });
 

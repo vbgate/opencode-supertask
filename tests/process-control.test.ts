@@ -51,7 +51,9 @@ writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));
 setInterval(() => {}, 1000);
 `);
     chmodSync(executable, 0o755);
-    const leader = spawn(executable, [], { detached: true, stdio: 'ignore' });
+    const leader = spawn(executable, [
+        'run', '--agent', 'test-agent', '--format', 'json', '等待进程终止测试',
+    ], { detached: true, stdio: 'ignore' });
     children.push(leader);
     return { executable, childPidFile, leader };
 }

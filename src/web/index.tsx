@@ -14,6 +14,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { dirname } from 'path';
 import type { TaskStatus } from '@core/db/schema';
 import { getGatewayHealth } from '@gateway/health';
+import { triggerTaskFromTemplate } from '@gateway/scheduler/job-templates';
 
 const app = new Hono();
 const TASK_STATUSES = new Set<TaskStatus>([
@@ -677,21 +678,8 @@ app.post('/api/templates/:id/trigger', async (c) => {
     if (id === null) return c.json({ error: 'invalid id' }, 400);
     const tmpl = await TaskTemplateService.getById(id);
     if (!tmpl) return c.json({ error: 'not found' }, 404);
-    const task = await TaskService.add({
-        name: `[手动触发] ${tmpl.name}`,
-        agent: tmpl.agent,
-        model: tmpl.model,
-        prompt: tmpl.prompt,
-        cwd: tmpl.cwd,
-        category: tmpl.category,
-        importance: tmpl.importance,
-        urgency: tmpl.urgency,
-        batchId: tmpl.batchId,
-        maxRetries: tmpl.maxRetries,
-        retryBackoffMs: tmpl.retryBackoffMs,
-        timeoutMs: tmpl.timeoutMs,
-        templateId: tmpl.id,
-    });
+    const task = await triggerTaskFromTemplate(id);
+    if (!task) return c.json({ error: 'maxInstances reached' }, 409);
     return c.json({ success: true, taskId: task.id });
 });
 

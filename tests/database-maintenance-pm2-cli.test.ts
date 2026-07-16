@@ -57,6 +57,15 @@ function writeGatewayLock(): void {
     sqlite.close();
 }
 
+function setTaskStatus(taskId: number, status: 'running' | 'done'): void {
+    const sqlite = new Database(testDbPath);
+    const now = Math.floor(Date.now() / 1000);
+    sqlite.query(
+        'UPDATE tasks SET status = ?, started_at = ?, finished_at = ? WHERE id = ?',
+    ).run(status, now, status === 'done' ? now : null, taskId);
+    sqlite.close();
+}
+
 function setPm2Online(): void {
     writeFileSync(pm2StatePath, 'online');
     writeGatewayLock();
@@ -164,7 +173,7 @@ describe('数据库维护 CLI 的 PM2 生命周期编排', () => {
         const runningTask = runJson<{ id: number }>([
             'add', '--name', '失败恢复验证任务', '--agent', 'test-agent', '--prompt', '验证失败恢复',
         ]);
-        runJson<{ status: string }>(['start', '--id', String(runningTask.id)]);
+        setTaskStatus(runningTask.id, 'running');
         setPm2Online();
         expect(runFailure(['db', 'clear', '--confirm', 'CLEAR'])).toContain('运行中');
         expect(readFileSync(pm2StatePath, 'utf8')).toBe('online');
@@ -173,7 +182,7 @@ describe('数据库维护 CLI 的 PM2 生命周期编排', () => {
         expect(calls.filter((call) => call[0] === 'stop')).toHaveLength(4);
         expect(calls.filter((call) => call[0] === 'start')).toHaveLength(3);
 
-        runJson<{ status: string }>(['done', '--id', String(runningTask.id)]);
+        setTaskStatus(runningTask.id, 'done');
         runJson<{ id: number }>([
             'add', '--name', '重启失败验证任务', '--agent', 'test-agent', '--prompt', '验证维护结果提示',
         ]);

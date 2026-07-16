@@ -64,7 +64,10 @@ describe('CLI 输入校验', () => {
         const task = runJson<{ id: number }>([
             'add', '--name', '运行中任务', '--agent', 'test-agent', '--prompt', '验证删除保护',
         ]);
-        runJson<{ status: string }>(['start', '--id', String(task.id)]);
+        const sqlite = new Database(testDbPath);
+        sqlite.query('UPDATE tasks SET status = ?, started_at = ? WHERE id = ?')
+            .run('running', Math.floor(Date.now() / 1000), task.id);
+        sqlite.close();
 
         const result = runCommand(['delete', '--id', String(task.id)]);
         expect(result.status).not.toBe(0);

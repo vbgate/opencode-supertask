@@ -16,7 +16,7 @@ SQLite（tasks / task_runs / task_templates）
 Gateway ─ Worker + Scheduler + Watchdog + Dashboard
 ```
 
-- 插件在 `plugin/supertask.ts` 注册 11 个 `supertask_*` 工具：`add/next/start/done/fail/status/retry/list/get/schedule/upgrade`。
+- 插件在 `plugin/supertask.ts` 注册 8 个 `supertask_*` 工具：`add/next/status/retry/list/get/schedule/upgrade`；运行态与执行终态只允许 Gateway 写入，不得恢复外部 `start/done/fail`。
 - Worker 通过参数数组直接执行 `opencode run --agent <task.agent> --format json <task.prompt>`；退出码决定成功或失败，Gateway 统一写任务状态和执行记录。
 - `agents/supertask-runner.md` 与 `plugin/task.ts` 是旧架构遗留，不是当前 npm 运行链路；不得重新接入嵌套 runner。
 - pm2 是可选守护层：仅显式运行 `supertask install` 时允许安装；插件加载不得静默安装全局依赖。前台运行使用 `supertask gateway`。
@@ -52,6 +52,7 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - 数据库初始化时启用 WAL、创建 `gateway_lock` 并自动执行 `drizzle/` migrations。
 - Gateway 用 SQLite `BEGIN IMMEDIATE` + `gateway_lock` 保证单实例；Dashboard 默认只监听 `127.0.0.1:4680`。
 - Gateway 仅在 Worker、Scheduler、Watchdog 和 Dashboard 启动完成后写入 `gateway_lock.ready_at`；PM2 `online` 不能单独作为就绪依据，进程 PID 必须匹配新鲜 ready 锁。
+- `/health` 必须同时反映组件活跃度和连续失败；`supertask doctor` 汇总 OpenCode、数据库、PM2 ready 锁、Dashboard 与日志轮转。显式 `supertask install` 配置有限保留的 PM2 日志轮转。
 - 数据库检查、备份、清空和恢复统一经过 `DatabaseMaintenanceService`；CLI 清空/恢复必须显式确认并拒绝运行中任务，且只可自动停启 PID 与当前数据库新鲜 ready 锁一致的 PM2 Gateway；前台或无法确认归属的进程必须拒绝误杀。清空/恢复前必须自动创建校验通过的安全备份，默认在操作失败时也恢复原 Gateway 状态，`--keep-stopped` 除外。
 - Dashboard 清空只能豁免当前 Gateway PID，仍必须服务端确认、拒绝运行中任务并在同一事务内先备份后删除；不得恢复为直接 `DELETE` 三张表的路由实现。
 - Dashboard 的浏览器写请求必须通过同源检查，数据库字符串进入 HTML 前必须调用 `esc`；API 的 ID、状态和配置不得直接断言类型。
@@ -65,8 +66,8 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 ## 核心业务约束
 
 - 任务状态：`pending | running | done | failed | dead_letter | cancelled`；执行记录状态：`running | done | failed`。
-- `cwd` 是任务的项目隔离键；插件默认使用提交任务时的 `process.cwd()`，查询和状态变更必须保持同一作用域。
-- 队列顺序保持 `urgency DESC → importance DESC → createdAt ASC → id ASC`；同一 `batchId` 串行，不同批次可并行，依赖任务仅在 `dependsOn` 指向的任务完成后运行。
+- `cwd` 是任务的项目隔离键；插件必须使用 OpenCode 工具上下文的 `directory`，不得信任模型传入的 `cwd`，查询和状态变更必须保持同一作用域。
+- 队列顺序保持 `urgency DESC → importance DESC → createdAt ASC → id ASC`；全局并发和同一 `batchId` 串行必须依据数据库运行态，在 Gateway 重启后仍成立；不同批次可并行，依赖任务仅在同 cwd 的 `dependsOn` 完成后运行。
 - `maxRetries` 表示首次执行之外允许的重试次数；失败任务按指数退避，耗尽后进入 `dead_letter`，手动重试会重置重试预算。
 - `retryBackoffMs` 和 `timeoutMs` 可按任务覆盖；调度模板克隆时必须保留 `cwd/batchId/maxRetries/retryBackoffMs/timeoutMs`。
 - 运行中任务进入 `cancelled` 后，Worker 必须在轮询周期内终止对应进程树并关闭 run；Gateway 关闭时先按 `shutdownGracePeriodMs` drain，只有剩余任务才重置为 `pending`。

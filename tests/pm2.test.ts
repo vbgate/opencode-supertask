@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+    ensurePm2LogRotation,
     ensureGateway,
     getPackageVersion,
     installMacLaunchAgent,
@@ -43,6 +44,40 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 describe('PM2 Gateway 管理', () => {
+    test('显式安装流程会配置有限保留的 PM2 日志轮转', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-logrotate-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const moduleState = join(dir, 'module-state');
+        const log = join(dir, 'calls.jsonl');
+        writeFileSync(fakePm2, `#!/usr/bin/env node
+const { appendFileSync, existsSync, writeFileSync } = require('fs');
+const args = process.argv.slice(2);
+if (args[0] === '--version') process.exit(0);
+if (args[0] === 'jlist') {
+    console.log(existsSync(${JSON.stringify(moduleState)})
+        ? JSON.stringify([{ name: 'pm2-logrotate', pid: 42, pm2_env: { status: 'online' } }])
+        : '[]');
+    process.exit(0);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'install') writeFileSync(${JSON.stringify(moduleState)}, 'installed');
+`);
+        chmodSync(fakePm2, 0o755);
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+
+        expect(ensurePm2LogRotation()).toBe(true);
+        const calls = readFileSync(log, 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line) as string[]);
+        expect(calls).toEqual([
+            ['install', 'pm2-logrotate'],
+            ['set', 'pm2-logrotate:max_size', '10M'],
+            ['set', 'pm2-logrotate:retain', '7'],
+            ['set', 'pm2-logrotate:compress', 'true'],
+            ['set', 'pm2-logrotate:workerInterval', '3600'],
+        ]);
+    });
+
     test('macOS 用户级 LaunchAgent 使用 pm2 resurrect 且无需 sudo', () => {
         const dir = mkdtempSync(join(tmpdir(), 'supertask-launch-agent-'));
         dirs.push(dir);
@@ -127,7 +162,8 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
         const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
         expect(calls[0]).toEqual([
             'start', '/tmp/bun executable', '--name', 'supertask-gateway', '--interpreter', 'none',
-            '--restart-delay', '5000', '--max-restarts', '30', '--kill-timeout', '35000', '--', gateway,
+            '--restart-delay', '5000', '--max-restarts', '30', '--max-memory-restart', '512M',
+            '--kill-timeout', '35000', '--', gateway,
         ]);
         expect(calls[1]).toEqual(['save']);
         expect(readFileSync(versionFile, 'utf8')).toBe(getPackageVersion());

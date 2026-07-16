@@ -220,6 +220,16 @@ describe('TaskRunService', () => {
             expect(stale.length).toBe(0);
         });
 
+        test('执行所有者 PID 已退出时无需等待心跳超时', async () => {
+            const task = await TaskService.add({ name: '所有者退出任务', agent: 'a', prompt: 'p' });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskRunService.updatePid(run.id, 2_147_483_647, 0);
+
+            const stale = await TaskRunService.getStaleRuns(86_400_000);
+            expect(stale.map((item) => item.runId)).toContain(run.id);
+        });
+
         test('非 running 状态不算 stale', async () => {
             const task = await createTask();
             const run = await TaskRunService.create({ taskId: task.id, status: 'running' });

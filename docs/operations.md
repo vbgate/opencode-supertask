@@ -1,7 +1,7 @@
 # SuperTask 运行与排障手册
 
 > 状态：当前有效
-> 最后核对：2026-07-15
+> 最后核对：2026-07-16
 
 ## 启动方式与 PM2
 
@@ -14,7 +14,7 @@ PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler�
 | 长期后台运行 | `supertask install` | 是；缺失时会显式全局安装 |
 | 打开已运行 Gateway 的 Dashboard | `supertask ui` | 否；该命令只打开浏览器 |
 
-`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次重启，并把 PM2 kill timeout 设为 drain 宽限期加 5 秒，随后执行 `pm2 save`。macOS 会直接安装用户级 `~/Library/LaunchAgents/com.supertask.pm2-resurrect.plist`，登录时运行 `pm2 resurrect`，不需要 sudo；其他系统继续使用 `pm2 startup`，如果需要管理员命令则按 PM2 输出手工完成。
+`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次不稳定重启、默认 512 MB 内存重启阈值，并把 PM2 kill timeout 设为 drain 宽限期加 5 秒；随后安装/配置 `pm2-logrotate`（单文件 10 MB、保留 7 份、压缩、每小时检查）并执行 `pm2 save`。macOS 会直接安装用户级 `~/Library/LaunchAgents/com.supertask.pm2-resurrect.plist`，登录时运行 `pm2 resurrect`，不需要 sudo；其他系统继续使用 `pm2 startup`，如果需要管理员命令则按 PM2 输出手工完成。
 
 插件加载时会检查 `gateway_lock`：已有新鲜心跳就不处理；没有运行实例且机器已安装 PM2 时，会启动或按包版本重启 Gateway；没有 PM2 时只提示用户，不会静默安装全局依赖。
 
@@ -22,6 +22,7 @@ PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler�
 
 ```bash
 supertask config
+supertask doctor
 supertask status
 pm2 status
 pm2 logs supertask-gateway
@@ -48,6 +49,7 @@ supertask db check   # 完整性、外键、业务表和运行状态检查
 | SQLite | `~/.local/share/opencode/tasks.db` | `SUPERTASK_DB_PATH` |
 | Gateway 配置 | `~/.config/opencode/supertask.json` | `SUPERTASK_CONFIG_PATH` |
 | 目标 OpenCode 可执行文件 | `opencode` | `SUPERTASK_OPENCODE_BIN` |
+| PM2 内存重启阈值 | `512M` | `SUPERTASK_PM2_MAX_MEMORY`，格式如 `256M` / `1G` |
 
 数据库连接启用 WAL 和 5 秒 `busy_timeout`。每次新连接初始化会自动执行 migrations、启用外键并检查孤立记录；检查失败会拒绝继续运行，不会自动删除用户数据。
 
@@ -124,14 +126,16 @@ supertask add -n "生成报告" -a "reporter" -p "汇总本周进展" \
 supertask retry --id 42   # 仅 failed/dead_letter；清零重试计数
 ```
 
-模板的 `maxInstances` 只统计该模板产生的 `pending` 和 `running` 任务。达到上限时保留到期状态，等容量释放后再生成一个实例；不会回放离线期间错过的每个周期。
+模板的 `maxInstances` 统计该模板产生的 `pending`、`running` 和仍有自动重试预算的 `failed`。达到上限时保留到期状态，等容量释放后再生成一个实例；Dashboard 手动触发也不会绕过上限。不会回放离线期间错过的每个周期。
 
 ## 健康检查与可观测性
 
-Gateway 提供 `/health`，只有 PM2 PID 匹配新鲜 `gateway_lock.ready_at`，且 Worker、Scheduler、Watchdog 最近仍有活动时才返回 200。建议组合以下信号判断：
+Gateway 提供 `/health`，只有 PM2 PID 匹配新鲜 `gateway_lock.ready_at`，且 Worker、Scheduler、Watchdog 最近仍有活动并且最近一次循环已经从错误中恢复时才返回 200。响应包含每个组件的 `lastSuccessAt`、`consecutiveFailures` 和 `lastError`。优先使用聚合诊断：
 
 ```bash
 pm2 status
+supertask doctor
+supertask doctor --json
 supertask status
 curl -fsS http://127.0.0.1:4680/ >/dev/null
 curl -fsS http://127.0.0.1:4680/health
@@ -139,9 +143,10 @@ curl -fsS http://127.0.0.1:4680/health
 
 - PM2 `online` 只说明包装进程存在；SuperTask 自身还要求 PM2 PID 与 ready 锁 PID 一致。
 - `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
-- 最可靠的运行证据是 `pm2 logs supertask-gateway` 中的 Gateway 启动日志、任务状态变化和最新 `task_runs` 心跳。
+- Watchdog 无法确认旧 PID 身份或无法确认子进程退出时会让任务保持隔离，并使 `/health` 降级；它不会为了恢复绿灯而冒险重派可能仍在执行的任务。
+- 最可靠的运行证据是 `supertask doctor` 全部通过、`pm2 logs supertask-gateway` 中有启动/状态变化，以及最新 `task_runs` 心跳。`doctor` 失败时返回非零退出码，适合外部巡检。
 
-如需无人值守运行，仍缺少指标、告警和日志轮转的项目级约定；应由实际部署环境补齐。
+显式安装会治理 PM2 日志；Worker 不再把完整模型输出重复写到 stdout，完整的截断结果仍保存在任务/run 中。项目仍不内置通知渠道和指标后端，可用外部巡检定期执行 `supertask doctor --json` 并对非零退出码告警。
 
 ## 排障
 
@@ -150,7 +155,7 @@ curl -fsS http://127.0.0.1:4680/health
 1. 运行 `supertask status`，确认确实有 `pending` 或可重试的 `failed`。
 2. 使用 PM2 时检查 `pm2 status` 和 `pm2 logs supertask-gateway`；不用 PM2 时直接运行 `supertask gateway` 观察启动错误。
 3. 运行 `supertask config` 验证配置能否加载，确认 Worker 并发不为零、Scheduler 在需要模板时已启用。
-4. 检查任务是否仍在 `retryAfter` 退避期、是否等待未完成的 `dependsOn`，或同一 `batchId` 是否已有任务运行。
+4. 检查任务是否仍在 `retryAfter` 退避期、是否等待未完成的 `dependsOn`，或同一 `batchId` 是否已有任务运行。不可恢复或丢失的依赖会自动把下游收敛到 `dead_letter`，不会永久保持 pending。
 5. 确认 `task.agent` 存在且不是已废弃的 `supertask-runner`，并确认任务 `cwd` 可访问。
 
 ### Gateway 提示已有实例

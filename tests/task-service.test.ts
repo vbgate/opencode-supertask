@@ -55,6 +55,19 @@ describe('TaskService', () => {
             await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', maxRetries: -1 })).rejects.toThrow('maxRetries');
             await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', timeoutMs: 999 })).rejects.toThrow('timeoutMs');
         });
+
+        test('拒绝不存在或跨 cwd 的依赖任务', async () => {
+            await expect(TaskService.add({
+                name: '悬空依赖任务', agent: 'a', prompt: 'p', cwd: '/项目甲', dependsOn: 99999,
+            })).rejects.toThrow('不存在');
+
+            const dependency = await TaskService.add({
+                name: '另一个项目的前置任务', agent: 'a', prompt: 'p', cwd: '/项目乙',
+            });
+            await expect(TaskService.add({
+                name: '跨项目依赖任务', agent: 'a', prompt: 'p', cwd: '/项目甲', dependsOn: dependency.id,
+            })).rejects.toThrow('同一 cwd');
+        });
     });
 
     describe('getById', () => {
@@ -201,6 +214,43 @@ describe('TaskService', () => {
             const next = await TaskService.next({ excludedBatchIds: ['batch-1'] });
             expect(next).not.toBeNull();
             expect(next!.id).toBe(t2.id);
+        });
+
+        test('数据库中已有运行任务时自动排除同一批次', async () => {
+            const running = await TaskService.add({
+                name: '崩溃前运行任务', agent: 'a', prompt: 'p', batchId: '关键批次',
+            });
+            const waiting = await TaskService.add({
+                name: '同批次等待任务', agent: 'a', prompt: 'p', batchId: '关键批次',
+            });
+            const other = await TaskService.add({
+                name: '其他批次任务', agent: 'a', prompt: 'p', batchId: '其他批次',
+            });
+            await TaskService.start(running.id);
+
+            expect((await TaskService.next())?.id).toBe(other.id);
+            await TaskService.cancel(other.id);
+            expect(await TaskService.next()).toBeNull();
+            expect((await TaskService.getById(waiting.id))?.status).toBe('pending');
+        });
+
+        test('已取消但 run 尚未关闭时继续占用并发和批次锁', async () => {
+            const active = await TaskService.add({
+                name: '取消收敛中', agent: 'a', prompt: 'p', batchId: 'batch-cancelling',
+            });
+            const sameBatch = await TaskService.add({
+                name: '同批次等待', agent: 'a', prompt: 'p', batchId: 'batch-cancelling',
+            });
+            const other = await TaskService.add({
+                name: '其他批次', agent: 'a', prompt: 'p', batchId: 'batch-other',
+            });
+            await TaskService.start(active.id);
+            await TaskRunService.create({ taskId: active.id, status: 'running' });
+            await TaskService.cancel(active.id);
+
+            expect(await TaskService.countRunning()).toBe(1);
+            expect((await TaskService.next())?.id).toBe(other.id);
+            expect((await TaskService.getById(sameBatch.id))?.status).toBe('pending');
         });
 
         test('retryAfter 未到期时不返回 failed 任务', async () => {
@@ -650,6 +700,43 @@ describe('TaskService', () => {
             expect(stats.failed).toBe(0);
             expect(stats.dead_letter).toBe(0);
             expect(stats.cancelled).toBe(0);
+        });
+    });
+
+    describe('运行一致性', () => {
+        test('任务和 run 成功状态在同一操作中完成', async () => {
+            const task = await TaskService.add({ name: '原子成功任务', agent: 'a', prompt: 'p' });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+
+            expect((await TaskService.completeRun(task.id, run.id, '完成'))?.status).toBe('done');
+            expect((await TaskRunService.getById(run.id))?.status).toBe('done');
+        });
+
+        test('任务和 run 失败状态在同一操作中完成', async () => {
+            const task = await TaskService.add({
+                name: '原子失败任务', agent: 'a', prompt: 'p', maxRetries: 0,
+            });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+
+            expect((await TaskService.failRun(task.id, run.id, '失败'))?.status).toBe('dead_letter');
+            expect((await TaskRunService.getById(run.id))?.status).toBe('failed');
+        });
+
+        test('依赖进入不可恢复终态后自动收敛下游任务', async () => {
+            const dependency = await TaskService.add({
+                name: '失败前置任务', agent: 'a', prompt: 'p', cwd: '/项目甲',
+            });
+            const dependent = await TaskService.add({
+                name: '等待前置的任务', agent: 'a', prompt: 'p', cwd: '/项目甲', dependsOn: dependency.id,
+            });
+            await TaskService.cancel(dependency.id);
+
+            expect(await TaskService.resolveBlockedDependencies()).toBe(1);
+            const resolved = await TaskService.getById(dependent.id);
+            expect(resolved?.status).toBe('dead_letter');
+            expect(resolved?.resultLog).toContain('依赖任务');
         });
     });
 
