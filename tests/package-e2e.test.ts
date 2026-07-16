@@ -92,12 +92,16 @@ if (args[0] === '--version') { console.log('6.0.0'); process.exit(0); }
 if (args[0] === 'jlist') {
     const current = state();
     console.log(current && alive(current.pid)
-        ? JSON.stringify([{ name: 'supertask-gateway', pid: current.pid, pm2_env: { status: 'online' } }])
+        ? JSON.stringify([{ name: 'supertask-gateway', pid: current.pid, pm2_env: {
+            status: 'online', args: [current.entry], pm_exec_path: current.bunPath,
+            pm_cwd: current.cwd, env: process.env
+        } }])
         : '[]');
     process.exit(0);
 }
 if (args[0] === 'start') {
     const separator = args.indexOf('--');
+    const cwd = args[args.indexOf('--cwd') + 1];
     const out = openSync(logPath, 'a');
     writeFileSync(logPath, JSON.stringify({
         launcherPid: process.pid,
@@ -106,11 +110,12 @@ if (args[0] === 'start') {
     }) + '\\n', { flag: 'a' });
     const child = spawn(args[1], args.slice(separator + 1), {
         detached: true,
+        cwd,
         env: process.env,
         stdio: ['ignore', out, out],
     });
     child.unref();
-    writeFileSync(statePath, JSON.stringify({ pid: child.pid }));
+    writeFileSync(statePath, JSON.stringify({ pid: child.pid, entry: args.at(-1), bunPath: args[1], cwd }));
     process.exit(0);
 }
 if (args[0] === 'delete') {
@@ -135,7 +140,7 @@ process.exit(0);
     process.env.SUPERTASK_GATEWAY_ENTRY = join(process.cwd(), 'dist/gateway/index.js');
     process.env.SUPERTASK_VERSION_FILE = join(dir, 'gateway-version');
     process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '10000';
-    process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '6000';
+    process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '16000';
 }, 30_000);
 
 afterAll(async () => {

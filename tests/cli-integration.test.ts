@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { join, dirname } from 'path';
 import { tmpdir } from 'os';
@@ -75,6 +76,63 @@ describe('CLI integration', () => {
         );
         const cancelled = runJson<{ id: number; status: string }>(`cancel --id ${added.id}`);
         expect(cancelled.status).toBe('cancelled');
+    });
+
+    test('run abandon 需要强确认并只关闭已取消的旧版无 PID run', () => {
+        const added = runJson<{ id: number }>(
+            'add --name "旧版隔离任务" --agent "test-agent" --prompt "人工确认恢复"',
+        );
+        const sqlite = new Database(testDbPath);
+        let runId: number;
+        try {
+            sqlite.query("UPDATE tasks SET status = 'running' WHERE id = ?").run(added.id);
+            const row = sqlite.query(`
+                INSERT INTO task_runs (task_id, status, worker_pid, child_pid, launch_protocol)
+                VALUES (?, 'running', 2147483647, NULL, NULL)
+                RETURNING id
+            `).get(added.id) as { id: number };
+            runId = row.id;
+        } finally {
+            sqlite.close();
+        }
+
+        const cancelled = runJson<{ status: string }>(`cancel --id ${added.id}`);
+        expect(cancelled.status).toBe('cancelled');
+
+        const denied = spawnSync(
+            'bun',
+            ['run', 'src/cli/index.ts', 'run', 'abandon', '--id', String(runId)],
+            {
+                cwd: process.cwd(),
+                encoding: 'utf8',
+                env: { ...process.env, SUPERTASK_DB_PATH: testDbPath },
+            },
+        );
+        expect(denied.status).not.toBe(0);
+        expect(`${denied.stdout}${denied.stderr}`).toContain('--confirm ABANDON');
+
+        const abandoned = runJson<{
+            runId: number;
+            taskId: number;
+            runStatus: string;
+            taskStatus: string;
+        }>(`run abandon --id ${runId} --confirm ABANDON`);
+        expect(abandoned).toEqual({
+            runId,
+            taskId: added.id,
+            runStatus: 'failed',
+            taskStatus: 'cancelled',
+        });
+
+        const checked = new Database(testDbPath, { readonly: true });
+        try {
+            const run = checked.query('SELECT status FROM task_runs WHERE id = ?').get(runId) as { status: string };
+            const task = checked.query('SELECT status FROM tasks WHERE id = ?').get(added.id) as { status: string };
+            expect(run.status).toBe('failed');
+            expect(task.status).toBe('cancelled');
+        } finally {
+            checked.close();
+        }
     });
 
     test('stats', () => {

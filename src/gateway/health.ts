@@ -2,13 +2,14 @@ import { sqlite } from '@core/db';
 
 const LOCK_STALE_MS = 30_000;
 
-type GatewayComponent = 'worker' | 'scheduler' | 'watchdog';
+type GatewayComponent = 'worker' | 'scheduler' | 'watchdog' | 'watchdogCleanup';
 
 interface GatewayHealthConfig {
     workerPollIntervalMs: number;
     schedulerEnabled: boolean;
     schedulerCheckIntervalMs: number;
     watchdogCheckIntervalMs: number;
+    watchdogCleanupIntervalMs: number;
 }
 
 interface HealthState {
@@ -31,21 +32,25 @@ export function initializeGatewayHealth(config: GatewayHealthConfig): void {
             worker: now,
             scheduler: now,
             watchdog: now,
+            watchdogCleanup: now,
         },
         lastSuccessAt: {
             worker: now,
             scheduler: now,
             watchdog: now,
+            watchdogCleanup: now,
         },
         consecutiveFailures: {
             worker: 0,
             scheduler: 0,
             watchdog: 0,
+            watchdogCleanup: 0,
         },
         lastError: {
             worker: null,
             scheduler: null,
             watchdog: null,
+            watchdogCleanup: null,
         },
     };
 }
@@ -121,6 +126,12 @@ export function getGatewayHealth(now = Date.now()) {
         Math.max((state?.config.watchdogCheckIntervalMs ?? 60_000) * 3, 5000),
         now,
     );
+    const watchdogCleanup = componentStatus(
+        'watchdogCleanup',
+        true,
+        Math.max((state?.config.watchdogCleanupIntervalMs ?? 86_400_000) * 2, 60_000),
+        now,
+    );
 
     let lock: {
         pid: number | null;
@@ -151,13 +162,14 @@ export function getGatewayHealth(now = Date.now()) {
         && lock.healthy
         && worker.healthy
         && scheduler.healthy
-        && watchdog.healthy;
+        && watchdog.healthy
+        && watchdogCleanup.healthy;
 
     return {
         status: healthy ? 'ok' as const : 'degraded' as const,
         pid: process.pid,
         uptimeMs: state ? Math.max(0, now - state.startedAt) : 0,
         lock,
-        components: { worker, scheduler, watchdog },
+        components: { worker, scheduler, watchdog, watchdogCleanup },
     };
 }

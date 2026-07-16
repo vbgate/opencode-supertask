@@ -13,7 +13,8 @@ export function createTestDb() {
             pid INTEGER NOT NULL,
             acquired_at INTEGER NOT NULL,
             heartbeat_at INTEGER NOT NULL,
-            ready_at INTEGER
+            ready_at INTEGER,
+            version TEXT
         );
     `);
 
@@ -59,7 +60,8 @@ export function createTestDb() {
             locked_by TEXT,
             heartbeat_at INTEGER,
             worker_pid INTEGER,
-            child_pid INTEGER
+            child_pid INTEGER,
+            launch_protocol TEXT
         );
     `);
 

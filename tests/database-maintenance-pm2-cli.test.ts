@@ -17,6 +17,7 @@ let fakePm2Path: string;
 let pm2StatePath: string;
 let pm2LogPath: string;
 let pm2StartFailurePath: string;
+let gatewayEntryPath: string;
 
 function cliEnv(): NodeJS.ProcessEnv {
     return {
@@ -85,7 +86,9 @@ beforeAll(() => {
     pm2StatePath = join(tempDir, 'pm2-state');
     pm2LogPath = join(tempDir, 'pm2-calls.jsonl');
     pm2StartFailurePath = join(tempDir, 'pm2-start-failure');
+    gatewayEntryPath = join(tempDir, 'gateway.js');
     writeFileSync(pm2LogPath, '');
+    writeFileSync(gatewayEntryPath, '');
     writeFileSync(fakePm2Path, `#!/usr/bin/env bun
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'fs';
 import { Database } from 'bun:sqlite';
@@ -96,7 +99,13 @@ if (args[0] === '--version') {
 }
 if (args[0] === 'jlist') {
     const status = readFileSync(${JSON.stringify(pm2StatePath)}, 'utf8').trim();
-    console.log(JSON.stringify([{ name: 'supertask-gateway', pid: ${process.pid}, pm2_env: { status } }]));
+    console.log(JSON.stringify([{ name: 'supertask-gateway', pid: ${process.pid}, pm2_env: {
+        status,
+        args: [${JSON.stringify(gatewayEntryPath)}],
+        pm_exec_path: ${JSON.stringify(fakePm2Path)},
+        pm_cwd: ${JSON.stringify(process.cwd())},
+        env: process.env
+    } }]));
     process.exit(0);
 }
 appendFileSync(${JSON.stringify(pm2LogPath)}, JSON.stringify(args) + '\\n');

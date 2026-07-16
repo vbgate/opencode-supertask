@@ -1,5 +1,5 @@
 import { db, schema } from '@core/db';
-import { eq, desc } from 'drizzle-orm';
+import { and, eq, desc, sql } from 'drizzle-orm';
 import type { TaskTemplate, NewTaskTemplate, ScheduleType } from '@core/db/schema';
 import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
 
@@ -9,21 +9,20 @@ export class TaskTemplateService {
     static async create(data: NewTaskTemplate): Promise<TaskTemplate> {
         this.validate(data);
         const now = Date.now();
-        const result = await db.insert(taskTemplates).values({ ...data, createdAt: now, updatedAt: now }).returning();
-        const tmpl = result[0];
-
-        if (tmpl.nextRunAt == null) {
-            const nextRunAt = this.calculateNextRunAt(
-                tmpl.scheduleType as ScheduleType,
-                tmpl,
-            );
-            if (nextRunAt != null) {
-                await db.update(taskTemplates).set({ nextRunAt }).where(eq(taskTemplates.id, tmpl.id));
-                tmpl.nextRunAt = nextRunAt;
-            }
-        }
-
-        return tmpl;
+        const nextRunAt = data.nextRunAt ?? this.calculateNextRunAt(
+            data.scheduleType as ScheduleType,
+            {
+                cronExpr: data.cronExpr ?? null,
+                intervalMs: data.intervalMs ?? null,
+                runAt: data.runAt ?? null,
+            },
+            now,
+        );
+        const result = await db
+            .insert(taskTemplates)
+            .values({ ...data, nextRunAt, createdAt: now, updatedAt: now })
+            .returning();
+        return result[0];
     }
 
     private static validate(data: NewTaskTemplate): void {
@@ -79,12 +78,30 @@ export class TaskTemplateService {
     }
 
     static async enable(id: number): Promise<TaskTemplate | null> {
-        const result = await db
-            .update(taskTemplates)
-            .set({ enabled: true, updatedAt: Date.now() })
-            .where(eq(taskTemplates.id, id))
-            .returning();
-        return result[0] || null;
+        return db.transaction((tx) => {
+            const template = tx
+                .select()
+                .from(taskTemplates)
+                .where(eq(taskTemplates.id, id))
+                .limit(1)
+                .get();
+            if (!template) return null;
+
+            const nextRunAt = template.nextRunAt ?? this.calculateNextRunAt(
+                template.scheduleType as ScheduleType,
+                template,
+            );
+            if (nextRunAt == null) {
+                throw new Error(`模板 #${id} 无法计算下一次执行时间，已保持禁用`);
+            }
+
+            return tx
+                .update(taskTemplates)
+                .set({ enabled: true, nextRunAt, updatedAt: Date.now() })
+                .where(eq(taskTemplates.id, id))
+                .returning()
+                .get() ?? null;
+        }, { behavior: 'immediate' });
     }
 
     static async disable(id: number): Promise<TaskTemplate | null> {
@@ -99,6 +116,58 @@ export class TaskTemplateService {
     static async delete(id: number): Promise<boolean> {
         const result = await db.delete(taskTemplates).where(eq(taskTemplates.id, id)).returning();
         return result.length > 0;
+    }
+
+    static async deleteExpiredDelayed(
+        retentionDays: number,
+        shouldStop: () => boolean = () => false,
+    ): Promise<number> {
+        const cutoffMs = Date.now() - retentionDays * 86_400_000;
+        const batchSize = 500;
+        let deletedTotal = 0;
+
+        while (!shouldStop()) {
+            const deleted = db.transaction((tx) => tx
+                .delete(taskTemplates)
+                .where(and(
+                    sql`${taskTemplates.id} IN (
+                        SELECT candidate.id
+                        FROM task_templates AS candidate
+                        WHERE candidate.schedule_type = 'delayed'
+                          AND candidate.enabled = 0
+                          AND candidate.last_run_at IS NOT NULL
+                          AND candidate.last_run_at < ${cutoffMs}
+                          AND NOT EXISTS (
+                              SELECT 1 FROM tasks AS active_task
+                              WHERE active_task.template_id = candidate.id
+                                AND (
+                                    active_task.status IN ('pending', 'running')
+                                    OR (
+                                        active_task.status = 'failed'
+                                        AND active_task.retry_count <= active_task.max_retries
+                                    )
+                                )
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM task_runs AS active_run
+                              INNER JOIN tasks AS run_task ON run_task.id = active_run.task_id
+                              WHERE run_task.template_id = candidate.id
+                                AND active_run.status = 'running'
+                          )
+                        ORDER BY candidate.last_run_at, candidate.id
+                        LIMIT ${batchSize}
+                    )`,
+                ))
+                .returning({ id: taskTemplates.id })
+                .all()
+                .length, { behavior: 'immediate' });
+            if (deleted === 0) break;
+            deletedTotal += deleted;
+            await Bun.sleep(0);
+        }
+
+        return deletedTotal;
     }
 
     static calculateNextRunAt(

@@ -1,17 +1,42 @@
 import { sqlite } from '@core/db';
 import { loadConfig } from './config';
-import { WorkerEngine } from '@worker/index';
+import { WorkerEngine, assertWorkerProcessIsolationSupported } from '@worker/index';
 import { Watchdog } from './watchdog';
 import { Scheduler } from './scheduler';
 import { closeDb } from '@core/db';
 import { TaskService } from '@core/services/task.service';
-import { TaskRunService } from '@core/services/task-run.service';
 import { initializeGatewayHealth, resetGatewayHealth } from './health';
-import { isProcessAlive } from '@core/process-control';
+import { identifyGatewayProcess, isProcessAlive } from '@core/process-control';
+import { getPackageVersion } from '@core/package-version';
 
-// gateway_lock.heartbeat_at / acquired_at 单位：毫秒（Date.now()）
-// 超过此阈值未心跳则视为锁持有者已死亡
 const STALE_THRESHOLD_MS = 30_000;
+
+export interface GatewayShutdownFailure {
+    step: string;
+    error: string;
+}
+
+export async function runGatewayShutdownStep(
+    failures: GatewayShutdownFailure[],
+    step: string,
+    operation: () => void | Promise<void>,
+): Promise<void> {
+    try {
+        await operation();
+    } catch (error) {
+        failures.push({
+            step,
+            error: error instanceof Error ? error.message : String(error),
+        });
+    }
+}
+
+export function resolveGatewayShutdownExitCode(
+    requestedExitCode: number,
+    failures: GatewayShutdownFailure[],
+): number {
+    return failures.length > 0 ? 1 : requestedExitCode;
+}
 
 export function acquireLock(): boolean {
     const now = Date.now();
@@ -28,15 +53,27 @@ export function acquireLock(): boolean {
 
         if (existing) {
             const lockHolderAlive = existing.pid !== pid && isProcessAlive(existing.pid);
-            if (now - existing.heartbeat_at < STALE_THRESHOLD_MS && lockHolderAlive) {
-                sqlite.exec('ROLLBACK');
-                console.error(JSON.stringify({
+            if (lockHolderAlive) {
+                const identity = identifyGatewayProcess(existing.pid);
+                const lockIsFresh = now - existing.heartbeat_at < STALE_THRESHOLD_MS;
+                if (lockIsFresh || identity !== 'mismatch') {
+                    sqlite.exec('ROLLBACK');
+                    console.error(JSON.stringify({
+                        ts: new Date().toISOString(),
+                        level: 'fatal',
+                        msg: 'another Gateway instance is already running',
+                        existingPid: existing.pid,
+                        identity,
+                    }));
+                    return false;
+                }
+
+                console.warn(JSON.stringify({
                     ts: new Date().toISOString(),
-                    level: 'fatal',
-                    msg: 'another Gateway instance is already running',
+                    level: 'warn',
+                    msg: 'taking over stale Gateway lock from a reused PID',
                     existingPid: existing.pid,
                 }));
-                return false;
             }
 
             sqlite.exec('DELETE FROM gateway_lock WHERE id = 1');
@@ -66,20 +103,25 @@ export function releaseLock() {
     } catch {}
 }
 
-function updateLockHeartbeat() {
+export function updateLockHeartbeat(): boolean {
     try {
-        sqlite.exec(
-            'UPDATE gateway_lock SET heartbeat_at = ? WHERE pid = ?',
-            [Date.now(), process.pid],
-        );
-    } catch {}
+        const result = sqlite.query(
+            'UPDATE gateway_lock SET heartbeat_at = ? WHERE id = 1 AND pid = ?',
+        ).run(Date.now(), process.pid);
+        return result.changes === 1;
+    } catch {
+        return false;
+    }
 }
 
 function markGatewayReady() {
-    sqlite.exec(
-        'UPDATE gateway_lock SET heartbeat_at = ?, ready_at = ? WHERE pid = ?',
-        [Date.now(), Date.now(), process.pid],
-    );
+    const now = Date.now();
+    const result = sqlite.query(
+        'UPDATE gateway_lock SET heartbeat_at = ?, ready_at = ?, version = ? WHERE id = 1 AND pid = ?',
+    ).run(now, now, getPackageVersion(), process.pid);
+    if (result.changes !== 1) {
+        throw new Error('Gateway 在就绪前失去了数据库单实例锁');
+    }
 }
 
 function markGatewayNotReady() {
@@ -91,108 +133,173 @@ function markGatewayNotReady() {
 async function main() {
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'SuperTask Gateway starting', pid: process.pid }));
 
+    assertWorkerProcessIsolationSupported();
+
     if (!acquireLock()) {
         process.exit(1);
     }
 
-    const heartbeatTimer = setInterval(updateLockHeartbeat, 10_000);
-    heartbeatTimer.unref();
-
     const cfg = loadConfig();
     const worker = new WorkerEngine(cfg);
-    const watchdog = new Watchdog(cfg);
+    const watchdog = new Watchdog(cfg, (taskId, runId) => worker.ownsRun(taskId, runId));
     const scheduler = new Scheduler(cfg);
-
-    const recoveredOrphans = await TaskService.resetOrphanRunningToPending();
-    if (recoveredOrphans > 0) {
-        console.log(JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'warn',
-            msg: 'reset orphan running tasks to pending',
-            count: recoveredOrphans,
-        }));
-    }
-
-    initializeGatewayHealth({
-        workerPollIntervalMs: cfg.worker.pollIntervalMs,
-        schedulerEnabled: cfg.scheduler.enabled,
-        schedulerCheckIntervalMs: cfg.scheduler.checkIntervalMs,
-        watchdogCheckIntervalMs: cfg.watchdog.checkIntervalMs,
-    });
-
-    worker.start();
-    watchdog.start();
-    await scheduler.start();
-
-    if (cfg.dashboard.enabled) {
-        const { dashboardApp } = await import('@web/index');
-        Bun.serve({
-            hostname: '127.0.0.1',
-            port: cfg.dashboard.port,
-            fetch: dashboardApp.fetch,
-        });
-        console.log(JSON.stringify({
-            ts: new Date().toISOString(),
-            level: 'info',
-            msg: 'Dashboard started',
-            url: `http://localhost:${cfg.dashboard.port}`,
-        }));
-    }
-
-    markGatewayReady();
-
-    console.log(JSON.stringify({
-        ts: new Date().toISOString(),
-        level: 'info',
-        msg: 'Gateway started',
-        maxConcurrency: cfg.worker.maxConcurrency,
-        schedulerEnabled: cfg.scheduler.enabled,
-    }));
-
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+    let dashboardServer: ReturnType<typeof Bun.serve> | null = null;
     let shuttingDown = false;
-    const shutdown = async (signal: string) => {
+    const shutdown = async (signal: string, exitCode = 0) => {
         if (shuttingDown) return;
         shuttingDown = true;
+        const failures: GatewayShutdownFailure[] = [];
 
-        console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: `received ${signal}, shutting down...` }));
+        try {
+            console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: `received ${signal}, shutting down...` }));
 
-        clearInterval(heartbeatTimer);
-        markGatewayNotReady();
-        scheduler.stop();
-        watchdog.stop();
+            if (heartbeatTimer) {
+                clearInterval(heartbeatTimer);
+                heartbeatTimer = null;
+            }
+            markGatewayNotReady();
+            await runGatewayShutdownStep(failures, 'dashboard.stop', () => {
+                const server = dashboardServer;
+                dashboardServer = null;
+                server?.stop(true);
+            });
+            await runGatewayShutdownStep(failures, 'scheduler.stop', () => scheduler.stop());
+            await runGatewayShutdownStep(failures, 'watchdog.stop', () => watchdog.stop());
 
-        const runningIds = await worker.stop(cfg.worker.shutdownGracePeriodMs);
+            let interruptedRuns: Awaited<ReturnType<WorkerEngine['stop']>> = [];
+            await runGatewayShutdownStep(failures, 'worker.stop', async () => {
+                interruptedRuns = await worker.stop(cfg.worker.shutdownGracePeriodMs);
+            });
 
-        if (runningIds.length > 0) {
-            const resetCount = await TaskService.resetRunningToPending(runningIds);
-            console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'reset running tasks to pending', count: resetCount }));
+            let resetCount = 0;
+            for (const run of interruptedRuns) {
+                await runGatewayShutdownStep(
+                    failures,
+                    `task.interrupt:${run.taskId}:${run.runId}`,
+                    async () => {
+                        if (await TaskService.interruptRun(
+                            run.taskId,
+                            run.runId,
+                            'Gateway shutdown after child exit',
+                        )) {
+                            resetCount += 1;
+                        }
+                    },
+                );
+            }
+            if (resetCount > 0) {
+                console.log(JSON.stringify({
+                    ts: new Date().toISOString(),
+                    level: 'info',
+                    msg: 'reset confirmed interrupted tasks to pending',
+                    count: resetCount,
+                }));
+            }
+
+            await runGatewayShutdownStep(failures, 'lock.release', () => releaseLock());
+            await runGatewayShutdownStep(failures, 'health.reset', () => resetGatewayHealth());
+            await runGatewayShutdownStep(failures, 'database.close', () => closeDb());
+
+            if (failures.length > 0) {
+                console.error(JSON.stringify({
+                    ts: new Date().toISOString(),
+                    level: 'error',
+                    msg: 'Gateway stopped with shutdown failures',
+                    failures,
+                }));
+            } else {
+                console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'Gateway stopped' }));
+            }
+        } finally {
+            process.exit(resolveGatewayShutdownExitCode(exitCode, failures));
         }
-
-        const allRunningRuns = await TaskRunService.getAllRunningRuns();
-        for (const run of allRunningRuns) {
-            await TaskRunService.fail(run.id, 'Gateway shutdown');
-        }
-
-        releaseLock();
-        resetGatewayHealth();
-        closeDb();
-
-        console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'Gateway stopped' }));
-        process.exit(0);
     };
 
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => { void shutdown('SIGTERM'); });
+    process.on('SIGINT', () => { void shutdown('SIGINT'); });
 
     process.on('uncaughtException', (err) => {
         console.error(JSON.stringify({ ts: new Date().toISOString(), level: 'fatal', msg: 'uncaughtException', error: err.message, stack: err.stack }));
-        process.exit(1);
+        void shutdown('uncaughtException', 1);
     });
 
     process.on('unhandledRejection', (reason) => {
         console.error(JSON.stringify({ ts: new Date().toISOString(), level: 'fatal', msg: 'unhandledRejection', reason: String(reason) }));
-        process.exit(1);
+        void shutdown('unhandledRejection', 1);
     });
+
+    heartbeatTimer = setInterval(() => {
+        if (updateLockHeartbeat()) return;
+        console.error(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'fatal',
+            msg: 'Gateway lost its database lock and will stop',
+            pid: process.pid,
+        }));
+        void shutdown('database lock lost', 1);
+    }, 10_000);
+    heartbeatTimer.unref();
+
+    try {
+        const recoveredOrphans = await TaskService.resetOrphanRunningToPending();
+        if (recoveredOrphans > 0) {
+            console.log(JSON.stringify({
+                ts: new Date().toISOString(),
+                level: 'warn',
+                msg: 'reset orphan running tasks to pending',
+                count: recoveredOrphans,
+            }));
+        }
+        await TaskService.resolveBlockedDependencies();
+
+        initializeGatewayHealth({
+            workerPollIntervalMs: cfg.worker.pollIntervalMs,
+            schedulerEnabled: cfg.scheduler.enabled,
+            schedulerCheckIntervalMs: cfg.scheduler.checkIntervalMs,
+            watchdogCheckIntervalMs: cfg.watchdog.checkIntervalMs,
+            watchdogCleanupIntervalMs: cfg.watchdog.cleanupIntervalMs,
+        });
+
+        await scheduler.start();
+        if (shuttingDown) return;
+
+        if (cfg.dashboard.enabled) {
+            const { dashboardApp } = await import('@web/index');
+            if (shuttingDown) return;
+            dashboardServer = Bun.serve({
+                hostname: '127.0.0.1',
+                port: cfg.dashboard.port,
+                fetch: dashboardApp.fetch,
+            });
+            console.log(JSON.stringify({
+                ts: new Date().toISOString(),
+                level: 'info',
+                msg: 'Dashboard started',
+                url: `http://localhost:${cfg.dashboard.port}`,
+            }));
+        }
+
+        watchdog.start();
+        worker.start();
+        markGatewayReady();
+
+        console.log(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'info',
+            msg: 'Gateway started',
+            maxConcurrency: cfg.worker.maxConcurrency,
+            schedulerEnabled: cfg.scheduler.enabled,
+        }));
+    } catch (error) {
+        console.error(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'fatal',
+            msg: 'Gateway startup failed',
+            error: error instanceof Error ? error.message : String(error),
+        }));
+        await shutdown('startup failure', 1);
+    }
 }
 
 export { main };

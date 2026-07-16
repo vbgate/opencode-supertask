@@ -2,6 +2,7 @@ import { spawnSync } from 'child_process';
 import { existsSync, readFileSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
+import { compareSemanticVersions, isSemanticVersion } from '@core/semver';
 
 const PACKAGE_NAME = 'opencode-supertask';
 
@@ -28,19 +29,8 @@ function pluginAt(packageDir: string): InstalledPlugin | null {
     }
 }
 
-function versionParts(version: string): number[] | null {
-    const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
-    return match ? match.slice(1).map(Number) : null;
-}
-
 function compareVersions(left: string, right: string): number {
-    const a = versionParts(left);
-    const b = versionParts(right);
-    if (!a || !b) return left.localeCompare(right);
-    for (let index = 0; index < 3; index += 1) {
-        if (a[index] !== b[index]) return a[index] - b[index];
-    }
-    return 0;
+    return compareSemanticVersions(left, right) ?? left.localeCompare(right);
 }
 
 function cacheRoot(): string {
@@ -107,7 +97,7 @@ function latestVersion(): string {
     } catch {
         throw new Error(`[supertask] npm latest 返回无法解析: ${output || '(empty)'}`);
     }
-    if (typeof version !== 'string' || versionParts(version) === null) {
+    if (typeof version !== 'string' || !isSemanticVersion(version)) {
         throw new Error(`[supertask] npm latest 版本无效: ${String(version)}`);
     }
     return version;
@@ -127,8 +117,10 @@ function resolveInstalledVersion(expectedVersion: string): InstalledPlugin {
     throw new Error(`[supertask] OpenCode 插件缓存版本不匹配：期望 ${expectedVersion}，实际 ${actual}`);
 }
 
-export function installLatestPlugin(): InstalledPlugin {
-    const version = latestVersion();
+export function installPluginVersion(version: string): InstalledPlugin {
+    if (!isSemanticVersion(version)) {
+        throw new Error(`[supertask] OpenCode 插件版本无效: ${version}`);
+    }
     const result = spawnSync(opencodeBin(), [
         'plugin',
         `${PACKAGE_NAME}@${version}`,
@@ -147,4 +139,8 @@ export function installLatestPlugin(): InstalledPlugin {
         throw new Error(`[supertask] OpenCode 插件更新失败: ${output || `退出码 ${result.status}`}`);
     }
     return resolveInstalledVersion(version);
+}
+
+export function installLatestPlugin(): InstalledPlugin {
+    return installPluginVersion(latestVersion());
 }

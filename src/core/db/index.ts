@@ -28,6 +28,38 @@ function getMigrationsFolder(): string {
     return join(__dirname, '../../drizzle');
 }
 
+function ensureGatewayLock(sqliteDb: Database): void {
+    sqliteDb.exec(`
+        CREATE TABLE IF NOT EXISTS gateway_lock (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            pid INTEGER NOT NULL,
+            acquired_at INTEGER NOT NULL,
+            heartbeat_at INTEGER NOT NULL,
+            ready_at INTEGER,
+            version TEXT
+        );
+    `);
+    const columns = sqliteDb.query('PRAGMA table_info(gateway_lock)').all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === 'ready_at')) {
+        sqliteDb.exec('ALTER TABLE gateway_lock ADD COLUMN ready_at INTEGER;');
+    }
+    if (!columns.some((column) => column.name === 'version')) {
+        sqliteDb.exec('ALTER TABLE gateway_lock ADD COLUMN version TEXT;');
+    }
+}
+
+export function migrateSqliteDatabase(sqliteDb: Database): ReturnType<typeof drizzle> {
+    ensureGatewayLock(sqliteDb);
+    const drizzleDb = drizzle(sqliteDb, { schema });
+    migrate(drizzleDb, { migrationsFolder: getMigrationsFolder() });
+    sqliteDb.exec('PRAGMA foreign_keys = ON;');
+    const violations = sqliteDb.query('PRAGMA foreign_key_check;').all();
+    if (violations.length > 0) {
+        throw new Error(`检测到 ${violations.length} 条孤立关联记录，请先修复数据再启动`);
+    }
+    return drizzleDb;
+}
+
 function initDb() {
     const dataDir = dirname(DB_FILE_PATH);
     if (!existsSync(dataDir)) {
@@ -36,29 +68,9 @@ function initDb() {
     _sqlite = new Database(DB_FILE_PATH);
     _sqlite.exec('PRAGMA journal_mode = WAL;');
     _sqlite.exec('PRAGMA busy_timeout = 5000;');
-    _sqlite.exec(`
-        CREATE TABLE IF NOT EXISTS gateway_lock (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            pid INTEGER NOT NULL,
-            acquired_at INTEGER NOT NULL,
-            heartbeat_at INTEGER NOT NULL,
-            ready_at INTEGER
-        );
-    `);
-    const gatewayLockColumns = _sqlite.query('PRAGMA table_info(gateway_lock)').all() as Array<{ name: string }>;
-    if (!gatewayLockColumns.some((column) => column.name === 'ready_at')) {
-        _sqlite.exec('ALTER TABLE gateway_lock ADD COLUMN ready_at INTEGER;');
-    }
-    _db = drizzle(_sqlite, { schema });
-
     if (!_migrationRan) {
         try {
-            migrate(_db, { migrationsFolder: getMigrationsFolder() });
-            _sqlite.exec('PRAGMA foreign_keys = ON;');
-            const violations = _sqlite.query('PRAGMA foreign_key_check;').all();
-            if (violations.length > 0) {
-                throw new Error(`检测到 ${violations.length} 条孤立关联记录，请先修复数据再启动`);
-            }
+            _db = migrateSqliteDatabase(_sqlite);
             _migrationRan = true;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -69,6 +81,8 @@ function initDb() {
             console.error(`[supertask] migration failed: ${msg}`);
             throw new Error(`[supertask] DB migration failed: ${msg}`);
         }
+    } else {
+        _db = drizzle(_sqlite, { schema });
     }
 
     return _db;

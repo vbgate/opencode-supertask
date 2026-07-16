@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import { TaskService } from '@core/services/task.service';
+import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import { DatabaseMaintenanceService } from '@core/services/database-maintenance.service';
 import { closeDb } from '@core/db';
@@ -8,8 +9,7 @@ import type { ScheduleType } from '@core/db/schema';
 import {
     getGatewayDiagnostic,
     getPackageVersion,
-    restartGatewayAfterMaintenance,
-    stopGatewayForMaintenance,
+    withGatewayMaintenance,
 } from '../daemon/pm2';
 import { getConfigPath, loadConfig } from '@gateway/config';
 import { spawnSync } from 'child_process';
@@ -41,46 +41,18 @@ async function withDb<T>(
     }
 }
 
-function messageOf(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-}
-
 function runDestructiveDatabaseMaintenance<T extends object>(
     keepStopped: boolean,
     operation: () => T,
 ): T & { gateway: GatewayMaintenanceReport } {
-    const gatewayState = stopGatewayForMaintenance();
-    let result: T;
-    try {
-        result = operation();
-    } catch (error) {
-        if (gatewayState.wasRunning && !keepStopped) {
-            try {
-                restartGatewayAfterMaintenance(gatewayState);
-            } catch (restartError) {
-                throw new Error(
-                    `${messageOf(error)}；Gateway 自动恢复也失败：${messageOf(restartError)}`,
-                );
-            }
-        }
-        throw error;
-    }
-
-    let restarted = false;
-    if (gatewayState.wasRunning && !keepStopped) {
-        try {
-            restarted = restartGatewayAfterMaintenance(gatewayState);
-        } catch (error) {
-            throw new Error(`数据库维护已完成，但 Gateway 自动重启失败：${messageOf(error)}`);
-        }
-    }
+    const maintenance = withGatewayMaintenance(keepStopped, operation);
 
     return {
-        ...result,
+        ...maintenance.result,
         gateway: {
-            wasRunning: gatewayState.wasRunning,
-            restarted,
-            keptStopped: gatewayState.wasRunning && keepStopped,
+            wasRunning: maintenance.wasRunning,
+            restarted: maintenance.restarted,
+            keptStopped: maintenance.keptStopped,
         },
     };
 }
@@ -168,6 +140,26 @@ program
             process.exit(1);
         }
     }));
+
+const runCommand = new Command('run')
+    .description('管理隔离的执行记录');
+
+runCommand
+    .command('abandon')
+    .description('人工关闭已确认不存在遗留进程的旧版无 PID 隔离记录')
+    .requiredOption('--id <id>', '执行记录 run ID')
+    .option('--confirm <word>', '危险操作确认，必须填写 ABANDON')
+    .action(async (options: { id: string; confirm?: string }) => withDb(async () => {
+        if (options.confirm !== 'ABANDON') {
+            throw new Error('关闭旧版隔离 run 必须显式传入 --confirm ABANDON');
+        }
+        const runId = parsePositiveInteger(options.id, 'id');
+        const result = await TaskRunService.abandonLegacyRun(runId);
+        if (!result) throw new Error(`run #${runId} 不存在`);
+        console.log(JSON.stringify(result, null, 2));
+    }));
+
+program.addCommand(runCommand);
 
 program
     .command('retry')
@@ -495,6 +487,9 @@ program
     .action(async (options: { json?: boolean }) => withDb(async () => {
         const config = loadConfig();
         const database = DatabaseMaintenanceService.check();
+        const legacyQuarantinedRuns = await TaskRunService.listLegacyQuarantinedRuns(
+            config.watchdog.heartbeatTimeoutMs,
+        );
         const gateway = getGatewayDiagnostic();
         const opencodeBin = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
         const opencodeResult = spawnSync(opencodeBin, ['--version'], {
@@ -531,15 +526,39 @@ program
             }
         }
 
-        const warnings = gateway.pm2Installed && !gateway.logRotationInstalled
-            ? ['未检测到 pm2-logrotate；长期运行前建议安装并限制日志保留量']
-            : [];
+        const warnings: string[] = [];
+        if (gateway.pm2Installed && !gateway.logRotationInstalled) {
+            warnings.push('未检测到 pm2-logrotate；长期运行前建议安装并限制日志保留量');
+        }
+        if (gateway.startupConfigured === false) {
+            warnings.push(process.platform === 'linux'
+                ? '未检测到已启用且包含可恢复 PM2 dump 的 systemd 自启服务'
+                : '未检测到正在运行且包含可恢复 PM2 dump 的 macOS LaunchAgent');
+        }
+        if (gateway.processFound && !gateway.scopeMatches) {
+            warnings.push('当前 CLI/OpenCode 与 PM2 Gateway 的数据库、配置或 OpenCode 可执行文件作用域不一致');
+        }
+        for (const run of legacyQuarantinedRuns) {
+            const cwdHint = run.taskCwd == null ? '（旧任务没有 cwd，请先在 Dashboard 取消）' : `（在 ${run.taskCwd} 执行）`;
+            const cancel = run.taskStatus === 'cancelled'
+                ? ''
+                : `先${cwdHint} supertask cancel --id ${run.taskId}；`;
+            const owner = run.ownerAlive
+                ? `owner PID ${run.workerPid} 仍存活，先确认并停止对应进程；`
+                : '';
+            warnings.push(
+                `旧版隔离 run #${run.runId}：${owner}${cancel}确认没有遗留 OpenCode 进程后执行 supertask run abandon --id ${run.runId} --confirm ABANDON`,
+            );
+        }
         const ok = opencode.ok
             && database.ok
+            && legacyQuarantinedRuns.length === 0
             && gateway.pm2Installed
             && gateway.status === 'online'
             && gateway.ready
+            && gateway.scopeMatches
             && gateway.logRotationInstalled
+            && gateway.startupConfigured !== false
             && dashboard.ok;
         const report = {
             ok,
@@ -547,6 +566,7 @@ program
             configPath: getConfigPath(),
             opencode,
             database,
+            legacyQuarantinedRuns,
             gateway,
             dashboard,
             warnings,
@@ -599,11 +619,26 @@ program
     .action(async () => {
         console.log('Updating opencode-supertask...');
         let installed: { gatewayEntry: string; version: string };
+        let previousVersion: string;
+        try {
+            const { resolveInstalledPlugin } = await import('../daemon/update');
+            previousVersion = resolveInstalledPlugin().version;
+        } catch (error) {
+            console.error(`无法确认当前 OpenCode 插件版本，已取消升级: ${error instanceof Error ? error.message : String(error)}`);
+            process.exit(1);
+        }
         try {
             const { installLatestPlugin } = await import('../daemon/update');
             installed = installLatestPlugin();
         } catch (err) {
-            console.error(err instanceof Error ? err.message : String(err));
+            let detail = err instanceof Error ? err.message : String(err);
+            try {
+                const { installPluginVersion } = await import('../daemon/update');
+                installPluginVersion(previousVersion);
+            } catch (rollbackError) {
+                detail += `; OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
+            }
+            console.error(detail);
             console.error('Try manually: query npm dist-tags.latest, then install that exact version with opencode plugin.');
             process.exit(1);
         }
@@ -614,7 +649,16 @@ program
             console.log(`\nSuperTask upgraded: ${result.before ?? 'unknown'} → ${result.after}`);
             console.log('Gateway restarted. Please restart opencode to load the new plugin.');
         } catch (err) {
-            console.error('Gateway restart failed:', err instanceof Error ? err.message : String(err));
+            let detail = err instanceof Error ? err.message : String(err);
+            try {
+                if (previousVersion !== installed.version) {
+                    const { installPluginVersion } = await import('../daemon/update');
+                    installPluginVersion(previousVersion);
+                }
+            } catch (rollbackError) {
+                detail += `; Gateway 已回滚，但 OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
+            }
+            console.error('Gateway restart failed:', detail);
             process.exit(1);
         }
     });

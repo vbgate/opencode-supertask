@@ -1,12 +1,13 @@
 // 任务服务层
 // 封装所有任务相关的 CRUD 操作
 
-import { db, schema } from '@core/db';
+import { db, getSqlite, schema } from '@core/db';
 import { eq, and, desc, asc, sql, isNull, or } from 'drizzle-orm';
 import type { Task, NewTask, TaskStatus } from '@core/db/schema';
 import { computeBackoff } from '@core/backoff';
 
 const { tasks, taskRuns } = schema;
+let cleanupInvocation = 0;
 
 export class TaskDeletionConflictError extends Error {
     constructor(message: string) {
@@ -20,6 +21,46 @@ function hasNoExecutableDependents() {
         SELECT 1 FROM tasks AS dependent_task
         WHERE dependent_task.depends_on = ${tasks.id}
           AND dependent_task.status IN ('pending', 'running', 'failed', 'dead_letter')
+    )`;
+}
+
+function hasViableDependency() {
+    return or(
+        isNull(tasks.dependsOn),
+        sql`EXISTS (
+            SELECT 1 FROM tasks AS dependency_task
+            WHERE dependency_task.id = ${tasks.dependsOn}
+              AND dependency_task.cwd IS ${tasks.cwd}
+              AND (
+                  dependency_task.status IN ('pending', 'running', 'done')
+                  OR (
+                      dependency_task.status = 'failed'
+                      AND dependency_task.retry_count <= dependency_task.max_retries
+                  )
+              )
+        )`,
+    );
+}
+
+function blockedDependentsOf(prerequisiteId: number) {
+    return sql`${tasks.id} IN (
+        WITH RECURSIVE blocked_task(id) AS (
+            SELECT direct_dependent.id
+            FROM tasks AS direct_dependent
+            WHERE direct_dependent.depends_on = ${prerequisiteId}
+              AND direct_dependent.status IN ('pending', 'failed')
+              AND EXISTS (
+                  SELECT 1 FROM tasks AS prerequisite
+                  WHERE prerequisite.id = ${prerequisiteId}
+                    AND prerequisite.status IN ('dead_letter', 'cancelled')
+              )
+            UNION
+            SELECT descendant.id
+            FROM tasks AS descendant
+            INNER JOIN blocked_task ON descendant.depends_on = blocked_task.id
+            WHERE descendant.status IN ('pending', 'failed')
+        )
+        SELECT id FROM blocked_task
     )`;
 }
 
@@ -37,7 +78,13 @@ export class TaskService {
         return db.transaction((tx) => {
             if (data.dependsOn != null) {
                 const dependency = tx
-                    .select({ id: tasks.id, cwd: tasks.cwd })
+                    .select({
+                        id: tasks.id,
+                        cwd: tasks.cwd,
+                        status: tasks.status,
+                        retryCount: tasks.retryCount,
+                        maxRetries: tasks.maxRetries,
+                    })
                     .from(tasks)
                     .where(eq(tasks.id, data.dependsOn))
                     .get();
@@ -46,6 +93,16 @@ export class TaskService {
                 }
                 if ((dependency.cwd ?? null) !== (data.cwd ?? null)) {
                     throw new Error('dependsOn 必须指向同一 cwd 的任务');
+                }
+                const dependencyIsRecoverable = dependency.status === 'pending'
+                    || dependency.status === 'running'
+                    || dependency.status === 'done'
+                    || (
+                        dependency.status === 'failed'
+                        && (dependency.retryCount ?? 0) <= (dependency.maxRetries ?? 3)
+                    );
+                if (!dependencyIsRecoverable) {
+                    throw new Error(`dependsOn 指向的任务 #${data.dependsOn} 已进入不可恢复终态`);
                 }
             }
             return tx.insert(tasks).values(data).returning().get();
@@ -142,8 +199,13 @@ export class TaskService {
                                     AND running_batch_run.status = 'running'
                               )
                           )
-                    )`,
+                        )`,
                 ),
+                sql`NOT EXISTS (
+                    SELECT 1 FROM task_runs AS candidate_active_run
+                    WHERE candidate_active_run.task_id = ${tasks.id}
+                      AND candidate_active_run.status = 'running'
+                )`,
             ))
             .orderBy(
                 desc(tasks.urgency),
@@ -157,18 +219,23 @@ export class TaskService {
     }
 
     static async countRunning(): Promise<number> {
-        const result = await db
-            .select({ count: sql<number>`count(*)` })
-            .from(tasks)
-            .where(or(
-                eq(tasks.status, 'running'),
-                sql`EXISTS (
-                    SELECT 1 FROM task_runs AS active_run
-                    WHERE active_run.task_id = ${tasks.id}
-                      AND active_run.status = 'running'
-                )`,
-            ));
-        return Number(result[0]?.count ?? 0);
+        return db.transaction((tx) => {
+            const runningTasks = tx
+                .select({ count: sql<number>`count(*)` })
+                .from(tasks)
+                .where(eq(tasks.status, 'running'))
+                .get();
+            const runsWithoutRunningTask = tx
+                .select({ count: sql<number>`count(DISTINCT ${taskRuns.taskId})` })
+                .from(taskRuns)
+                .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+                .where(and(
+                    eq(taskRuns.status, 'running'),
+                    sql`${tasks.status} <> 'running'`,
+                ))
+                .get();
+            return Number(runningTasks?.count ?? 0) + Number(runsWithoutRunningTask?.count ?? 0);
+        }, { behavior: 'deferred' });
     }
 
     static async start(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
@@ -224,35 +291,51 @@ export class TaskService {
         scope: { cwd?: string } = {},
         options?: { setDeadLetter?: boolean; retryAfterMs?: number },
     ): Promise<Task | null> {
-        const current = await this.getById(id, scope);
-        if (!current || current.status !== 'running') return null;
+        return db.transaction((tx) => {
+            const current = tx
+                .select()
+                .from(tasks)
+                .where(and(
+                    eq(tasks.id, id),
+                    eq(tasks.status, 'running'),
+                    ...this.buildScopeWhere(scope),
+                ))
+                .get();
+            if (!current) return null;
 
-        const newRetryCount = (current.retryCount ?? 0) + 1;
-        const maxRetries = current.maxRetries ?? 3;
-        const isDeadLetter = options?.setDeadLetter ?? newRetryCount > maxRetries;
-
-        const conditions = [
-            eq(tasks.id, id),
-            eq(tasks.status, 'running'),
-            ...this.buildScopeWhere(scope),
-        ];
-        const result = await db
-            .update(tasks)
-            .set({
-                status: isDeadLetter ? 'dead_letter' : 'failed',
-                finishedAt: new Date(),
-                resultLog: log,
-                retryCount: newRetryCount,
-                retryAfter: isDeadLetter
-                    ? null
-                    : (options?.retryAfterMs ?? Date.now() + computeBackoff(
-                        newRetryCount,
-                        current.retryBackoffMs ?? 30000,
-                    )),
-            })
-            .where(and(...conditions))
-            .returning();
-        return result[0] || null;
+            const newRetryCount = (current.retryCount ?? 0) + 1;
+            const maxRetries = current.maxRetries ?? 3;
+            const isDeadLetter = options?.setDeadLetter ?? newRetryCount > maxRetries;
+            const failed = tx
+                .update(tasks)
+                .set({
+                    status: isDeadLetter ? 'dead_letter' : 'failed',
+                    finishedAt: new Date(),
+                    resultLog: log,
+                    retryCount: newRetryCount,
+                    retryAfter: isDeadLetter
+                        ? null
+                        : (options?.retryAfterMs ?? Date.now() + computeBackoff(
+                            newRetryCount,
+                            current.retryBackoffMs ?? 30000,
+                        )),
+                })
+                .where(and(eq(tasks.id, id), eq(tasks.status, 'running')))
+                .returning()
+                .get();
+            if (failed?.status === 'dead_letter') {
+                tx.update(tasks)
+                    .set({
+                        status: 'dead_letter',
+                        finishedAt: new Date(),
+                        retryAfter: null,
+                        resultLog: `依赖任务 #${id} 已进入不可恢复终态`,
+                    })
+                    .where(blockedDependentsOf(id))
+                    .run();
+            }
+            return failed ?? null;
+        }, { behavior: 'immediate' });
     }
 
     static async completeRun(taskId: number, runId: number, log?: string): Promise<Task | null> {
@@ -301,7 +384,7 @@ export class TaskService {
         log?: string,
         options?: { setDeadLetter?: boolean; retryAfterMs?: number },
     ): Promise<Task | null> {
-        return db.transaction((tx) => {
+        const failed = db.transaction((tx) => {
             const currentTask = tx
                 .select()
                 .from(tasks)
@@ -347,8 +430,20 @@ export class TaskService {
                 .set({ status: 'failed', finishedAt, log })
                 .where(and(eq(taskRuns.id, runId), eq(taskRuns.status, 'running')))
                 .run();
+            if (failed.status === 'dead_letter') {
+                tx.update(tasks)
+                    .set({
+                        status: 'dead_letter',
+                        finishedAt,
+                        retryAfter: null,
+                        resultLog: `依赖任务 #${taskId} 已进入不可恢复终态`,
+                    })
+                    .where(blockedDependentsOf(taskId))
+                    .run();
+            }
             return failed;
         }, { behavior: 'immediate' });
+        return failed;
     }
 
     static async recoverRun(
@@ -356,7 +451,7 @@ export class TaskService {
         runId: number,
         log: string,
     ): Promise<{ status: 'pending' | 'dead_letter'; retryCount: number; retryAfterMs: number | null } | null> {
-        return db.transaction((tx) => {
+        const recovery = db.transaction((tx) => {
             const currentTask = tx
                 .select()
                 .from(tasks)
@@ -383,6 +478,7 @@ export class TaskService {
             const retryCount = (currentTask.retryCount ?? 0) + 1;
             const maxRetries = currentTask.maxRetries ?? 3;
             const isDeadLetter = retryCount > maxRetries;
+            const recoveryStatus: 'pending' | 'dead_letter' = isDeadLetter ? 'dead_letter' : 'pending';
             const retryAfterMs = isDeadLetter
                 ? null
                 : Date.now() + computeBackoff(
@@ -392,7 +488,7 @@ export class TaskService {
 
             tx.update(tasks)
                 .set({
-                    status: isDeadLetter ? 'dead_letter' : 'pending',
+                    status: recoveryStatus,
                     startedAt: null,
                     finishedAt: isDeadLetter ? finishedAt : null,
                     retryCount,
@@ -401,11 +497,59 @@ export class TaskService {
                 })
                 .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
                 .run();
+            if (recoveryStatus === 'dead_letter') {
+                tx.update(tasks)
+                    .set({
+                        status: 'dead_letter',
+                        finishedAt,
+                        retryAfter: null,
+                        resultLog: `依赖任务 #${taskId} 已进入不可恢复终态`,
+                    })
+                    .where(blockedDependentsOf(taskId))
+                    .run();
+            }
             return {
-                status: isDeadLetter ? 'dead_letter' : 'pending',
+                status: recoveryStatus,
                 retryCount,
                 retryAfterMs,
             };
+        }, { behavior: 'immediate' });
+        return recovery;
+    }
+
+    static async interruptRun(
+        taskId: number,
+        runId: number,
+        log: string,
+    ): Promise<boolean> {
+        return db.transaction((tx) => {
+            const currentRun = tx
+                .select({ id: taskRuns.id })
+                .from(taskRuns)
+                .where(and(
+                    eq(taskRuns.id, runId),
+                    eq(taskRuns.taskId, taskId),
+                    eq(taskRuns.status, 'running'),
+                ))
+                .get();
+            if (!currentRun) return false;
+
+            const updatedRun = tx.update(taskRuns)
+                .set({ status: 'failed', finishedAt: new Date(), log })
+                .where(and(eq(taskRuns.id, runId), eq(taskRuns.status, 'running')))
+                .returning({ id: taskRuns.id })
+                .get();
+            tx.update(tasks)
+                .set({
+                    status: 'pending',
+                    startedAt: null,
+                    finishedAt: null,
+                    retryAfter: null,
+                    resultLog: log,
+                })
+                .where(and(eq(tasks.id, taskId), eq(tasks.status, 'running')))
+                .run();
+            return updatedRun != null;
         }, { behavior: 'immediate' });
     }
 
@@ -419,23 +563,47 @@ export class TaskService {
                 retryAfter: null,
                 resultLog: '依赖任务不存在、跨项目或已进入不可恢复终态',
             })
-            .where(and(
-                or(eq(tasks.status, 'pending'), eq(tasks.status, 'failed')),
-                sql`${tasks.dependsOn} IS NOT NULL`,
-                sql`NOT EXISTS (
-                    SELECT 1 FROM tasks AS viable_dependency
-                    WHERE viable_dependency.id = ${tasks.dependsOn}
-                      AND viable_dependency.cwd IS ${tasks.cwd}
-                      AND (
-                          viable_dependency.status IN ('pending', 'running', 'done')
-                          OR (
-                              viable_dependency.status = 'failed'
-                              AND viable_dependency.retry_count <= viable_dependency.max_retries
-                          )
+            .where(sql`${tasks.id} IN (
+                WITH RECURSIVE blocked_task(id) AS (
+                    SELECT candidate.id
+                    FROM tasks AS candidate
+                    WHERE candidate.status IN ('pending', 'failed')
+                      AND candidate.depends_on IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM tasks AS viable_dependency
+                          WHERE viable_dependency.id = candidate.depends_on
+                            AND viable_dependency.cwd IS candidate.cwd
+                            AND (
+                                viable_dependency.status IN ('pending', 'running', 'done')
+                                OR (
+                                    viable_dependency.status = 'failed'
+                                    AND viable_dependency.retry_count <= viable_dependency.max_retries
+                                )
+                            )
                       )
-                )`,
-            ))
+                    UNION
+                    SELECT descendant.id
+                    FROM tasks AS descendant
+                    INNER JOIN blocked_task ON descendant.depends_on = blocked_task.id
+                    WHERE descendant.status IN ('pending', 'failed')
+                )
+                SELECT id FROM blocked_task
+            )`)
             .returning();
+        return result.length;
+    }
+
+    static async rejectBlockedDependents(prerequisiteId: number): Promise<number> {
+        const result = await db
+            .update(tasks)
+            .set({
+                status: 'dead_letter',
+                finishedAt: new Date(),
+                retryAfter: null,
+                resultLog: `依赖任务 #${prerequisiteId} 已进入不可恢复终态`,
+            })
+            .where(blockedDependentsOf(prerequisiteId))
+            .returning({ id: tasks.id });
         return result.length;
     }
 
@@ -459,12 +627,26 @@ export class TaskService {
     }
 
     static async markDeadLetter(id: number, retryCount: number): Promise<Task | null> {
-        const result = await db
-            .update(tasks)
-            .set({ status: 'dead_letter', finishedAt: new Date(), retryCount })
-            .where(eq(tasks.id, id))
-            .returning();
-        return result[0] || null;
+        return db.transaction((tx) => {
+            const finishedAt = new Date();
+            const task = tx
+                .update(tasks)
+                .set({ status: 'dead_letter', finishedAt, retryCount })
+                .where(eq(tasks.id, id))
+                .returning()
+                .get();
+            if (!task) return null;
+            tx.update(tasks)
+                .set({
+                    status: 'dead_letter',
+                    finishedAt,
+                    retryAfter: null,
+                    resultLog: `依赖任务 #${id} 已进入不可恢复终态`,
+                })
+                .where(blockedDependentsOf(id))
+                .run();
+            return task;
+        }, { behavior: 'immediate' });
     }
 
     static async resetRunningToPending(ids: number[]): Promise<number> {
@@ -518,45 +700,39 @@ export class TaskService {
             ),
             ...this.buildScopeWhere(scope),
         ];
-        const result = await db
-            .update(tasks)
-            .set({
-                status: 'cancelled',
-                finishedAt: new Date(),
-                retryAfter: null,
-            })
-            .where(and(...conditions))
-            .returning();
-        return result[0] || null;
+        return db.transaction((tx) => {
+            const finishedAt = new Date();
+            const task = tx
+                .update(tasks)
+                .set({
+                    status: 'cancelled',
+                    finishedAt,
+                    retryAfter: null,
+                })
+                .where(and(...conditions))
+                .returning()
+                .get();
+            if (!task) return null;
+            tx.update(tasks)
+                .set({
+                    status: 'dead_letter',
+                    finishedAt,
+                    retryAfter: null,
+                    resultLog: `依赖任务 #${id} 已进入不可恢复终态`,
+                })
+                .where(blockedDependentsOf(id))
+                .run();
+            return task;
+        }, { behavior: 'immediate' });
     }
 
     static async retry(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
-        const current = await this.getById(id, scope);
-        if (!current) return null;
-        if (current.status !== 'failed' && current.status !== 'dead_letter') return null;
-
-        const conditions = [eq(tasks.id, id), ...this.buildScopeWhere(scope)];
-        const result = await db
-            .update(tasks)
-            .set({
-                status: 'pending',
-                startedAt: null,
-                finishedAt: null,
-                retryAfter: null,
-                retryCount: 0,
-            })
-            .where(and(...conditions))
-            .returning();
-        return result[0] || null;
-    }
-
-    static async retryBatch(batchId: string, scope: { cwd?: string } = {}): Promise<number> {
         const conditions = [
-            eq(tasks.batchId, batchId),
+            eq(tasks.id, id),
             or(eq(tasks.status, 'failed'), eq(tasks.status, 'dead_letter')),
             ...this.buildScopeWhere(scope),
         ];
-        const result = await db
+        return db.transaction((tx) => tx
             .update(tasks)
             .set({
                 status: 'pending',
@@ -565,9 +741,66 @@ export class TaskService {
                 retryAfter: null,
                 retryCount: 0,
             })
-            .where(and(...conditions))
-            .returning();
-        return result.length;
+            .where(and(...conditions, hasViableDependency()))
+            .returning()
+            .get() ?? null, { behavior: 'immediate' });
+    }
+
+    static async retryBatch(batchId: string, scope: { cwd?: string } = {}): Promise<number> {
+        const sqlite = getSqlite();
+        const scopeFilter = scope.cwd === undefined ? '' : 'AND candidate.cwd = ?';
+        const parameters = scope.cwd === undefined ? [batchId] : [batchId, scope.cwd];
+
+        return db.transaction(() => sqlite.query(`
+            WITH RECURSIVE
+            candidate(id, cwd, depends_on) AS MATERIALIZED (
+                SELECT candidate.id, candidate.cwd, candidate.depends_on
+                FROM tasks AS candidate
+                WHERE candidate.batch_id = ?
+                  AND candidate.status IN ('failed', 'dead_letter')
+                  ${scopeFilter}
+            ),
+            retryable(id, cwd, depends_on) AS (
+                SELECT candidate.id,
+                       candidate.cwd,
+                       candidate.depends_on
+                FROM candidate
+                WHERE candidate.depends_on IS NULL
+                   OR (
+                       NOT EXISTS (
+                           SELECT 1 FROM candidate AS internal_parent
+                           WHERE internal_parent.id = candidate.depends_on
+                       )
+                       AND EXISTS (
+                           SELECT 1 FROM tasks AS external_parent
+                           WHERE external_parent.id = candidate.depends_on
+                             AND external_parent.cwd IS candidate.cwd
+                             AND (
+                                 external_parent.status IN ('pending', 'running', 'done')
+                                 OR (
+                                     external_parent.status = 'failed'
+                                     AND external_parent.retry_count <= external_parent.max_retries
+                                 )
+                             )
+                       )
+                   )
+                UNION
+                SELECT child.id,
+                       child.cwd,
+                       child.depends_on
+                FROM candidate AS child
+                INNER JOIN retryable AS parent
+                    ON child.depends_on = parent.id
+                   AND child.cwd IS parent.cwd
+            )
+            UPDATE tasks
+            SET status = 'pending',
+                started_at = NULL,
+                finished_at = NULL,
+                retry_after = NULL,
+                retry_count = 0
+            WHERE id IN (SELECT id FROM retryable)
+        `).run(...parameters).changes, { behavior: 'immediate' });
     }
 
     static async getById(id: number, scope: { cwd?: string } = {}): Promise<Task | null> {
@@ -695,19 +928,113 @@ export class TaskService {
         );
     }
 
-    static async deleteOlderThan(retentionDays: number): Promise<number> {
+    static async deleteOlderThan(
+        retentionDays: number,
+        shouldStop: () => boolean = () => false,
+    ): Promise<number> {
         const cutoffSec = Math.floor(Date.now() / 1000) - retentionDays * 86400;
-        const result = await db
-            .delete(tasks)
-            .where(
-                and(
-                    sql`${tasks.status} IN ('done', 'failed', 'dead_letter')`,
-                    sql`${tasks.finishedAt} IS NOT NULL`,
-                    sql`${tasks.finishedAt} < ${cutoffSec}`,
-                    hasNoExecutableDependents(),
-                ),
-            )
-            .returning();
-        return result.length;
+        const batchSize = 500;
+        const sqlite = getSqlite();
+        cleanupInvocation += 1;
+        const candidateTable = `cleanup_candidates_${process.pid}_${cleanupInvocation}`;
+        let deletedTotal = 0;
+
+        sqlite.exec(`
+            CREATE TEMP TABLE ${candidateTable} (
+                id INTEGER NOT NULL PRIMARY KEY
+            ) WITHOUT ROWID;
+        `);
+        try {
+            let ceilingId: number | null = null;
+            while (true) {
+                if (shouldStop()) return deletedTotal;
+                const batch = db.transaction(() => {
+                    sqlite.query(`DELETE FROM ${candidateTable}`).run();
+                    const ceilingPredicate = ceilingId == null
+                        ? ''
+                        : 'AND candidate.id < ?';
+                    const rawCandidateStatement = sqlite.query(`
+                        INSERT INTO ${candidateTable}(id)
+                        SELECT candidate.id
+                        FROM tasks AS candidate NOT INDEXED
+                        WHERE candidate.status IN ('done', 'dead_letter', 'cancelled')
+                          AND candidate.finished_at IS NOT NULL
+                          AND candidate.finished_at < ?
+                          ${ceilingPredicate}
+                          AND NOT EXISTS (
+                              SELECT 1 FROM task_runs AS active_run
+                              WHERE active_run.task_id = candidate.id
+                                AND active_run.status = 'running'
+                          )
+                        ORDER BY candidate.id DESC
+                        LIMIT ?
+                    `);
+                    const rawCount = ceilingId == null
+                        ? rawCandidateStatement.run(cutoffSec, batchSize).changes
+                        : rawCandidateStatement.run(cutoffSec, ceilingId, batchSize).changes;
+                    if (rawCount === 0) return { deleted: 0, nextCeilingId: null };
+                    const rawPage = sqlite.query(`
+                        SELECT min(id) AS nextCeilingId FROM ${candidateTable}
+                    `).get() as { nextCeilingId: number };
+
+                    // 正常依赖边总是 child.id > parent.id。反向边或自环说明数据异常，
+                    // 先保留该节点，再通过下面的叶到根剪枝保留整个受影响祖先链。
+                    sqlite.query(`
+                        DELETE FROM ${candidateTable}
+                        WHERE EXISTS (
+                            SELECT 1 FROM tasks AS anomalous
+                            WHERE anomalous.id = ${candidateTable}.id
+                              AND anomalous.depends_on IS NOT NULL
+                              AND anomalous.depends_on >= anomalous.id
+                        )
+                    `).run();
+
+                    while (true) {
+                        const pruned = sqlite.query(`
+                            DELETE FROM ${candidateTable}
+                            WHERE EXISTS (
+                                SELECT 1 FROM tasks AS dependent_task
+                                WHERE dependent_task.depends_on = ${candidateTable}.id
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM ${candidateTable} AS selected_dependent
+                                      WHERE selected_dependent.id = dependent_task.id
+                                  )
+                            )
+                        `).run().changes;
+                        if (pruned === 0) break;
+                    }
+
+                    const selected = sqlite.query(`
+                        SELECT count(*) AS count FROM ${candidateTable}
+                    `).get() as { count: number };
+                    if (selected.count === 0) {
+                        return { deleted: 0, nextCeilingId: rawPage.nextCeilingId };
+                    }
+
+                    sqlite.query(`
+                        DELETE FROM tasks
+                        WHERE id IN (SELECT id FROM ${candidateTable})
+                    `).run();
+                    const remaining = sqlite.query(`
+                        SELECT count(*) AS count
+                        FROM tasks
+                        WHERE id IN (SELECT id FROM ${candidateTable})
+                    `).get() as { count: number };
+                    if (remaining.count !== 0) {
+                        throw new Error('历史清理候选在同一写事务内发生漂移，已回滚本批删除');
+                    }
+                    return { deleted: selected.count, nextCeilingId: rawPage.nextCeilingId };
+                }, { behavior: 'immediate' });
+                if (batch.nextCeilingId == null) break;
+                ceilingId = batch.nextCeilingId;
+                deletedTotal += batch.deleted;
+
+                await Bun.sleep(0);
+                if (shouldStop()) return deletedTotal;
+            }
+            return deletedTotal;
+        } finally {
+            sqlite.exec(`DROP TABLE IF EXISTS ${candidateTable}`);
+        }
     }
 }

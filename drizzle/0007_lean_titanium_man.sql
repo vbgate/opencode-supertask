@@ -1,0 +1,1 @@
+CREATE INDEX `task_templates_retention_idx` ON `task_templates` (`schedule_type`,`enabled`,`last_run_at`,`id`);

@@ -7,6 +7,7 @@ export function setupTestDb() {
     const sqlite = new Database(':memory:');
     sqlite.exec('PRAGMA journal_mode = WAL;');
     sqlite.exec('PRAGMA busy_timeout = 5000;');
+    sqlite.exec('PRAGMA foreign_keys = ON;');
 
     sqlite.exec(`
         CREATE TABLE IF NOT EXISTS gateway_lock (
@@ -14,7 +15,8 @@ export function setupTestDb() {
             pid INTEGER NOT NULL,
             acquired_at INTEGER NOT NULL,
             heartbeat_at INTEGER NOT NULL,
-            ready_at INTEGER
+            ready_at INTEGER,
+            version TEXT
         );
     `);
 
@@ -49,7 +51,7 @@ export function setupTestDb() {
     sqlite.exec(`
         CREATE TABLE IF NOT EXISTS task_runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
             session_id TEXT,
             model TEXT,
             status TEXT DEFAULT 'running',
@@ -60,10 +62,12 @@ export function setupTestDb() {
             locked_by TEXT,
             heartbeat_at INTEGER,
             worker_pid INTEGER,
-            child_pid INTEGER
+            child_pid INTEGER,
+            launch_protocol TEXT
         );
     `);
-
+    sqlite.exec('CREATE INDEX tasks_depends_on_status_idx ON tasks(depends_on, status);');
+    sqlite.exec('CREATE INDEX tasks_cleanup_idx ON tasks(finished_at, id, status);');
     sqlite.exec(`
         CREATE TABLE IF NOT EXISTS task_templates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +94,8 @@ export function setupTestDb() {
             created_at INTEGER DEFAULT 0,
             updated_at INTEGER DEFAULT 0
         );
+        CREATE INDEX task_templates_retention_idx
+        ON task_templates(schedule_type, enabled, last_run_at, id);
     `);
 
     const testDb = drizzle(sqlite, { schema });
@@ -100,6 +106,7 @@ export function setupTestDb() {
         schema,
         getDb: () => testDb,
         getSqlite: () => sqlite,
+        migrateSqliteDatabase: () => testDb,
         closeDb: () => { sqlite.close(); },
         DB_FILE_PATH: ':memory:',
     }));

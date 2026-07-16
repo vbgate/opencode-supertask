@@ -212,6 +212,31 @@ describe('TaskRunService', () => {
             expect(stale.length).toBe(1);
         });
 
+        test('旧版 startedAt/heartbeat 双 NULL 运行立即进入可诊断隔离', async () => {
+            const task = await createTask({ cwd: '/tmp/legacy-null-time' });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({
+                taskId: task.id,
+                status: 'running',
+                startedAt: null,
+                heartbeatAt: null,
+                workerPid: null,
+                childPid: null,
+                launchProtocol: null,
+            });
+
+            const stale = await TaskRunService.getStaleRuns(86_400_000);
+            expect(stale.map((item) => item.runId)).toContain(run.id);
+            expect(await TaskRunService.listLegacyQuarantinedRuns(86_400_000)).toEqual([{
+                runId: run.id,
+                taskId: task.id,
+                taskStatus: 'running',
+                taskCwd: '/tmp/legacy-null-time',
+                workerPid: null,
+                ownerAlive: false,
+            }]);
+        });
+
         test('正常心跳的不算 stale', async () => {
             const task = await createTask();
             await TaskRunService.create({ taskId: task.id, status: 'running' });
@@ -298,6 +323,100 @@ describe('TaskRunService', () => {
 
             const runs = await TaskRunService.getAllRunningRuns();
             expect(runs.length).toBe(0);
+        });
+    });
+
+    describe('abandonLegacyRun', () => {
+        test('仅在任务已取消且旧版无 PID owner 已退出时关闭隔离 run', async () => {
+            const task = await createTask({ cwd: '/tmp/legacy-project' });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({
+                taskId: task.id,
+                status: 'running',
+                workerPid: 2_147_483_647,
+                childPid: null,
+                launchProtocol: null,
+            });
+
+            await TaskService.cancel(task.id);
+            const quarantined = await TaskRunService.listLegacyQuarantinedRuns();
+            expect(quarantined).toEqual([{
+                runId: run.id,
+                taskId: task.id,
+                taskStatus: 'cancelled',
+                taskCwd: '/tmp/legacy-project',
+                workerPid: 2_147_483_647,
+                ownerAlive: false,
+            }]);
+
+            const abandoned = await TaskRunService.abandonLegacyRun(run.id);
+            expect(abandoned).toEqual({
+                runId: run.id,
+                taskId: task.id,
+                runStatus: 'failed',
+                taskStatus: 'cancelled',
+            });
+            expect((await TaskRunService.getById(run.id))?.status).toBe('failed');
+            expect((await TaskRunService.getById(run.id))?.log).toContain('run abandon');
+            expect((await TaskService.getById(task.id))?.status).toBe('cancelled');
+            expect(await TaskRunService.listLegacyQuarantinedRuns()).toEqual([]);
+        });
+
+        test('拒绝未取消任务、guardian、已记录 child PID 和存活 owner', async () => {
+            const notCancelled = await createTask({ name: '未取消' });
+            await TaskService.start(notCancelled.id);
+            const legacyRun = await TaskRunService.create({
+                taskId: notCancelled.id,
+                status: 'running',
+                workerPid: 2_147_483_647,
+            });
+            await expect(TaskRunService.abandonLegacyRun(legacyRun.id)).rejects.toThrow('必须先取消');
+
+            const guarded = await createTask({ name: 'guardian' });
+            await TaskService.start(guarded.id);
+            const guardedRun = await TaskRunService.create({
+                taskId: guarded.id,
+                status: 'running',
+                launchProtocol: 'gated-v2-guardian',
+            });
+            await TaskService.cancel(guarded.id);
+            await expect(TaskRunService.abandonLegacyRun(guardedRun.id)).rejects.toThrow('guardian');
+
+            const unknownProtocol = await createTask({ name: '未来协议' });
+            await TaskService.start(unknownProtocol.id);
+            const unknownProtocolRun = await TaskRunService.create({
+                taskId: unknownProtocol.id,
+                status: 'running',
+                launchProtocol: 'gated-v3-future',
+            });
+            await TaskService.cancel(unknownProtocol.id);
+            expect((await TaskRunService.listLegacyQuarantinedRuns())
+                .some((item) => item.runId === unknownProtocolRun.id)).toBe(false);
+            await expect(TaskRunService.abandonLegacyRun(unknownProtocolRun.id)).rejects.toThrow('未知或受管协议');
+
+            const recorded = await createTask({ name: '有 child PID' });
+            await TaskService.start(recorded.id);
+            const recordedRun = await TaskRunService.create({
+                taskId: recorded.id,
+                status: 'running',
+                workerPid: 2_147_483_647,
+                childPid: 12345,
+            });
+            await TaskService.cancel(recorded.id);
+            await expect(TaskRunService.abandonLegacyRun(recordedRun.id)).rejects.toThrow('child PID');
+
+            const liveOwner = await createTask({ name: '存活 owner' });
+            await TaskService.start(liveOwner.id);
+            const liveOwnerRun = await TaskRunService.create({
+                taskId: liveOwner.id,
+                status: 'running',
+                workerPid: process.pid,
+            });
+            await TaskService.cancel(liveOwner.id);
+            const liveOwnerCandidate = (await TaskRunService.listLegacyQuarantinedRuns(-100_000))
+                .find((item) => item.runId === liveOwnerRun.id);
+            expect(liveOwnerCandidate?.ownerAlive).toBe(true);
+            await expect(TaskRunService.abandonLegacyRun(liveOwnerRun.id)).rejects.toThrow('仍存活');
         });
     });
 

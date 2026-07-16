@@ -1,7 +1,13 @@
-import { getDueTemplates, cloneTaskFromTemplate, initializeNextRunAt } from './job-templates';
+import {
+    DUE_TEMPLATE_BATCH_SIZE,
+    getDueTemplates,
+    cloneTaskFromTemplate,
+    initializeNextRunAt,
+    type DueTemplateCursor,
+} from './job-templates';
 import type { GatewayConfig } from '@gateway/config';
 import { db, schema } from '@core/db';
-import { isNull } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull } from 'drizzle-orm';
 import {
     markGatewayActivity,
     markGatewayFailure,
@@ -12,6 +18,7 @@ export class Scheduler {
     private stopped = false;
     private ticking = false;
     private timer: ReturnType<typeof setInterval> | null = null;
+    private dueSweep: { cutoffNow: number; cursor: DueTemplateCursor | null } | null = null;
 
     constructor(private cfg: GatewayConfig) {}
 
@@ -40,7 +47,9 @@ export class Scheduler {
         this.ticking = true;
         let hadFailure = false;
         try {
-            const dueTemplates = await getDueTemplates();
+            const sweep = this.dueSweep ?? { cutoffNow: Date.now(), cursor: null };
+            const dueTemplates = await getDueTemplates(sweep.cursor, sweep.cutoffNow);
+            const lastTemplate = dueTemplates.at(-1);
             for (const tmpl of dueTemplates) {
                 try {
                     const task = await cloneTaskFromTemplate(tmpl.id);
@@ -65,6 +74,13 @@ export class Scheduler {
                     }));
                 }
             }
+            this.dueSweep = dueTemplates.length < DUE_TEMPLATE_BATCH_SIZE
+                || lastTemplate?.nextRunAt == null
+                ? null
+                : {
+                    cutoffNow: sweep.cutoffNow,
+                    cursor: { nextRunAt: lastTemplate.nextRunAt, id: lastTemplate.id },
+                };
             if (!hadFailure) markGatewaySuccess('scheduler');
         } catch (err) {
             markGatewayFailure('scheduler', err);
@@ -81,13 +97,29 @@ export class Scheduler {
 
     private async initializeTemplates() {
         const { taskTemplates } = schema;
-        const templates = await db
-            .select()
-            .from(taskTemplates)
-            .where(isNull(taskTemplates.nextRunAt));
+        const batchSize = 100;
+        let cursor = 0;
 
-        for (const tmpl of templates) {
-            await initializeNextRunAt(tmpl.id);
+        while (!this.stopped) {
+            const templates = await db
+                .select({ id: taskTemplates.id })
+                .from(taskTemplates)
+                .where(and(
+                    eq(taskTemplates.enabled, true),
+                    isNull(taskTemplates.nextRunAt),
+                    gt(taskTemplates.id, cursor),
+                ))
+                .orderBy(asc(taskTemplates.id))
+                .limit(batchSize);
+            if (templates.length === 0) break;
+
+            for (const tmpl of templates) {
+                if (this.stopped) break;
+                await initializeNextRunAt(tmpl.id);
+            }
+            cursor = templates.at(-1)!.id;
+            if (templates.length < batchSize) break;
+            await Bun.sleep(0);
         }
     }
 }

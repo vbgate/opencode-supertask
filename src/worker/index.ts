@@ -8,7 +8,22 @@ import {
     markGatewayFailure,
     markGatewaySuccess,
 } from '@gateway/health';
-import { signalSpawnedProcessTree } from '@core/process-control';
+import {
+    inspectSpawnedProcessTreePresence,
+    signalRecordedProcessTreeWithResult,
+    waitForSpawnedProcessTreeExit,
+} from '@core/process-control';
+import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
+import { randomUUID } from 'crypto';
+import {
+    isMatchingDrainProof,
+    LAUNCH_IDENTITY_ARGUMENT,
+    MANAGED_RUN_ENV,
+    MANAGED_RUN_ENV_VALUE,
+    TOKEN_GUARDIAN_LAUNCH_PROTOCOL,
+} from '@core/launch-protocol';
 
 const DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024;
 const FORBIDDEN_AGENT = 'supertask-runner';
@@ -18,15 +33,40 @@ interface WorkerEngineOptions {
     maxOutputChars?: number;
 }
 
+interface TaskTermination {
+    kind: 'cancel' | 'failure' | 'shutdown';
+    message: string;
+}
+
 interface RunningTask {
     task: Task;
     runId: number;
+    launchIdentity: string;
     child: ChildProcess;
     output: string;
     sessionId: string | null;
     timeoutTimer: ReturnType<typeof setTimeout> | null;
-    shutdown: boolean;
+    termination: TaskTermination | null;
+    terminationPromise: Promise<boolean> | null;
+    settlementPromise: Promise<boolean> | null;
+    guardianDrained: boolean;
+    quarantined: boolean;
     settled: boolean;
+}
+
+export interface InterruptedTaskRun {
+    taskId: number;
+    runId: number;
+}
+
+export function assertWorkerProcessIsolationSupported(
+    platform: NodeJS.Platform = process.platform,
+): void {
+    if (platform === 'win32') {
+        throw new Error(
+            'Windows Worker 已安全禁用：当前运行时无法用 Job Object 证明整个 OpenCode 进程树已退出',
+        );
+    }
 }
 
 export class WorkerEngine {
@@ -47,13 +87,16 @@ export class WorkerEngine {
     }
 
     start() {
+        assertWorkerProcessIsolationSupported();
         this.stopped = false;
         markGatewayActivity('worker');
         this.poll();
-        this.heartbeatTimer = setInterval(() => this.updateHeartbeats(), this.cfg.heartbeatIntervalMs);
+        this.heartbeatTimer = setInterval(() => {
+            this.runDetached(this.updateHeartbeats(), 'worker heartbeat cycle failed');
+        }, this.cfg.heartbeatIntervalMs);
     }
 
-    async stop(gracePeriodMs = 0): Promise<number[]> {
+    async stop(gracePeriodMs = 0): Promise<InterruptedTaskRun[]> {
         this.stopped = true;
         if (this.pollTimer) {
             clearTimeout(this.pollTimer);
@@ -74,14 +117,24 @@ export class WorkerEngine {
             this.heartbeatTimer = null;
         }
 
-        const interruptedTaskIds = [...this.runningTasks.keys()];
-        const killPromises: Promise<void>[] = [];
-        for (const entry of this.runningTasks.values()) {
-            entry.shutdown = true;
-            killPromises.push(this.killEntry(entry));
-        }
-        await Promise.allSettled(killPromises);
-        return interruptedTaskIds;
+        const interrupted: InterruptedTaskRun[] = [];
+        const entries = [...this.runningTasks.values()];
+        await Promise.all(entries.map(async (entry) => {
+            if (entry.settled) {
+                if (entry.settlementPromise) await entry.settlementPromise;
+                return;
+            }
+
+            const termination = entry.termination ?? {
+                kind: 'shutdown' as const,
+                message: 'Gateway shutdown',
+            };
+            const terminated = await this.terminateEntry(entry, termination);
+            if (terminated && termination.kind === 'shutdown') {
+                interrupted.push({ taskId: entry.task.id, runId: entry.runId });
+            }
+        }));
+        return interrupted;
     }
 
     getRunningTaskIds(): number[] {
@@ -92,12 +145,18 @@ export class WorkerEngine {
         return this.runningTasks.size;
     }
 
+    ownsRun(taskId: number, runId: number): boolean {
+        return this.runningTasks.get(taskId)?.runId === runId;
+    }
+
     private poll() {
         if (this.stopped) return;
         markGatewayActivity('worker');
 
         this.pollCyclePromise = this.tryDispatch()
-            .then(() => markGatewaySuccess('worker'))
+            .then((healthy) => {
+                if (healthy) markGatewaySuccess('worker');
+            })
             .catch((err) => {
                 markGatewayFailure('worker', err);
                 this.logError('worker poll failed', err);
@@ -109,10 +168,15 @@ export class WorkerEngine {
             });
     }
 
-    private async tryDispatch() {
-        await TaskService.resolveBlockedDependencies();
+    private async tryDispatch(): Promise<boolean> {
         await TaskService.resetOrphanRunningToPending();
         await this.reconcileCancelledTasks();
+        await this.reconcileQuarantinedTasks();
+
+        const quarantined = [...this.runningTasks.values()].filter((entry) => entry.quarantined);
+        if (quarantined.length > 0) {
+            return false;
+        }
 
         while (!this.stopped && this.runningTasks.size < this.cfg.maxConcurrency) {
             const databaseRunningCount = await TaskService.countRunning();
@@ -139,13 +203,15 @@ export class WorkerEngine {
 
             let runId: number | null = null;
             try {
+                const launchIdentity = `gateway-${process.pid}:launch:${randomUUID()}`;
                 const run = await TaskRunService.create({
                     taskId: task.id,
                     model: this.resolveModel(task.model),
                     status: 'running',
                     workerPid: process.pid,
                     lockedAt: Date.now(),
-                    lockedBy: `gateway-${process.pid}`,
+                    lockedBy: launchIdentity,
+                    launchProtocol: TOKEN_GUARDIAN_LAUNCH_PROTOCOL,
                 });
                 runId = run.id;
 
@@ -163,7 +229,7 @@ export class WorkerEngine {
                     continue;
                 }
 
-                this.spawnTask(task, run.id);
+                await this.spawnTask(task, run.id, launchIdentity);
             } catch (err) {
                 this.releaseBatch(task);
                 const message = `Worker 启动任务失败：${err instanceof Error ? err.message : String(err)}`;
@@ -182,27 +248,55 @@ export class WorkerEngine {
                 this.logError('task dispatch failed', err, task.id);
             }
         }
+        return ![...this.runningTasks.values()].some((entry) => entry.quarantined);
     }
 
-    private spawnTask(task: Task, runId: number) {
+    private launcherEntry(): string {
+        const extension = import.meta.url.endsWith('.ts') ? 'ts' : 'js';
+        const moduleDir = dirname(fileURLToPath(import.meta.url));
+        const candidates = [
+            join(moduleDir, `launcher.${extension}`),
+            join(moduleDir, `../worker/launcher.${extension}`),
+        ];
+        const entry = candidates.find((candidate) => existsSync(candidate));
+        if (!entry) throw new Error(`Worker launcher 不存在：${candidates.join(', ')}`);
+        return entry;
+    }
+
+    private async spawnTask(task: Task, runId: number, launchIdentity: string): Promise<void> {
         const model = this.resolveModel(task.model);
         const args = ['run', '--agent', task.agent, '--format', 'json'];
         if (model) args.push('-m', model);
         args.push(task.prompt);
 
-        const child = spawn(this.opencodeBin, args, {
+        const child = spawn(process.execPath, [
+            this.launcherEntry(),
+            LAUNCH_IDENTITY_ARGUMENT,
+            launchIdentity,
+            this.opencodeBin,
+            ...args,
+        ], {
             cwd: task.cwd || process.cwd(),
-            stdio: ['ignore', 'pipe', 'pipe'],
+            env: {
+                ...process.env,
+                [MANAGED_RUN_ENV]: MANAGED_RUN_ENV_VALUE,
+            },
+            stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
             detached: process.platform !== 'win32',
         });
         const entry: RunningTask = {
             task,
             runId,
+            launchIdentity,
             child,
             output: '',
             sessionId: null,
             timeoutTimer: null,
-            shutdown: false,
+            termination: null,
+            terminationPromise: null,
+            settlementPromise: null,
+            guardianDrained: false,
+            quarantined: false,
             settled: false,
         };
         this.runningTasks.set(task.id, entry);
@@ -221,83 +315,224 @@ export class WorkerEngine {
         };
         child.stdout?.on('data', handleData);
         child.stderr?.on('data', handleData);
-        child.once('error', (err) => {
-            void this.finishEntry(entry, null, `无法启动 opencode：${err.message}`);
+        child.on('message', (message: unknown) => {
+            if (isMatchingDrainProof(message, entry.launchIdentity)) {
+                entry.guardianDrained = true;
+            }
+        });
+        let spawnError: Error | null = null;
+        const spawned = new Promise<void>((resolve, reject) => {
+            child.once('spawn', resolve);
+            child.once('error', (error) => {
+                spawnError = error;
+                reject(error);
+            });
         });
         child.once('close', (code, signal) => {
-            const failure = code === 0
-                ? undefined
-                : `opencode 退出码 ${code ?? 'null'}${signal ? `，信号 ${signal}` : ''}`;
-            void this.finishEntry(entry, code, failure);
+            this.handleChildClose(entry, code, signal, spawnError);
         });
+
+        try {
+            await spawned;
+        } catch (error) {
+            entry.settled = true;
+            this.runningTasks.delete(task.id);
+            this.releaseBatch(task);
+            throw error;
+        }
+
+        const childPid = child.pid;
+        if (!childPid) {
+            entry.settled = true;
+            this.runningTasks.delete(task.id);
+            this.releaseBatch(task);
+            throw new Error('launcher 未返回 PID');
+        }
+
+        let pidRecorded = false;
+        try {
+            pidRecorded = await TaskRunService.updatePid(
+                runId,
+                process.pid,
+                childPid,
+                launchIdentity,
+            ) !== null;
+        } catch (error) {
+            await this.terminateForFailure(
+                entry,
+                `记录 Worker PID 失败：${error instanceof Error ? error.message : String(error)}`,
+            );
+            return;
+        }
+        if (!pidRecorded) {
+            await this.terminateForFailure(entry, '记录 Worker PID 失败：run 已不再处于 running 状态');
+            return;
+        }
+
+        if (!child.stdin) {
+            await this.terminateForFailure(entry, '放行 OpenCode 失败：launcher stdin 不可用');
+            return;
+        }
+        try {
+            await new Promise<void>((resolve, reject) => {
+                child.stdin!.end('START\n', (error?: Error | null) => {
+                    if (error) reject(error);
+                    else resolve();
+                });
+            });
+        } catch (error) {
+            await this.terminateForFailure(
+                entry,
+                `放行 OpenCode 失败：${error instanceof Error ? error.message : String(error)}`,
+            );
+            return;
+        }
 
         const timeoutMs = task.timeoutMs ?? this.cfg.taskTimeoutMs;
         if (timeoutMs > 0) {
             entry.timeoutTimer = setTimeout(() => {
-                this.signalEntry(entry, 'SIGKILL');
-                void this.finishEntry(entry, null, `任务超时（${timeoutMs}ms）`);
+                this.runDetached(
+                    this.terminateForFailure(entry, `任务超时（${timeoutMs}ms）`, 'SIGKILL'),
+                    'timeout termination failed',
+                    entry.task.id,
+                );
             }, timeoutMs);
         }
-
-        TaskRunService.updatePid(runId, process.pid, child.pid ?? 0).catch((err) => {
-            this.signalEntry(entry, 'SIGKILL');
-            void this.finishEntry(entry, null, `记录 Worker PID 失败：${err instanceof Error ? err.message : String(err)}`);
-        });
     }
 
-    private async finishEntry(entry: RunningTask, code: number | null, failure?: string) {
-        if (entry.settled) return;
+    private handleChildClose(
+        entry: RunningTask,
+        code: number | null,
+        signal: NodeJS.Signals | null,
+        spawnError: Error | null,
+    ): void {
+        if (entry.settled || entry.termination) return;
+
+        if (!entry.guardianDrained) {
+            const pid = entry.child.pid;
+            const presence = pid == null
+                ? spawnError == null ? 'unknown' : 'not-running'
+                : inspectSpawnedProcessTreePresence(pid);
+            const message = 'guardian 未提供进程树排空证明';
+            if (presence !== 'not-running') {
+                if (entry.timeoutTimer) {
+                    clearTimeout(entry.timeoutTimer);
+                    entry.timeoutTimer = null;
+                }
+                entry.termination = { kind: 'failure', message };
+                entry.quarantined = true;
+                markGatewayFailure(
+                    'worker',
+                    new Error(`${message}；任务 #${entry.task.id} 保持隔离`),
+                );
+                return;
+            }
+            this.runDetached(
+                this.settleEntry(entry, null, message),
+                'task settlement failed',
+                entry.task.id,
+            );
+            return;
+        }
+
+        const failure = code === 0
+            ? undefined
+            : `${spawnError ? '无法启动 opencode' : 'opencode 退出码'} ${spawnError?.message ?? code ?? 'null'}${signal ? `，信号 ${signal}` : ''}`;
+        this.runDetached(
+            this.settleEntry(entry, code, failure),
+            'task settlement failed',
+            entry.task.id,
+        );
+    }
+
+    private settleEntry(
+        entry: RunningTask,
+        code: number | null,
+        failure?: string,
+    ): Promise<boolean> {
+        if (entry.settlementPromise) return entry.settlementPromise;
+        if (entry.settled) return Promise.resolve(false);
         entry.settled = true;
         if (entry.timeoutTimer) {
             clearTimeout(entry.timeoutTimer);
             entry.timeoutTimer = null;
         }
-        try {
-            if (entry.shutdown) return;
 
-            const currentRun = await TaskRunService.getById(entry.runId);
-            if (!currentRun || currentRun.status !== 'running') return;
+        const settlement = this.commitEntry(entry, code, failure)
+            .then(() => true)
+            .catch((error) => {
+                markGatewayFailure('worker', error);
+                this.logError('task settlement failed', error, entry.task.id);
+                return false;
+            })
+            .finally(() => {
+                this.runningTasks.delete(entry.task.id);
+                this.releaseBatch(entry.task);
+            });
+        entry.settlementPromise = settlement;
+        return settlement;
+    }
 
+    private async commitEntry(
+        entry: RunningTask,
+        code: number | null,
+        failure?: string,
+    ): Promise<void> {
+        const termination = entry.termination;
+        if (termination?.kind === 'shutdown') return;
+
+        if (termination?.kind === 'cancel') {
             const output = entry.output.trim();
-            const log = failure
-                ? `${failure}${output ? `\n${output}` : ''}`
-                : output;
+            const log = `${termination.message}${output ? `\n${output}` : ''}`;
+            await TaskRunService.fail(entry.runId, log);
+            console.log(JSON.stringify({
+                ts: new Date().toISOString(),
+                level: 'info',
+                msg: 'running task cancelled',
+                taskId: entry.task.id,
+            }));
+            return;
+        }
 
-            if (code === 0 && !failure) {
-                const completed = await TaskService.completeRun(entry.task.id, entry.runId, log);
-                if (completed) {
-                    console.log(JSON.stringify({
-                        ts: new Date().toISOString(),
-                        level: 'info',
-                        msg: 'task done',
-                        taskId: entry.task.id,
-                    }));
-                    return;
-                }
+        const currentRun = await TaskRunService.getById(entry.runId);
+        if (!currentRun || currentRun.status !== 'running') return;
 
-                await TaskRunService.fail(entry.runId, '任务或执行记录状态已被其他操作改变');
+        const output = entry.output.trim();
+        const log = failure
+            ? `${failure}${output ? `\n${output}` : ''}`
+            : output;
+
+        if (code === 0 && !failure) {
+            const completed = await TaskService.completeRun(entry.task.id, entry.runId, log);
+            if (completed) {
+                console.log(JSON.stringify({
+                    ts: new Date().toISOString(),
+                    level: 'info',
+                    msg: 'task done',
+                    taskId: entry.task.id,
+                }));
                 return;
             }
 
-            const failed = await TaskService.failRun(entry.task.id, entry.runId, log);
-            if (!failed) {
-                await TaskRunService.fail(
-                    entry.runId,
-                    `${log}${log ? '\n' : ''}任务状态已被其他操作改变`,
-                );
-                this.logError('task failure state transition rejected', failure ?? 'unknown failure', entry.task.id);
-            }
-            console.error(JSON.stringify({
-                ts: new Date().toISOString(),
-                level: 'error',
-                msg: 'task failed',
-                taskId: entry.task.id,
-                error: failure,
-            }));
-        } finally {
-            this.runningTasks.delete(entry.task.id);
-            this.releaseBatch(entry.task);
+            await TaskRunService.fail(entry.runId, '任务或执行记录状态已被其他操作改变');
+            return;
         }
+
+        const failed = await TaskService.failRun(entry.task.id, entry.runId, log);
+        if (!failed) {
+            await TaskRunService.fail(
+                entry.runId,
+                `${log}${log ? '\n' : ''}任务状态已被其他操作改变`,
+            );
+            this.logError('task failure state transition rejected', failure ?? 'unknown failure', entry.task.id);
+        }
+        console.error(JSON.stringify({
+            ts: new Date().toISOString(),
+            level: 'error',
+            msg: 'task failed',
+            taskId: entry.task.id,
+            error: failure,
+        }));
     }
 
     private async reconcileCancelledTasks() {
@@ -311,33 +546,20 @@ export class WorkerEngine {
         }
     }
 
-    private async cancelEntry(entry: RunningTask) {
-        if (entry.settled) return;
-        entry.settled = true;
-        if (entry.timeoutTimer) {
-            clearTimeout(entry.timeoutTimer);
-            entry.timeoutTimer = null;
+    private async reconcileQuarantinedTasks() {
+        for (const entry of [...this.runningTasks.values()]) {
+            if (!entry.quarantined || !entry.termination) continue;
+            await this.terminateEntry(entry, entry.termination);
         }
+    }
 
-        try {
-            await this.killEntry(entry);
-            const output = entry.output.trim();
-            const log = `任务已取消${output ? `\n${output}` : ''}`;
-            await TaskRunService.fail(entry.runId, log);
-            console.log(JSON.stringify({
-                ts: new Date().toISOString(),
-                level: 'info',
-                msg: 'running task cancelled',
-                taskId: entry.task.id,
-            }));
-        } finally {
-            this.runningTasks.delete(entry.task.id);
-            this.releaseBatch(entry.task);
-        }
+    private async cancelEntry(entry: RunningTask) {
+        await this.terminateEntry(entry, { kind: 'cancel', message: '任务已取消' });
     }
 
     private async updateHeartbeats() {
         for (const entry of this.runningTasks.values()) {
+            if (entry.quarantined) continue;
             try {
                 await TaskRunService.heartbeat(entry.runId);
             } catch (err) {
@@ -346,31 +568,103 @@ export class WorkerEngine {
         }
     }
 
-    private killEntry(entry: RunningTask): Promise<void> {
-        if (entry.child.exitCode !== null || entry.child.signalCode !== null) {
-            return Promise.resolve();
+    private async terminateForFailure(
+        entry: RunningTask,
+        message: string,
+        initialSignal: NodeJS.Signals = 'SIGTERM',
+    ): Promise<boolean> {
+        return this.terminateEntry(entry, { kind: 'failure', message }, initialSignal);
+    }
+
+    private terminateEntry(
+        entry: RunningTask,
+        termination: TaskTermination,
+        initialSignal: NodeJS.Signals = 'SIGTERM',
+    ): Promise<boolean> {
+        if (entry.terminationPromise) return entry.terminationPromise;
+        if (entry.settled) return entry.settlementPromise ?? Promise.resolve(false);
+
+        entry.termination ??= termination;
+        if (entry.timeoutTimer) {
+            clearTimeout(entry.timeoutTimer);
+            entry.timeoutTimer = null;
         }
+        entry.quarantined = true;
 
-        return new Promise((resolve) => {
-            const timeout = setTimeout(() => {
-                this.signalEntry(entry, 'SIGKILL');
-                resolve();
-            }, 5_000);
-
-            entry.child.once('close', () => {
-                clearTimeout(timeout);
-                resolve();
+        const terminationPromise = this.completeTermination(entry, initialSignal)
+            .finally(() => {
+                if (!entry.settled && entry.terminationPromise === terminationPromise) {
+                    entry.terminationPromise = null;
+                }
             });
+        entry.terminationPromise = terminationPromise;
+        return terminationPromise;
+    }
 
-            this.signalEntry(entry, 'SIGTERM');
-        });
+    private async completeTermination(
+        entry: RunningTask,
+        initialSignal: NodeJS.Signals,
+    ): Promise<boolean> {
+        const termination = entry.termination;
+        if (!termination) return false;
+
+        try {
+            const exited = await this.killEntry(entry, initialSignal);
+            if (!exited) {
+                markGatewayFailure(
+                    'worker',
+                    new Error(`${termination.message}；任务 #${entry.task.id} 的进程无法确认退出`),
+                );
+                return false;
+            }
+            entry.quarantined = false;
+            return await this.settleEntry(
+                entry,
+                null,
+                termination.kind === 'failure' ? termination.message : undefined,
+            );
+        } catch (error) {
+            markGatewayFailure('worker', error);
+            this.logError('task termination failed', error, entry.task.id);
+            return false;
+        }
+    }
+
+    private async killEntry(
+        entry: RunningTask,
+        initialSignal: NodeJS.Signals = 'SIGTERM',
+    ): Promise<boolean> {
+        // 只有绑定当前 run 身份的独立 IPC 证明才能把 guardian 退出视为整组排空。
+        if (entry.guardianDrained
+            && (entry.child.exitCode !== null || entry.child.signalCode !== null)) return true;
+        const pid = entry.child.pid;
+        if (!pid) return false;
+
+        const initialResult = this.signalEntry(entry, initialSignal);
+        if (initialResult === 'not-running') return true;
+        if (initialResult !== 'signalled') return false;
+        if (await waitForSpawnedProcessTreeExit(pid, 2_500)) return true;
+        if (initialSignal === 'SIGKILL') return false;
+        if (entry.guardianDrained
+            && (entry.child.exitCode !== null || entry.child.signalCode !== null)) return true;
+
+        const forcedResult = this.signalEntry(entry, 'SIGKILL');
+        if (forcedResult === 'not-running') return true;
+        if (forcedResult !== 'signalled') return false;
+        return waitForSpawnedProcessTreeExit(pid, 2_500);
     }
 
     private signalEntry(entry: RunningTask, signal: NodeJS.Signals) {
         const pid = entry.child.pid;
-        if (!pid) return;
+        if (!pid) return 'not-running' as const;
 
-        signalSpawnedProcessTree(pid, signal);
+        return signalRecordedProcessTreeWithResult(
+            pid,
+            signal,
+            this.opencodeBin,
+            TOKEN_GUARDIAN_LAUNCH_PROTOCOL,
+            entry.launchIdentity,
+        );
     }
 
     private releaseBatch(task: Task) {
@@ -380,6 +674,13 @@ export class WorkerEngine {
     private resolveModel(taskModel: string | null): string | null {
         if (!taskModel || taskModel === 'default') return null;
         return taskModel;
+    }
+
+    private runDetached(operation: Promise<unknown>, message: string, taskId?: number): void {
+        operation.catch((error) => {
+            markGatewayFailure('worker', error);
+            this.logError(message, error, taskId);
+        });
     }
 
     private logError(message: string, error: unknown, taskId?: number) {

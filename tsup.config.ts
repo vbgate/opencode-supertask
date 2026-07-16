@@ -43,6 +43,8 @@ export default defineConfig([
       'web/index': 'src/web/index.tsx',
       'plugin/supertask': 'plugin/supertask.ts',
       'worker/index': 'src/worker/index.ts',
+      'worker/launcher': 'src/worker/launcher.ts',
+      'daemon/pm2-supervisor': 'src/daemon/pm2-supervisor.ts',
     },
     dts: { resolve: true },
   },

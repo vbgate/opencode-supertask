@@ -2,8 +2,6 @@ import { Database } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import {
     chmodSync,
-    constants,
-    copyFileSync,
     existsSync,
     mkdirSync,
     renameSync,
@@ -13,7 +11,7 @@ import {
 } from 'fs';
 import { tmpdir } from 'os';
 import { basename, dirname, resolve } from 'path';
-import { closeDb, DB_FILE_PATH, getSqlite } from '@core/db';
+import { DB_FILE_PATH, getSqlite, migrateSqliteDatabase } from '@core/db';
 import { isProcessAlive } from '@core/process-control';
 
 const REQUIRED_TABLES = ['gateway_lock', 'tasks', 'task_runs', 'task_templates'] as const;
@@ -24,6 +22,23 @@ interface CountRow {
 
 interface GatewayLockRow {
     pid: number;
+}
+
+interface RestoreColumn {
+    name: string;
+    type: string;
+    notNull: boolean;
+    defaultValue: string | null;
+    primaryKeyOrder: number;
+}
+
+interface RestoreTable {
+    name: string;
+    columns: RestoreColumn[];
+}
+
+interface RestoreTablePlan extends RestoreTable {
+    sourceExists: boolean;
 }
 
 export interface DatabaseCounts {
@@ -93,6 +108,17 @@ function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+function quoteIdentifier(value: string): string {
+    return `"${value.replaceAll('"', '""')}"`;
+}
+
+function columnDefinitionsMatch(left: RestoreColumn, right: RestoreColumn): boolean {
+    return left.type.trim().toUpperCase() === right.type.trim().toUpperCase()
+        && left.notNull === right.notNull
+        && left.defaultValue === right.defaultValue
+        && left.primaryKeyOrder === right.primaryKeyOrder;
+}
+
 export class DatabaseMaintenanceService {
     static check(): DatabaseCheckResult {
         return this.inspect(getSqlite(), DB_FILE_PATH);
@@ -122,9 +148,11 @@ export class DatabaseMaintenanceService {
             const before = this.readCounts(sqlite);
             backup = this.writeSnapshot(sqlite, this.createBackupPath('pre-clear'));
 
-            sqlite.exec('DELETE FROM task_runs');
-            sqlite.exec('DELETE FROM tasks');
-            sqlite.exec('DELETE FROM task_templates');
+            const businessTables = this.readRestoreTables(sqlite, 'main');
+            sqlite.exec('PRAGMA defer_foreign_keys = ON');
+            for (const table of businessTables.values()) {
+                sqlite.exec(`DELETE FROM main.${quoteIdentifier(table.name)}`);
+            }
             sqlite.exec('COMMIT');
 
             return {
@@ -150,85 +178,110 @@ export class DatabaseMaintenanceService {
         if (source === livePath) throw new Error('恢复来源不能是当前数据库文件');
 
         const current = getSqlite();
-        this.assertGatewaySafe(current, false);
-        this.assertNoRunningWork(current);
-        if (!existsSync(source) || !statSync(source).isFile()) {
-            throw new Error(`备份文件不存在：${source}`);
-        }
-
-        let sourceCheck: DatabaseCheckResult;
-        try {
-            sourceCheck = this.inspectFile(source);
-        } catch (error) {
-            throw new Error(`备份文件无效：${errorMessage(error)}`);
-        }
-        if (!sourceCheck.ok) {
-            throw new Error(`备份文件校验失败：${sourceCheck.integrityMessages.join('; ') || 'schema/foreign key error'}`);
-        }
-
         const stagePath = `${livePath}.restore-${process.pid}-${randomUUID()}.tmp`;
-        const rollbackPath = `${livePath}.rollback-${process.pid}-${randomUUID()}.tmp`;
         let safetyBackup: DatabaseBackupResult | null = null;
-        let liveMoved = false;
+        let attached = false;
+        let committed = false;
         try {
-            copyFileSync(source, stagePath, constants.COPYFILE_EXCL);
+            current.exec('BEGIN EXCLUSIVE');
+            this.assertGatewaySafe(current, false);
+            this.assertNoRunningWork(current);
+            if (!existsSync(source)) {
+                throw new Error(`备份文件不存在：${source}`);
+            }
+            const sourceStat = statSync(source);
+            if (!sourceStat.isFile()) throw new Error(`备份路径不是文件：${source}`);
+            const liveStat = statSync(livePath);
+            if (sourceStat.dev === liveStat.dev && sourceStat.ino === liveStat.ino) {
+                throw new Error('恢复来源不能是当前数据库的符号链接或硬链接别名');
+            }
+
+            let sourceCheck: DatabaseCheckResult;
+            try {
+                const sourceDatabase = new Database(source, { readonly: true, strict: true });
+                try {
+                    sourceDatabase.exec('BEGIN');
+                    sourceCheck = this.inspect(sourceDatabase, source);
+                    if (!sourceCheck.ok) {
+                        throw new Error(
+                            sourceCheck.integrityMessages.join('; ') || 'schema/foreign key error',
+                        );
+                    }
+                    writeFileSync(stagePath, sourceDatabase.serialize(), {
+                        flag: 'wx',
+                        mode: 0o600,
+                    });
+                } finally {
+                    if (sourceDatabase.inTransaction) sourceDatabase.exec('ROLLBACK');
+                    sourceDatabase.close();
+                }
+            } catch (error) {
+                throw new Error(`备份文件无效：${errorMessage(error)}`);
+            }
             chmodSync(stagePath, 0o600);
 
             const staged = new Database(stagePath);
             try {
+                staged.exec('PRAGMA journal_mode = DELETE;');
+                staged.exec('PRAGMA busy_timeout = 5000;');
+                migrateSqliteDatabase(staged);
                 const stagedCheck = this.inspect(staged, stagePath);
                 if (!stagedCheck.ok) throw new Error('暂存恢复文件校验失败');
-                const now = Date.now();
-                staged.query(
-                    'INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, NULL)',
-                ).run(process.pid, now, now);
             } finally {
                 staged.close();
             }
 
-            const sqlite = getSqlite();
-            sqlite.exec('BEGIN IMMEDIATE');
+            const sqlite = current;
+            let recoveredRunningTasks = 0;
+            let closedRunningRuns = 0;
             try {
                 this.assertGatewaySafe(sqlite, false);
                 this.assertNoRunningWork(sqlite);
                 safetyBackup = this.writeSnapshot(sqlite, this.createBackupPath('pre-restore'));
-                const now = Date.now();
-                sqlite.query(
-                    'INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, NULL)',
-                ).run(process.pid, now, now);
-                sqlite.exec('COMMIT');
-            } catch (error) {
-                if (sqlite.inTransaction) sqlite.exec('ROLLBACK');
-                throw error;
-            }
-
-            const checkpoint = sqlite.query('PRAGMA wal_checkpoint(TRUNCATE)').get() as { busy: number } | null;
-            if (checkpoint && checkpoint.busy !== 0) {
-                throw new DatabaseMaintenanceConflictError('数据库仍被其他连接占用，无法安全恢复');
-            }
-            closeDb();
-            safeUnlink(`${livePath}-wal`);
-            safeUnlink(`${livePath}-shm`);
-
-            renameSync(livePath, rollbackPath);
-            liveMoved = true;
-            renameSync(stagePath, livePath);
-
-            const restored = getSqlite();
-            restored.exec('BEGIN IMMEDIATE');
-            let recoveredRunningTasks = 0;
-            let closedRunningRuns = 0;
-            try {
+                sqlite.query('ATTACH DATABASE ? AS restore_source').run(stagePath);
+                attached = true;
+                const restorePlan = this.buildRestorePlan(sqlite);
                 recoveredRunningTasks = this.scalar(
-                    restored,
-                    "SELECT COUNT(*) AS count FROM tasks WHERE status = 'running'",
+                    sqlite,
+                    "SELECT COUNT(*) AS count FROM restore_source.tasks WHERE status = 'running'",
                 );
                 closedRunningRuns = this.scalar(
-                    restored,
-                    "SELECT COUNT(*) AS count FROM task_runs WHERE status = 'running'",
+                    sqlite,
+                    "SELECT COUNT(*) AS count FROM restore_source.task_runs WHERE status = 'running'",
                 );
+
+                sqlite.exec('PRAGMA defer_foreign_keys = ON');
+                for (const table of restorePlan) {
+                    sqlite.exec(`DELETE FROM main.${quoteIdentifier(table.name)}`);
+                }
+                for (const table of restorePlan) {
+                    if (!table.sourceExists) continue;
+                    const columns = table.columns.map((column) => quoteIdentifier(column.name)).join(', ');
+                    sqlite.exec(`
+                        INSERT INTO main.${quoteIdentifier(table.name)} (${columns})
+                        SELECT ${columns} FROM restore_source.${quoteIdentifier(table.name)}
+                    `);
+                }
+
+                const liveTableNames = restorePlan.map((table) => table.name);
+                const sourceTableNames = restorePlan
+                    .filter((table) => table.sourceExists)
+                    .map((table) => table.name);
+                const livePlaceholders = liveTableNames.map(() => '?').join(', ');
+                sqlite.query(
+                    `DELETE FROM main.sqlite_sequence WHERE name IN (${livePlaceholders})`,
+                ).run(...liveTableNames);
+                if (sourceTableNames.length > 0) {
+                    const sourcePlaceholders = sourceTableNames.map(() => '?').join(', ');
+                    sqlite.query(`
+                        INSERT INTO main.sqlite_sequence(name, seq)
+                        SELECT name, seq FROM restore_source.sqlite_sequence
+                        WHERE name IN (${sourcePlaceholders})
+                    `).run(...sourceTableNames);
+                }
+
                 const finishedAt = Math.floor(Date.now() / 1000);
-                restored.query(`
+                sqlite.query(`
                     UPDATE task_runs
                     SET status = 'failed', finished_at = ?,
                         log = CASE
@@ -237,22 +290,39 @@ export class DatabaseMaintenanceService {
                         END
                     WHERE status = 'running'
                 `).run(finishedAt);
-                restored.exec(`
+                sqlite.exec(`
                     UPDATE tasks
                     SET status = 'pending', started_at = NULL, finished_at = NULL
                     WHERE status = 'running'
                 `);
-                restored.query('DELETE FROM gateway_lock WHERE pid = ?').run(process.pid);
-                restored.exec('COMMIT');
+                sqlite.exec('DELETE FROM gateway_lock');
+
+                const violations = sqlite.query('PRAGMA foreign_key_check').all();
+                if (violations.length > 0) {
+                    throw new Error(`恢复数据包含 ${violations.length} 条外键违规`);
+                }
+                const transactionCheck = this.inspect(sqlite, livePath);
+                if (!transactionCheck.ok) throw new Error('恢复后的数据库未通过完整性校验');
+
+                sqlite.exec('COMMIT');
+                committed = true;
             } catch (error) {
-                if (restored.inTransaction) restored.exec('ROLLBACK');
+                if (sqlite.inTransaction) sqlite.exec('ROLLBACK');
                 throw error;
+            } finally {
+                if (attached && !sqlite.inTransaction) {
+                    try {
+                        sqlite.exec('DETACH DATABASE restore_source');
+                    } catch {
+                        // 连接关闭时 SQLite 仍会释放附件；不覆盖恢复结果。
+                    }
+                    attached = false;
+                }
             }
 
-            const check = this.inspect(restored, livePath);
+            const check = this.inspect(sqlite, livePath);
             if (!check.ok) throw new Error('恢复后的数据库未通过完整性校验');
 
-            safeUnlink(rollbackPath);
             return {
                 sourcePath: source,
                 safetyBackupPath: safetyBackup.path,
@@ -261,35 +331,20 @@ export class DatabaseMaintenanceService {
                 check,
             };
         } catch (error) {
-            closeDb();
-            safeUnlink(`${livePath}-wal`);
-            safeUnlink(`${livePath}-shm`);
+            if (current.inTransaction) current.exec('ROLLBACK');
             safeUnlink(stagePath);
             safeUnlink(`${stagePath}-journal`);
             safeUnlink(`${stagePath}-wal`);
             safeUnlink(`${stagePath}-shm`);
 
-            if (liveMoved && existsSync(rollbackPath)) {
-                safeUnlink(livePath);
-                renameSync(rollbackPath, livePath);
-                try {
-                    const original = getSqlite();
-                    original.query('DELETE FROM gateway_lock WHERE pid = ?').run(process.pid);
-                } catch {
-                    // 最终错误会同时给出安全备份路径，供人工恢复。
-                }
-            } else if (existsSync(rollbackPath)) {
-                safeUnlink(rollbackPath);
-            } else {
-                try {
-                    getSqlite().query('DELETE FROM gateway_lock WHERE pid = ?').run(process.pid);
-                } catch {
-                    // 当前数据库仍在原位；保留原始错误。
-                }
-            }
-
             const backupHint = safetyBackup ? `；当前库安全备份：${safetyBackup.path}` : '';
-            throw new Error(`恢复数据库失败，已尝试回滚${backupHint}：${errorMessage(error)}`);
+            const rollbackHint = committed ? '；事务已提交，未自动覆盖后续写入' : '；事务已回滚';
+            throw new Error(`恢复数据库失败${rollbackHint}${backupHint}：${errorMessage(error)}`);
+        } finally {
+            safeUnlink(stagePath);
+            safeUnlink(`${stagePath}-journal`);
+            safeUnlink(`${stagePath}-wal`);
+            safeUnlink(`${stagePath}-shm`);
         }
     }
 
@@ -305,6 +360,95 @@ export class DatabaseMaintenanceService {
         } finally {
             sqlite.close();
         }
+    }
+
+    private static buildRestorePlan(sqlite: Database): RestoreTablePlan[] {
+        const liveTables = this.readRestoreTables(sqlite, 'main');
+        const sourceTables = this.readRestoreTables(sqlite, 'restore_source');
+
+        for (const [tableName, sourceTable] of sourceTables) {
+            const liveTable = liveTables.get(tableName);
+            if (!liveTable) {
+                throw new Error(`恢复来源包含当前数据库不认识的业务表：${tableName}`);
+            }
+            const liveColumns = new Map(liveTable.columns.map((column) => [column.name, column]));
+            for (const sourceColumn of sourceTable.columns) {
+                const liveColumn = liveColumns.get(sourceColumn.name);
+                if (!liveColumn) {
+                    throw new Error(
+                        `恢复来源的表 ${tableName} 包含当前数据库不认识的可写列：${sourceColumn.name}`,
+                    );
+                }
+                if (!columnDefinitionsMatch(liveColumn, sourceColumn)) {
+                    throw new Error(`恢复来源的表 ${tableName}.${sourceColumn.name} 与当前数据库定义不兼容`);
+                }
+            }
+        }
+
+        const plan: RestoreTablePlan[] = [];
+        for (const [tableName, liveTable] of liveTables) {
+            const sourceTable = sourceTables.get(tableName);
+            if (!sourceTable) {
+                plan.push({ ...liveTable, columns: [], sourceExists: false });
+                continue;
+            }
+
+            const sourceColumns = new Map(sourceTable.columns.map((column) => [column.name, column]));
+            for (const liveColumn of liveTable.columns) {
+                if (sourceColumns.has(liveColumn.name)) continue;
+                if (liveColumn.primaryKeyOrder > 0 || (liveColumn.notNull && liveColumn.defaultValue == null)) {
+                    throw new Error(
+                        `当前数据库的表 ${tableName}.${liveColumn.name} 无法从旧备份安全补默认值`,
+                    );
+                }
+            }
+            plan.push({
+                name: tableName,
+                columns: sourceTable.columns,
+                sourceExists: true,
+            });
+        }
+        return plan;
+    }
+
+    private static readRestoreTables(
+        sqlite: Database,
+        databaseName: 'main' | 'restore_source',
+    ): Map<string, RestoreTable> {
+        const tableRows = sqlite.query(`
+            SELECT name
+            FROM ${databaseName}.sqlite_schema
+            WHERE type = 'table'
+              AND name NOT LIKE 'sqlite_%'
+              AND name NOT IN ('gateway_lock', '__drizzle_migrations')
+            ORDER BY name
+        `).all() as Array<{ name: string }>;
+        const result = new Map<string, RestoreTable>();
+        for (const row of tableRows) {
+            const columns = sqlite.query(
+                `PRAGMA ${databaseName}.table_xinfo(${quoteIdentifier(row.name)})`,
+            ).all() as Array<{
+                name: string;
+                type: string;
+                notnull: number;
+                dflt_value: string | null;
+                pk: number;
+                hidden: number;
+            }>;
+            result.set(row.name, {
+                name: row.name,
+                columns: columns
+                    .filter((column) => column.hidden === 0)
+                    .map((column) => ({
+                        name: column.name,
+                        type: column.type,
+                        notNull: column.notnull !== 0,
+                        defaultValue: column.dflt_value,
+                        primaryKeyOrder: column.pk,
+                    })),
+            });
+        }
+        return result;
     }
 
     private static inspect(sqlite: Database, path: string): DatabaseCheckResult {

@@ -48,4 +48,11 @@ jobs:
         run: bun run build
 
       - name: Publish to npm
-        run: npm publish --access public
+        env:
+          PACKAGE_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+        run: |
+          if [[ "${PACKAGE_VERSION#v}" == *-* ]]; then
+            npm publish --access public --tag next
+          else
+            npm publish --access public --tag latest
+          fi

@@ -3,9 +3,11 @@ import { setupTestDb } from './helpers/mock-db';
 import { TaskService } from '../src/core/services/task.service';
 import { TaskRunService } from '../src/core/services/task-run.service';
 
+let testDb: ReturnType<typeof setupTestDb>;
+
 describe('TaskService', () => {
     beforeEach(() => {
-        setupTestDb();
+        testDb = setupTestDb();
     });
 
     describe('add', () => {
@@ -67,6 +69,21 @@ describe('TaskService', () => {
             await expect(TaskService.add({
                 name: '跨项目依赖任务', agent: 'a', prompt: 'p', cwd: '/项目甲', dependsOn: dependency.id,
             })).rejects.toThrow('同一 cwd');
+        });
+
+        test('拒绝依赖已经进入不可恢复终态的任务', async () => {
+            const dependency = await TaskService.add({
+                name: '已结束前置', agent: 'a', prompt: 'p', cwd: '/项目甲',
+            });
+            await TaskService.cancel(dependency.id);
+
+            expect(TaskService.add({
+                name: '不会永久阻塞的下游',
+                agent: 'a',
+                prompt: 'p',
+                cwd: '/项目甲',
+                dependsOn: dependency.id,
+            })).rejects.toThrow('不可恢复终态');
         });
     });
 
@@ -251,6 +268,17 @@ describe('TaskService', () => {
             expect(await TaskService.countRunning()).toBe(1);
             expect((await TaskService.next())?.id).toBe(other.id);
             expect((await TaskService.getById(sameBatch.id))?.status).toBe('pending');
+        });
+
+        test('任务被重置为 pending 但仍有 active run 时不能再次派发', async () => {
+            const task = await TaskService.add({
+                name: '关停中断窗口', agent: 'a', prompt: 'p',
+            });
+            await TaskService.start(task.id);
+            await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskService.resetRunningToPending([task.id]);
+
+            expect(await TaskService.next()).toBeNull();
         });
 
         test('retryAfter 未到期时不返回 failed 任务', async () => {
@@ -615,6 +643,92 @@ describe('TaskService', () => {
             const count = await TaskService.retryBatch('nonexistent-batch');
             expect(count).toBe(0);
         });
+
+        test('一次恢复同批次三层依赖闭包，并保持逐级调度', async () => {
+            const root = await TaskService.add({
+                name: '根任务', agent: 'a', prompt: 'p', batchId: 'closure', cwd: '/project',
+            });
+            const middle = await TaskService.add({
+                name: '中间任务', agent: 'a', prompt: 'p', batchId: 'closure', cwd: '/project',
+                dependsOn: root.id,
+            });
+            const leaf = await TaskService.add({
+                name: '叶子任务', agent: 'a', prompt: 'p', batchId: 'closure', cwd: '/project',
+                dependsOn: middle.id,
+            });
+            testDb.sqlite.query(`
+                UPDATE tasks
+                SET status = 'dead_letter', retry_count = 1, max_retries = 0, finished_at = 1
+                WHERE id IN (?, ?, ?)
+            `).run(root.id, middle.id, leaf.id);
+
+            expect(await TaskService.retryBatch('closure', { cwd: '/project' })).toBe(3);
+
+            expect((await TaskService.next({ cwd: '/project' }))?.id).toBe(root.id);
+            await TaskService.start(root.id);
+            await TaskService.done(root.id);
+            expect((await TaskService.next({ cwd: '/project' }))?.id).toBe(middle.id);
+            await TaskService.start(middle.id);
+            await TaskService.done(middle.id);
+            expect((await TaskService.next({ cwd: '/project' }))?.id).toBe(leaf.id);
+        });
+
+        test('缺失、跨 cwd 与环形依赖不会被批量重试恢复', async () => {
+            const missingParent = await TaskService.add({
+                name: '将被删除的父任务', agent: 'a', prompt: 'p', batchId: 'other', cwd: '/project',
+            });
+            const missingChild = await TaskService.add({
+                name: '悬空子任务', agent: 'a', prompt: 'p', batchId: 'missing', cwd: '/project',
+                dependsOn: missingParent.id,
+            });
+            testDb.sqlite.query('DELETE FROM tasks WHERE id = ?').run(missingParent.id);
+            testDb.sqlite.query("UPDATE tasks SET status = 'dead_letter' WHERE id = ?").run(missingChild.id);
+            expect(await TaskService.retryBatch('missing', { cwd: '/project' })).toBe(0);
+
+            const crossParent = await TaskService.add({
+                name: '跨项目父任务', agent: 'a', prompt: 'p', batchId: 'other', cwd: '/project',
+            });
+            const crossChild = await TaskService.add({
+                name: '跨项目子任务', agent: 'a', prompt: 'p', batchId: 'cross', cwd: '/project',
+                dependsOn: crossParent.id,
+            });
+            testDb.sqlite.query("UPDATE tasks SET cwd = '/other' WHERE id = ?").run(crossParent.id);
+            testDb.sqlite.query("UPDATE tasks SET status = 'done' WHERE id = ?").run(crossParent.id);
+            testDb.sqlite.query("UPDATE tasks SET status = 'dead_letter' WHERE id = ?").run(crossChild.id);
+            expect(await TaskService.retryBatch('cross', { cwd: '/project' })).toBe(0);
+
+            const first = await TaskService.add({ name: '环一', agent: 'a', prompt: 'p', batchId: 'cycle' });
+            const second = await TaskService.add({ name: '环二', agent: 'a', prompt: 'p', batchId: 'cycle' });
+            testDb.sqlite.query(`
+                UPDATE tasks
+                SET status = 'dead_letter', depends_on = CASE id WHEN ? THEN ? ELSE ? END
+                WHERE id IN (?, ?)
+            `).run(first.id, second.id, first.id, first.id, second.id);
+            expect(await TaskService.retryBatch('cycle')).toBe(0);
+        });
+
+        test('深依赖链使用集合递归恢复，不随路径字符串二次增长', async () => {
+            const insert = testDb.sqlite.prepare(`
+                INSERT INTO tasks (
+                    name, agent, prompt, batch_id, status, depends_on,
+                    retry_count, max_retries, finished_at
+                ) VALUES (?, 'a', 'p', 'deep-closure', 'dead_letter', ?, 1, 0, 1)
+                RETURNING id
+            `);
+            let dependsOn: number | null = null;
+            testDb.sqlite.transaction(() => {
+                for (let index = 0; index < 1_200; index += 1) {
+                    dependsOn = (insert.get(`深链 ${index}`, dependsOn) as { id: number }).id;
+                }
+            })();
+
+            expect(await TaskService.retryBatch('deep-closure')).toBe(1_200);
+            const pending = testDb.sqlite.query(`
+                SELECT count(*) AS count FROM tasks
+                WHERE batch_id = 'deep-closure' AND status = 'pending'
+            `).get() as { count: number };
+            expect(pending.count).toBe(1_200);
+        });
     });
 
     describe('list', () => {
@@ -724,6 +838,36 @@ describe('TaskService', () => {
             expect((await TaskRunService.getById(run.id))?.status).toBe('failed');
         });
 
+        test('确认进程退出后的停机中断会原子关闭 run 并重置任务', async () => {
+            const task = await TaskService.add({
+                name: '停机中断',
+                agent: 'test-agent',
+                prompt: '等待重新派发',
+            });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+
+            expect(await TaskService.interruptRun(task.id, run.id, 'Gateway shutdown')).toBe(true);
+            expect((await TaskService.getById(task.id))?.status).toBe('pending');
+            expect((await TaskService.getById(task.id))?.retryCount).toBe(0);
+            expect((await TaskRunService.getById(run.id))?.status).toBe('failed');
+        });
+
+        test('停机期间任务已取消时仍关闭 run 且不把任务恢复为 pending', async () => {
+            const task = await TaskService.add({
+                name: '停机取消竞态',
+                agent: 'test-agent',
+                prompt: '保持取消终态',
+            });
+            await TaskService.start(task.id);
+            const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskService.cancel(task.id);
+
+            expect(await TaskService.interruptRun(task.id, run.id, 'Gateway shutdown')).toBe(true);
+            expect((await TaskService.getById(task.id))?.status).toBe('cancelled');
+            expect((await TaskRunService.getById(run.id))?.status).toBe('failed');
+        });
+
         test('依赖进入不可恢复终态后自动收敛下游任务', async () => {
             const dependency = await TaskService.add({
                 name: '失败前置任务', agent: 'a', prompt: 'p', cwd: '/项目甲',
@@ -733,10 +877,32 @@ describe('TaskService', () => {
             });
             await TaskService.cancel(dependency.id);
 
-            expect(await TaskService.resolveBlockedDependencies()).toBe(1);
             const resolved = await TaskService.getById(dependent.id);
             expect(resolved?.status).toBe('dead_letter');
             expect(resolved?.resultLog).toContain('依赖任务');
+            expect(await TaskService.resolveBlockedDependencies()).toBe(0);
+        });
+
+        test('不可恢复的前置任务一次事件式收敛整条依赖链', async () => {
+            const root = await TaskService.add({ name: '根任务', agent: 'a', prompt: 'p' });
+            let dependsOn = root.id;
+            const descendants: number[] = [];
+            for (let index = 0; index < 250; index += 1) {
+                const task = await TaskService.add({
+                    name: `下游 ${index}`,
+                    agent: 'a',
+                    prompt: 'p',
+                    dependsOn,
+                });
+                descendants.push(task.id);
+                dependsOn = task.id;
+            }
+
+            await TaskService.cancel(root.id);
+
+            for (const id of descendants) {
+                expect((await TaskService.getById(id))?.status).toBe('dead_letter');
+            }
         });
     });
 

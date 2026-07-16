@@ -1,0 +1,1 @@
+CREATE INDEX `tasks_depends_on_status_idx` ON `tasks` (`depends_on`,`status`);

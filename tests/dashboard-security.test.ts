@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { rmSync } from 'fs';
 import { eq } from 'drizzle-orm';
 import { setupTestDb } from './helpers/mock-db';
-import { dashboardApp } from '../src/web/index';
+import dashboardServer, { dashboardApp } from '../src/web/index';
 import { TaskService } from '../src/core/services/task.service';
 import { TaskRunService } from '../src/core/services/task-run.service';
 import { TaskTemplateService } from '../src/core/services/task-template.service';
@@ -20,6 +20,10 @@ describe('Dashboard 安全边界', () => {
     beforeEach(() => {
         testDb = setupTestDb();
         resetGatewayHealth();
+    });
+
+    test('独立 Dashboard 默认只监听回环地址', () => {
+        expect(dashboardServer.hostname).toBe('127.0.0.1');
     });
 
     afterEach(() => {
@@ -146,6 +150,17 @@ describe('Dashboard 安全边界', () => {
         expect(await TaskService.getById(task.id)).not.toBeNull();
 
         await TaskService.done(task.id, '测试完成');
+        const now = Date.now();
+        testDb.sqlite.exec(`
+            CREATE TABLE future_dashboard_state (
+                id INTEGER PRIMARY KEY,
+                value TEXT
+            );
+            INSERT INTO future_dashboard_state VALUES (1, 'must-be-cleared');
+        `);
+        testDb.sqlite.query(
+            'INSERT INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)',
+        ).run(process.pid, now, now, now);
         const cleared = await dashboardApp.request('http://localhost/api/database/clear', {
             method: 'POST',
             headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
@@ -163,6 +178,10 @@ describe('Dashboard 安全边界', () => {
         expect(body.deleted.taskTemplates).toBe(1);
         expect(await TaskService.getById(task.id)).toBeNull();
         expect(await TaskTemplateService.list()).toHaveLength(0);
+        expect((testDb.sqlite.query('SELECT COUNT(*) AS count FROM future_dashboard_state')
+            .get() as { count: number }).count).toBe(0);
+        expect((testDb.sqlite.query('SELECT pid FROM gateway_lock WHERE id = 1')
+            .get() as { pid: number }).pid).toBe(process.pid);
     });
 
     test('健康检查同时要求组件活跃和匹配当前进程的 ready 锁', async () => {
@@ -171,6 +190,7 @@ describe('Dashboard 安全边界', () => {
             schedulerEnabled: true,
             schedulerCheckIntervalMs: 1000,
             watchdogCheckIntervalMs: 60_000,
+            watchdogCleanupIntervalMs: 86_400_000,
         });
 
         const unhealthy = await dashboardApp.request('http://localhost/health');
@@ -194,6 +214,7 @@ describe('Dashboard 安全边界', () => {
             schedulerEnabled: true,
             schedulerCheckIntervalMs: 1000,
             watchdogCheckIntervalMs: 60_000,
+            watchdogCleanupIntervalMs: 86_400_000,
         });
         const now = Date.now();
         testDb.sqlite.query(
@@ -217,5 +238,28 @@ describe('Dashboard 安全边界', () => {
         };
         expect(recoveredBody.components.worker.consecutiveFailures).toBe(0);
         expect(recoveredBody.components.worker.lastError.message).toBe('database busy');
+    });
+
+    test('清理失败不会被心跳检查成功洗绿', async () => {
+        initializeGatewayHealth({
+            workerPollIntervalMs: 1000,
+            schedulerEnabled: true,
+            schedulerCheckIntervalMs: 1000,
+            watchdogCheckIntervalMs: 60_000,
+            watchdogCleanupIntervalMs: 86_400_000,
+        });
+        const now = Date.now();
+        testDb.sqlite.query(
+            'INSERT INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)',
+        ).run(process.pid, now, now, now);
+
+        markGatewayFailure('watchdogCleanup', new Error('cleanup failed'));
+        markGatewaySuccess('watchdog');
+        const degraded = await dashboardApp.request('http://localhost/health');
+        expect(degraded.status).toBe(503);
+
+        markGatewaySuccess('watchdogCleanup');
+        const recovered = await dashboardApp.request('http://localhost/health');
+        expect(recovered.status).toBe(200);
     });
 });

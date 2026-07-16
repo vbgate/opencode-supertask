@@ -11,10 +11,35 @@ import { TaskService } from "@core/services/task.service";
 import { TaskTemplateService } from "@core/services/task-template.service";
 import { getDb, sqlite } from "@core/db";
 import { parseDuration } from "@core/duration";
-import { ensureGateway, upgrade as pm2Upgrade } from "../src/daemon/pm2";
-import { installLatestPlugin } from "../src/daemon/update";
+import { compareSemanticVersions } from "@core/semver";
+import { MANAGED_RUN_ENV, MANAGED_RUN_ENV_VALUE } from "@core/launch-protocol";
+import { ensureGateway, getPackageVersion, upgrade as pm2Upgrade } from "../src/daemon/pm2";
+import {
+    installLatestPlugin,
+    installPluginVersion,
+} from "../src/daemon/update";
 
 let _initialized = false;
+let _writeBlockedReason: string | null = null;
+
+function readyGatewayVersion(): { fresh: boolean; version: string | null } {
+    const lockRow = sqlite.prepare(
+        "SELECT heartbeat_at, ready_at, version FROM gateway_lock WHERE id = 1",
+    ).get() as { heartbeat_at: number; ready_at: number | null; version: string | null } | undefined;
+    return {
+        fresh: lockRow?.ready_at != null && Date.now() - lockRow.heartbeat_at < 30_000,
+        version: lockRow?.version ?? null,
+    };
+}
+
+export function shouldAttemptGatewayReplacement(
+    pluginVersion: string,
+    gatewayVersion: string | null,
+): boolean {
+    if (gatewayVersion === null) return true;
+    const direction = compareSemanticVersions(pluginVersion, gatewayVersion);
+    return direction !== null && direction >= 0;
+}
 
 function ensureInit() {
     if (_initialized) return;
@@ -26,12 +51,16 @@ function ensureInit() {
         return;
     }
 
+    const expectedVersion = getPackageVersion();
+    let initialReady = { fresh: false, version: null as string | null };
     try {
-        const lockRow = sqlite.prepare("SELECT pid, heartbeat_at, ready_at FROM gateway_lock WHERE id = 1").get() as
-            | { pid: number; heartbeat_at: number; ready_at: number | null }
-            | undefined;
-
-        if (lockRow?.ready_at != null && Date.now() - lockRow.heartbeat_at < 30_000) {
+        initialReady = readyGatewayVersion();
+        if (initialReady.fresh && initialReady.version === expectedVersion) {
+            _initialized = true;
+            return;
+        }
+        if (initialReady.fresh && !shouldAttemptGatewayReplacement(expectedVersion, initialReady.version)) {
+            _writeBlockedReason = `Gateway 版本 ${initialReady.version ?? "unknown"} 与当前插件 ${expectedVersion} 不一致；请重启 OpenCode 或显式执行 supertask upgrade`;
             _initialized = true;
             return;
         }
@@ -40,13 +69,30 @@ function ensureInit() {
     try {
         const gateway = ensureGateway();
         if (!gateway.ok) {
-            console.warn("[supertask] Gateway 未自动启动：未安装 pm2。运行 `supertask install` 启用常驻执行，或运行 `supertask gateway` 前台启动。");
+            if (initialReady.fresh) {
+                _writeBlockedReason = `Gateway 版本 ${initialReady.version ?? "unknown"} 与插件 ${expectedVersion} 不一致，且未安装 pm2 无法安全替换`;
+            } else {
+                console.warn("[supertask] Gateway 未自动启动：未安装 pm2。运行 `supertask install` 启用常驻执行，或运行 `supertask gateway` 前台启动。");
+            }
+        } else {
+            const current = readyGatewayVersion();
+            if (!current.fresh || current.version !== expectedVersion) {
+                _writeBlockedReason = `Gateway 就绪版本 ${current.version ?? "unknown"} 与插件 ${expectedVersion} 不一致`;
+            }
         }
     } catch (error) {
-        console.error("[supertask] Gateway init failed:", error instanceof Error ? error.message : String(error));
+        _writeBlockedReason = error instanceof Error ? error.message : String(error);
+        console.error("[supertask] Gateway init failed:", _writeBlockedReason);
     }
 
     _initialized = true;
+}
+
+function assertRuntimeWritable(): void {
+    ensureInit();
+    if (_writeBlockedReason) {
+        throw new Error(`[supertask] 已阻止队列写入: ${_writeBlockedReason}`);
+    }
 }
 
 const SYSTEM_INSTRUCTION = `
@@ -111,6 +157,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                 },
                 async execute(args, context) {
                     try {
+                        assertRuntimeWritable();
                         const task = await TaskService.add({
                             name: args.name,
                             agent: args.agent,
@@ -207,6 +254,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                 },
                 async execute(args, context) {
                     try {
+                        assertRuntimeWritable();
                         if (args.id !== undefined) {
                             const task = await TaskService.retry(args.id, { cwd: context.directory });
                             if (task) {
@@ -321,6 +369,7 @@ export const SuperTaskPlugin: Plugin = async () => {
                 },
                 async execute(args, context) {
                     try {
+                        assertRuntimeWritable();
                         if (!args.schedule) {
                             return JSON.stringify({ error: "schedule is required" });
                         }
@@ -384,20 +433,47 @@ export const SuperTaskPlugin: Plugin = async () => {
                     "升级 SuperTask 插件。通过 OpenCode 刷新插件缓存，校验新版构建产物后重启 Gateway。当用户说'升级插件'、'更新 supertask'、'upgrade'时使用。",
                 args: {},
                 async execute() {
+                    if (process.env[MANAGED_RUN_ENV] === MANAGED_RUN_ENV_VALUE) {
+                        return JSON.stringify({
+                            success: false,
+                            error: "Gateway 管理的队列任务不能升级 SuperTask，否则会终止承载当前任务的 Gateway。",
+                            hint: "请从外部终端执行 `supertask upgrade`，或在非队列 OpenCode 会话中调用升级工具。",
+                        });
+                    }
                     try {
                         console.log("[supertask] Updating OpenCode plugin cache...");
+                        const previousVersion = getPackageVersion();
                         let installed: { gatewayEntry: string; version: string };
                         try {
                             installed = installLatestPlugin();
                         } catch (updateError) {
+                            let detail = updateError instanceof Error ? updateError.message : String(updateError);
+                            try {
+                                installPluginVersion(previousVersion);
+                            } catch (rollbackError) {
+                                detail += `; OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
+                            }
                             return JSON.stringify({
                                 success: false,
-                                error: updateError instanceof Error ? updateError.message : String(updateError),
+                                error: detail,
                                 hint: "Query npm dist-tags.latest, then install that exact version with opencode plugin.",
                             });
                         }
-
-                        const result = pm2Upgrade(installed);
+                        let result: ReturnType<typeof pm2Upgrade>;
+                        try {
+                            result = pm2Upgrade(installed);
+                        } catch (upgradeError) {
+                            try {
+                                if (previousVersion !== installed.version) {
+                                    installPluginVersion(previousVersion);
+                                }
+                            } catch (rollbackError) {
+                                const original = upgradeError instanceof Error ? upgradeError.message : String(upgradeError);
+                                const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+                                throw new Error(`${original}; Gateway 已回滚，但 OpenCode 插件回滚失败: ${rollback}`);
+                            }
+                            throw upgradeError;
+                        }
                         return JSON.stringify({
                             success: true,
                             before: result.before,

@@ -46,6 +46,8 @@ export const tasks = sqliteTable('tasks', {
     index('tasks_queue_idx').on(table.status, table.retryAfter, table.urgency, table.importance, table.createdAt, table.id),
     index('tasks_batch_status_idx').on(table.batchId, table.status),
     index('tasks_template_status_idx').on(table.templateId, table.status),
+    index('tasks_depends_on_status_idx').on(table.dependsOn, table.status),
+    index('tasks_cleanup_idx').on(table.finishedAt, table.id, table.status),
 ]);
 
 export type Task = typeof tasks.$inferSelect;
@@ -80,6 +82,7 @@ export const taskRuns = sqliteTable('task_runs', {
     heartbeatAt: integer('heartbeat_at'),
     workerPid: integer('worker_pid'),
     childPid: integer('child_pid'),
+    launchProtocol: text('launch_protocol'),
 }, (table) => [
     index('task_runs_task_started_idx').on(table.taskId, table.startedAt, table.id),
     index('task_runs_status_heartbeat_idx').on(table.status, table.heartbeatAt),
@@ -118,6 +121,12 @@ export const taskTemplates = sqliteTable('task_templates', {
     updatedAt: integer('updated_at').default(0),
 }, (table) => [
     index('task_templates_due_idx').on(table.enabled, table.nextRunAt, table.id),
+    index('task_templates_retention_idx').on(
+        table.scheduleType,
+        table.enabled,
+        table.lastRunAt,
+        table.id,
+    ),
 ]);
 
 export type TaskTemplate = typeof taskTemplates.$inferSelect;

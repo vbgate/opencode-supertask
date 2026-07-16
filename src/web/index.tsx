@@ -726,6 +726,7 @@ app.post('/api/database/clear', async (c) => {
 export const dashboardApp = app;
 
 export default {
+    hostname: '127.0.0.1',
     port: 4680,
     fetch: app.fetch,
 };
