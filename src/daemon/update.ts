@@ -91,16 +91,22 @@ function latestVersion(): string {
         throw new Error(`[supertask] 查询 npm latest 失败: ${detail || `退出码 ${result.status}`}`);
     }
 
-    let version: unknown;
+    let response: unknown;
     try {
-        version = JSON.parse(output);
+        response = JSON.parse(output);
     } catch {
         throw new Error(`[supertask] npm latest 返回无法解析: ${output || '(empty)'}`);
     }
-    if (typeof version !== 'string' || !isSemanticVersion(version)) {
-        throw new Error(`[supertask] npm latest 版本无效: ${String(version)}`);
+    const versions = typeof response === 'string'
+        ? [response]
+        : Array.isArray(response) && response.every((value) => typeof value === 'string')
+            ? response
+            : [];
+    const uniqueVersions = [...new Set(versions)];
+    if (uniqueVersions.length !== 1 || !isSemanticVersion(uniqueVersions[0])) {
+        throw new Error(`[supertask] npm latest 版本无效: ${String(response)}`);
     }
-    return version;
+    return uniqueVersions[0];
 }
 
 function resolveInstalledVersion(expectedVersion: string): InstalledPlugin {

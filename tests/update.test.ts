@@ -76,7 +76,8 @@ describe('OpenCode 插件升级', () => {
         writeFileSync(fakeOpencode, `#!/usr/bin/env bun
 await Bun.write(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
 `);
-        writeFileSync(fakeNpm, '#!/usr/bin/env bun\nconsole.log(JSON.stringify("0.1.23"));\n');
+        // npm 12 在部分 registry 响应中会把单个 dist-tag 包成数组。
+        writeFileSync(fakeNpm, '#!/usr/bin/env bun\nconsole.log(JSON.stringify(["0.1.23"]));\n');
         chmodSync(fakeOpencode, 0o755);
         chmodSync(fakeNpm, 0o755);
         process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
