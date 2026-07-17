@@ -205,6 +205,8 @@ Key mechanisms:
 
 http://localhost:4680 — 4 pages:
 
+The responsive Dashboard supports Chinese and English plus system, light, and dark themes. Language is stored in a same-site cookie, while theme preference stays in browser local storage; both survive refreshes without changing Gateway configuration.
+
 Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` also checks OpenCode, SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump.
 
 | Page | Features |
@@ -302,7 +304,7 @@ supertask template add --type cron --cron "0 9 * * *" ...
 - **版本感知重启** — 已安装 pm2 时，插件加载会在包版本变化后安全替换 Gateway；旧环境无法执行 PM2 时会在删除前拒绝操作，否则保留原运行环境并在失败时回滚
 - **外部升级边界** — Gateway 管理的 OpenCode 任务不能调用 `supertask_upgrade`；升级必须从外部 CLI 或非队列交互会话发起，避免任务终止承载自己的 Gateway
 - **定时任务** — cron / delayed / recurring，支持友好时间格式
-- **Web 控制台** — 任务监控、执行日志、在线配置、自动备份后事务性清空数据库
+- **Web 控制台** — 任务监控、执行日志、在线配置、自动备份后事务性清空数据库；支持中英文、跟随系统/浅色/深色主题和移动端布局
 - **Session 追踪** — 自动从 opencode run 输出中捕获 session ID
 - **安全删除** — 活跃执行必须先取消并收敛；仍被可执行任务依赖的前置任务也不会被误删
 - **安全重试** — 仅在依赖仍存在、同项目且可恢复时重置任务，历史清理并发时不会制造悬空 `pending`

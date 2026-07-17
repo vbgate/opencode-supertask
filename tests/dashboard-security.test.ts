@@ -26,6 +26,48 @@ describe('Dashboard 安全边界', () => {
         expect(dashboardServer.hostname).toBe('127.0.0.1');
     });
 
+    test('Dashboard 支持中英文协商、显式切换和持久化主题控件', async () => {
+        const chinese = await (await dashboardApp.request('http://localhost/')).text();
+        expect(chinese).toContain('<html lang="zh-CN">');
+        expect(chinese).toContain('任务队列');
+        expect(chinese).toContain('id="theme-select"');
+        expect(chinese).toContain('value="system"');
+        expect(chinese).toContain('value="light"');
+        expect(chinese).toContain('value="dark"');
+        expect(chinese).toContain("localStorage.getItem('supertask-theme')");
+        expect(chinese).toContain('class="skip-link"');
+        expect(chinese).toContain('name="viewport"');
+
+        const englishCookie = await (await dashboardApp.request('http://localhost/', {
+            headers: { Cookie: 'supertask_locale=en' },
+        })).text();
+        expect(englishCookie).toContain('<html lang="en">');
+        expect(englishCookie).toContain('Task queue');
+        expect(englishCookie).toContain('<span>System</span>');
+
+        const englishHeader = await (await dashboardApp.request('http://localhost/templates', {
+            headers: { 'Accept-Language': 'en-US,en;q=0.9' },
+        })).text();
+        expect(englishHeader).toContain('<html lang="en">');
+        expect(englishHeader).toContain('Schedule templates');
+
+        const queryOverride = await (await dashboardApp.request('http://localhost/runs?lang=zh-CN', {
+            headers: { Cookie: 'supertask_locale=en' },
+        })).text();
+        expect(queryOverride).toContain('<html lang="zh-CN">');
+        expect(queryOverride).toContain('执行记录');
+    });
+
+    test('Dashboard 使用自定义确认对话框，清库仍要求输入 CLEAR', async () => {
+        const html = await (await dashboardApp.request('http://localhost/system')).text();
+        expect(html).toContain('id="confirm-dialog"');
+        expect(html).toContain('id="danger-dialog"');
+        expect(html).toContain('id="danger-confirmation"');
+        expect(html).toContain("this.value!=='CLEAR'");
+        expect(html).not.toContain("confirm('");
+        expect(html).not.toContain("alert('");
+    });
+
     afterEach(() => {
         for (const path of maintenanceBackups.splice(0)) {
             rmSync(path, { force: true });

@@ -152,6 +152,7 @@ curl -fsS http://127.0.0.1:4680/health
 
 - PM2 `online` 只说明包装进程存在；SuperTask 自身还要求 PM2 PID 与 ready 锁 PID 一致。
 - `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
+- Dashboard 顶栏可切换中文/English 和跟随系统/浅色/深色主题。语言写入当前站点 Cookie，主题写入浏览器本地存储；它们只影响当前浏览器显示，不修改 Gateway 配置。
 - 新 run 使用 `gated-v3-token-guardian`，每 run UUID 会同时写入 `task_runs.locked_by` 和 launcher argv。Watchdog 只有在 launcher、OpenCode 参数与 UUID 全部匹配时才终止进程组；Worker 仅在收到 launcher 通过独立 IPC 返回的同 UUID 排空证明后才结算正常退出。guardian 无证明退出会保持 run 和批次隔离，进程组明确消失后才作失败收敛。旧 v2/legacy 记录的 PID 或 PGID 仍存活、被复用或无法确认时只隔离且不发信号，只有二者都明确消失才恢复。无法确认子进程退出时 `/health` 会降级；旧版 `started_at`/`heartbeat_at` 同时缺失的运行记录也会立即进入诊断隔离。
 - 旧版 `launch_protocol IS NULL` 且没有 child PID 的 run 无法自动证明进程退出。`doctor` 和 Watchdog 日志会给出任务/run ID：先在任务 `cwd` 执行 `supertask cancel --id <taskId>`，人工确认没有遗留 OpenCode，再执行 `supertask run abandon --id <runId> --confirm ABANDON`。未知非空协议、当前 guardian、存活 owner 或已记录 child PID 都会失败关闭，不能用该命令绕过。
 - 最可靠的运行证据是 `supertask doctor` 全部通过、`pm2 logs supertask-gateway` 中有启动/状态变化，以及最新 `task_runs` 心跳。`doctor` 失败时返回非零退出码，适合外部巡检。
@@ -203,6 +204,7 @@ sqlite3 ~/.local/share/opencode/tasks.db 'PRAGMA foreign_key_check;'
 - 确认 `dashboard.enabled=true`，端口没有被占用，并且访问 `http://127.0.0.1:<port>`。
 - Dashboard 不对局域网地址监听；这是安全边界，不是网络配置遗漏。
 - 浏览器写请求必须同源。经过反向代理、不同主机名或不同端口访问会被拒绝。
+- 主题或语言显示异常时，可先切回“跟随系统”或重新选择语言；这两项是浏览器本地偏好，不影响任务与数据库。
 
 ## 数据库检查、备份、清空与恢复
 

@@ -7,3 +7,5 @@ dist/
 .env
 .env.*
 .factory/
+.playwright-cli/
+output/playwright/

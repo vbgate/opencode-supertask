@@ -40,7 +40,7 @@ Dashboard ─────┘       ↑                 ↑
 | Worker | 抢占任务、启动目标 Agent、心跳、超时和结果落库 | [`src/worker/index.ts`](../src/worker/index.ts) |
 | Scheduler | 检查到期模板并克隆普通任务 | [`src/gateway/scheduler/`](../src/gateway/scheduler/) |
 | Watchdog | 恢复心跳过期任务、清理历史数据 | [`src/gateway/watchdog/`](../src/gateway/watchdog/) |
-| Dashboard | 本地 SSR 页面与管理 API | [`src/web/index.tsx`](../src/web/index.tsx) |
+| Dashboard | 本地 SSR 页面与管理 API；响应式中英文界面及浏览器本地主题偏好 | [`src/web/index.tsx`](../src/web/index.tsx)、[`src/web/ui.ts`](../src/web/ui.ts) |
 | PM2 适配 | 显式安装、启停、版本变化后的重启 | [`src/daemon/pm2.ts`](../src/daemon/pm2.ts) |
 
 ## Gateway 生命周期
