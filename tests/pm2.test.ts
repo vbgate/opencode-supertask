@@ -12,6 +12,7 @@ import {
     isMacLaunchAgentConfigured,
     isGatewayRunning,
     resolveGatewayEntry,
+    resolvePm2SupervisorEntry,
     uninstall,
     upgrade,
     withGatewayMaintenance,
@@ -286,6 +287,18 @@ console.log('state = running');
             else process.env.npm_package_version = ambientVersion;
         }
         expect(resolveGatewayEntry()).toBe(join(process.cwd(), 'src/gateway/index.ts'));
+    });
+
+    test('构建后的 CLI 能定位 daemon 目录中的 PM2 supervisor', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-built-supervisor-'));
+        dirs.push(dir);
+        const cliDir = join(dir, 'dist/cli');
+        const supervisorEntry = join(dir, 'dist/daemon/pm2-supervisor.js');
+        mkdirSync(cliDir, { recursive: true });
+        mkdirSync(join(dir, 'dist/daemon'), { recursive: true });
+        writeFileSync(supervisorEntry, '');
+
+        expect(resolvePm2SupervisorEntry(cliDir)).toBe(supervisorEntry);
     });
 
     test('插件探测不到 pm2 时不执行全局安装', () => {

@@ -277,15 +277,17 @@ function launchctlBin(): string {
     return process.env.SUPERTASK_LAUNCHCTL_BIN ?? "launchctl";
 }
 
-function resolvePm2SupervisorEntry(): string {
+export function resolvePm2SupervisorEntry(baseDir = __dirname): string {
     const override = process.env.SUPERTASK_PM2_SUPERVISOR_ENTRY;
     if (override) {
         if (!existsSync(override)) throw new Error(`[supertask] PM2 supervisor entry not found: ${override}`);
         return resolve(override);
     }
     const candidates = [
-        join(__dirname, "pm2-supervisor.js"),
-        join(__dirname, "pm2-supervisor.ts"),
+        join(baseDir, "pm2-supervisor.js"),
+        join(baseDir, "pm2-supervisor.ts"),
+        join(baseDir, "../daemon/pm2-supervisor.js"),
+        join(baseDir, "../daemon/pm2-supervisor.ts"),
     ];
     const entry = candidates.find((candidate) => existsSync(candidate));
     if (!entry) throw new Error(`[supertask] PM2 supervisor entry not found. Checked: ${candidates.join(", ")}`);
