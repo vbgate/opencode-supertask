@@ -29,6 +29,7 @@ interface Pm2Process {
     pid?: number;
     args?: string[] | string;
     pm_exec_path?: string;
+    pm_cwd?: string;
     env?: Record<string, unknown>;
     kill_timeout?: number;
     pm2_env?: {
@@ -667,7 +668,7 @@ function pm2JsonList(env: NodeJS.ProcessEnv = process.env): Pm2Process[] {
 function gatewayEntryFromProcess(processInfo: Pm2Process | undefined): string | null {
     const args = processInfo?.pm2_env?.args ?? processInfo?.args;
     const candidates = Array.isArray(args) ? [...args].reverse() : typeof args === "string" ? [args] : [];
-    const savedCwd = processInfo?.pm2_env?.pm_cwd;
+    const savedCwd = processInfo?.pm2_env?.pm_cwd ?? processInfo?.pm_cwd;
     for (const candidate of candidates) {
         const path = typeof savedCwd === "string" ? runtimePath(candidate, savedCwd) : candidate;
         if (existsSync(path)) return resolve(path);
@@ -690,7 +691,7 @@ function gatewayRuntimeFromProcess(processInfo: Pm2Process | undefined): Gateway
     const gatewayEntry = gatewayEntryFromProcess(processInfo);
     if (!gatewayEntry) return null;
     const savedBunPath = processInfo?.pm2_env?.pm_exec_path ?? processInfo?.pm_exec_path;
-    const savedCwd = processInfo?.pm2_env?.pm_cwd;
+    const savedCwd = processInfo?.pm2_env?.pm_cwd ?? processInfo?.pm_cwd;
     const savedEnv = gatewayEnvironmentFromProcess(processInfo);
     if (typeof savedBunPath !== "string" || typeof savedCwd !== "string") return null;
     try {

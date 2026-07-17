@@ -241,7 +241,8 @@ if (args[0] === 'bootstrap' && readFileSync(${JSON.stringify(plist)}, 'utf8') !=
             name: 'supertask-gateway',
             pm_exec_path: fakePm2,
             args: [gateway],
-            pm2_env: { args: [gateway], pm_exec_path: fakePm2, pm_cwd: dir, env: { HOME: dir, PM2_HOME: pm2Home } },
+            pm_cwd: dir,
+            env: { HOME: dir, PM2_HOME: pm2Home },
         }]));
         writeFileSync(fakeLaunchctl, `#!/usr/bin/env bun
 console.log('path = ${plist}');
