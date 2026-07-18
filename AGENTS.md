@@ -85,8 +85,10 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - 调度模板支持 `cron | delayed | recurring`，Scheduler 自动克隆普通任务时受 `maxInstances` 限制；Dashboard 手动“立即运行一次”必须始终入队，但创建的任务仍计入后续自动调度的活跃实例数，并受 Worker 全局并发限制；`delayed` 自动生成一次后必须自动禁用。
 - Dashboard 可创建和编辑定时任务，写入必须复用 `TaskTemplateService` 校验；编辑必须在即时事务内重算 `nextRunAt`，保留启用状态和历史执行时间，只影响以后生成的任务。Scheduler 克隆前必须核对扫描到的触发时间，防止并发编辑后按旧时间提前执行。
 - Dashboard 可创建普通任务，必须暴露项目目录、模型、Agent、提示词、重要/紧急程度、批次、重试和超时，并在项目分组中显示运行、排队和异常数量；创建只负责持久入队，不得因 Worker 并发已满而拒绝。
+- Dashboard 项目目录必须可从本机文件夹浏览器选择；选定后必须以该 `cwd` 执行配置的 OpenCode `agent list` 和 `models`。新任务只显示 primary/all Agent，不得把 subagent 或旧 `supertask-runner` 作为可直接运行选项；编辑时允许保留不在当前列表中的历史值。时长控件必须先提供常用预设，数字+单位只作为自定义退路。
 - 普通任务编辑必须经 `TaskService` 同时服务 Dashboard 与 CLI，只允许 `pending/failed/dead_letter`，且不得修改 `cwd/dependsOn`；运行中和完成/取消终态拒绝修改。降低失败任务重试预算导致现有次数超限时必须立即收敛到 `dead_letter`。
 - Dashboard 继续会话命令必须按 run ID 从服务端读取并校验 Session ID 后生成，不得把完整 Session ID 直接写入 HTML 或未经校验拼接成终端命令。
+- Worker 必须在新 run 日志中保存真实 executable、参数数组和 `cwd` 的结构化元数据；Dashboard 只能从该元数据生成可复制命令，不得根据任务当前值猜测历史执行命令。
 - `cron/recurring` 达到 `maxInstances` 时必须推进下一触发点，`delayed` 保持等待；到期模板扫描必须有界。不可恢复依赖应在状态事件中递归收敛，下游链不得在每个 Worker poll 全局扫描。
 
 ## 代码规范

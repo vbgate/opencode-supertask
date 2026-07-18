@@ -194,6 +194,9 @@ describe('WorkerEngine', () => {
         expect(runs[0].lockedBy).toMatch(/^gateway-\d+:launch:/);
         expect(runs[0].sessionId).toBe('ses_worker_test');
         expect(runs[0].log).toContain('任务执行完成');
+        expect(runs[0].log).toContain('"type":"supertask_command"');
+        expect(runs[0].log).toContain('"args":["run","--agent","test-agent"');
+        expect(runs[0].log).toContain(JSON.stringify(prompt).slice(1, -1));
     });
 
     test('非零退出码进入 dead_letter 并保留日志', async () => {

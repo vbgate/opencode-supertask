@@ -171,7 +171,9 @@ supertask edit --id 42 --model openai/gpt-5 --importance 5 --prompt "更新后�
 
 运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`；修改该状态后仍需人工重试才会重新入队。
 
-Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时；时间长度可写成 `30s`、`5min`、`1h` 或 `2d`。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
+Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时。重试、超时与循环间隔先选常用预设，只有选“自定义”时才出现数字和秒/分钟/小时/天单位；一次性任务使用日期时间选择器。CLI 仍支持 `30s`、`5min`、`1h` 或 `2d` 以便脚本调用。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
+
+新建任务或定时任务时，先用 Dashboard 的文件夹选择器确定项目。Gateway 会在该目录执行本机 `opencode agent list` 和 `opencode models`：Agent 下拉框只保留 primary/all 模式，避免把仅供委派的 subagent 直接传给 `opencode run`；模型先选 Provider 再选具体值。选“跟随 Agent / OpenCode 默认模型”时 Worker 不传 `-m`。读取失败会在表单中显示原因，不使用伪造的静态列表。
 
 任务页和执行记录页的“继续会话”会从服务端按 run ID 读取已捕获的 Session ID，校验格式后复制 `opencode --session <sessionId>`；完整 Session ID 不写入页面 HTML。界面中的“等待重试”对应内部 `failed`，仍会按退避策略自动执行；“已停止”对应内部 `dead_letter`，可能是重试用尽或依赖无法继续，系统不会再自动运行，需要查看失败原因后手动重试。
 
@@ -193,6 +195,7 @@ curl -fsS http://127.0.0.1:4680/health
 - PM2 `online` 只说明包装进程存在；SuperTask 自身还要求 PM2 PID 与 ready 锁 PID 一致。
 - `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
 - Dashboard 顶栏可切换中文/English 和跟随系统/浅色/深色主题。语言写入当前站点 Cookie，主题写入浏览器本地存储；它们只影响当前浏览器显示，不修改 Gateway 配置。
+- 新 run 的日志首行保存 Worker 真正执行的 executable、args 和 `cwd`。执行记录页将其展示为可复制的 `cd <cwd> && opencode run ...`，并分层展示 Agent 文本、错误、工具和原始 JSONL。旧 run 不会补造命令，仍可查看原始日志。
 - 新 run 使用 `gated-v3-token-guardian`，每 run UUID 会同时写入 `task_runs.locked_by` 和 launcher argv。Watchdog 只有在 launcher、OpenCode 参数与 UUID 全部匹配时才终止进程组；Worker 仅在收到 launcher 通过独立 IPC 返回的同 UUID 排空证明后才结算正常退出。guardian 无证明退出会保持 run 和批次隔离，进程组明确消失后才作失败收敛。旧 v2/legacy 记录的 PID 或 PGID 仍存活、被复用或无法确认时只隔离且不发信号，只有二者都明确消失才恢复。无法确认子进程退出时 `/health` 会降级；旧版 `started_at`/`heartbeat_at` 同时缺失的运行记录也会立即进入诊断隔离。
 - drain proof 使用双向确认：Worker 校验同 UUID 证明后回送确认，launcher 收件后才退出，不再依赖旧 Bun 不可靠的 `process.send` callback。
 - 旧版 `launch_protocol IS NULL` 且没有 child PID 的 run 无法自动证明进程退出。`doctor` 和 Watchdog 日志会给出任务/run ID：先在任务 `cwd` 执行 `supertask cancel --id <taskId>`，人工确认没有遗留 OpenCode，再执行 `supertask run abandon --id <runId> --confirm ABANDON`。未知非空协议、当前 guardian、存活 owner 或已记录 child PID 都会失败关闭，不能用该命令绕过。

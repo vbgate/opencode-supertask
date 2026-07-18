@@ -90,7 +90,9 @@ Or open the Web Dashboard:
 supertask ui          # Opens http://localhost:4680 in browser
 ```
 
-The Task Queue page groups work by project directory and can create ordinary queued tasks with a model, prompt, priority, batch, retries, and timeout. A task is accepted only when its project path is an existing absolute directory; a full worker pool does not reject it—it remains pending in SQLite.
+The Task Queue page groups work by project directory and can create ordinary queued tasks with a model, prompt, priority, batch, retries, and timeout. Choose the project with the built-in folder browser; the form then reads that directory's real `opencode agent list` and `opencode models` results. Models are grouped by provider, while only Agents that OpenCode marks as directly runnable are offered. A full worker pool does not reject a new task—it remains pending in SQLite.
+
+Retry, timeout, and recurring-interval fields offer common presets first. Number-and-unit controls appear only under **Custom**, while one-time schedules use a local date/time picker. “Use the Agent / OpenCode default model” means SuperTask does not pass `-m`.
 
 ## SuperTask vs cron, PM2, and shell scripts
 
@@ -241,9 +243,9 @@ Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gatew
 
 | Page | Features |
 |------|----------|
-| Task Queue | Group/filter by project directory, see running/queued/error counts, create or edit ordinary prioritized tasks, retry, cancel, guarded delete, and copy a validated `opencode --session …` command |
-| Scheduled Tasks | Create and edit model, agent, prompt, project directory, schedule, retries, and timeout; the instance limit controls automatic scheduling, while Run now always queues a task |
-| Execution Logs | task_runs history with session tracking |
+| Task Queue | Browse a project folder, load its runnable Agents/models, see running/queued/error counts, create or edit prioritized tasks, retry, cancel, guarded delete, and copy a validated `opencode --session …` command |
+| Scheduled Tasks | Create and edit model, Agent, prompt, project directory, schedule, retries, and timeout with common duration presets; Run now always queues a task |
+| Execution Logs | Structured Agent output, errors, tools, exact reproducible command, raw OpenCode JSONL, and session tracking |
 | System Status | Config editor with saved/active state, PM2-backed save-and-restart, concurrency monitor, and backup-first transactional database clear |
 
 ## Data
@@ -303,7 +305,9 @@ supertask gateway   # 前台运行：不需要 pm2
 supertask ui          # 打开 http://127.0.0.1:4680
 ```
 
-“任务队列”页可按项目目录查看、创建和编辑普通任务，设置 Agent、模型、提示词、优先级、批次、重试和超时；“定时任务”页可创建和编辑 cron、延迟执行与循环任务。并发已满时新任务仍会成功入队并等待，不会因当下没有空位而拒绝创建。
+“任务队列”页可按项目目录查看、创建和编辑普通任务，设置 Agent、模型、提示词、优先级、批次、重试和超时；“定时任务”页可创建和编辑 cron、延迟执行与循环任务。项目目录可直接用文件夹选择器浏览；选定后，页面会在该目录执行本机 `opencode agent list` 和 `opencode models`，只显示可直接运行的 Agent，并按 Provider 分组模型。并发已满时新任务仍会成功入队并等待，不会因当下没有空位而拒绝创建。
+
+重试等待、单次超时和循环间隔默认是“30 秒”、“15 分钟”、“每 1 小时”这类直接选项；只有选择“自定义”才显示数字和单位。一次性任务使用本地日期时间选择器。“跟随 Agent / OpenCode 默认模型”表示不传 `-m`。
 
 ### CLI 语言与命令速查
 
@@ -390,8 +394,8 @@ SuperTask 的定时器会生成普通的持久队列任务，因此定时任务�
 - **进程守护** — 可选 pm2 崩溃恢复；PM2 kill timeout 不低于 Worker drain 宽限期加 15 秒，`stop/delete` 至少再等待 5 秒并在返回前持续持有可崩溃释放的 SQLite 生命周期锁，macOS 监督器不会击穿 PM2 的 `errored` 熔断；显式 `supertask install` 同时安装/配置有限保留的日志轮转，插件加载不会安装全局依赖
 - **版本感知重启** — 自动恢复继续使用原 PM2 运行环境；显式安装/升级会刷新 OpenCode/Provider 执行环境，同时固定原 PM2、Bun、数据库与配置身份。旧环境无法执行 PM2 时会在删除前拒绝操作，新环境启动失败时完整回滚旧环境
 - **外部升级边界** — Gateway 管理的 OpenCode 任务不能调用 `supertask_upgrade`；升级必须从外部 CLI 或非队列交互会话发起，避免任务终止承载自己的 Gateway
-- **定时任务** — cron / delayed / recurring，支持友好时间格式；`maxInstances` 限制自动调度，手动“立即运行一次”始终入队并在全局并发已满时等待
-- **Web 控制台** — 按项目目录显示运行/排队/异常数量，可创建和编辑带模型、提示词、优先级、批次、重试与超时的普通任务，也可创建和编辑定时任务；普通任务编辑保持 `cwd` 不变且拒绝运行中/终态任务；支持区分已保存/正在生效的配置、PM2 托管时保存并重启、自动备份后事务性清空数据库、中英文、跟随系统/浅色/深色主题和移动端布局
+- **定时任务** — cron / delayed / recurring，常用间隔直接选择，只在自定义时输入数字和单位；`maxInstances` 限制自动调度，手动“立即运行一次”始终入队并在全局并发已满时等待
+- **Web 控制台** — 按项目目录显示运行/排队/异常数量，可浏览文件夹并动态读取该项目本机 OpenCode 可运行 Agent/模型，可创建和编辑带提示词、优先级、批次、重试与超时的普通任务和定时任务；执行记录分层展示真实命令、Agent 输出、错误、工具和原始 JSONL；支持配置重启、安全清库、中英文、深浅主题和移动端
 - **Session 追踪** — 自动从 opencode run 输出中捕获 session ID；任务页和执行记录页可复制经过校验的 `opencode --session …` 命令继续会话
 - **安全删除** — 活跃执行必须先取消并收敛；仍被可执行任务依赖的前置任务也不会被误删
 - **安全重试** — 仅在依赖仍存在、同项目且可恢复时重置任务，历史清理并发时不会制造悬空 `pending`

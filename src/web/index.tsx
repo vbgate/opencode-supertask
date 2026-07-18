@@ -1,10 +1,21 @@
 import { Hono, type Context } from 'hono';
 import { desc, eq, sql } from 'drizzle-orm';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
-import { basename, dirname } from 'path';
+import {
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    readdirSync,
+    renameSync,
+    statSync,
+    writeFileSync,
+} from 'fs';
+import { homedir } from 'os';
+import { basename, dirname, join } from 'path';
 import { db, schema } from '@core/db';
 import type { NewTask, TaskStatus } from '@core/db/schema';
 import { parseDuration } from '@core/duration';
+import { loadOpenCodeCatalog } from '@core/opencode-catalog';
+import { validateTaskWorkingDirectory } from '@core/task-working-directory';
 import {
     DatabaseMaintenanceConflictError,
     DatabaseMaintenanceService,
@@ -104,6 +115,26 @@ function parsePositiveInteger(value: string): number | null {
 
 function parseTaskStatus(value: string): TaskStatus | null {
     return TASK_STATUSES.has(value as TaskStatus) ? value as TaskStatus : null;
+}
+
+function listChildDirectories(path: string): Array<{ name: string; path: string; hidden: boolean }> {
+    return readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+        const entryPath = join(path, entry.name);
+        if (entry.isDirectory()) return [{ name: entry.name, path: entryPath, hidden: entry.name.startsWith('.') }];
+        if (!entry.isSymbolicLink()) return [];
+        try {
+            return statSync(entryPath).isDirectory()
+                ? [{ name: entry.name, path: entryPath, hidden: entry.name.startsWith('.') }]
+                : [];
+        } catch {
+            return [];
+        }
+    }).sort((left, right) => {
+        const leftHidden = left.name.startsWith('.');
+        const rightHidden = right.name.startsWith('.');
+        if (leftHidden !== rightHidden) return leftHidden ? 1 : -1;
+        return left.name.localeCompare(right.name);
+    });
 }
 
 function parseTaskPayload(value: unknown): NewTask {
@@ -300,6 +331,35 @@ app.get('/health', (c) => {
     return c.json(health, health.status === 'ok' ? 200 : 503);
 });
 
+app.get('/api/filesystem/directories', (c) => {
+    const requestedPath = c.req.query('path')?.trim() || homedir();
+    try {
+        validateTaskWorkingDirectory(requestedPath);
+        return c.json({
+            path: requestedPath,
+            parent: dirname(requestedPath),
+            home: homedir(),
+            directories: listChildDirectories(requestedPath),
+        });
+    } catch (error) {
+        return c.json({
+            error: error instanceof Error ? error.message : String(error),
+        }, 400);
+    }
+});
+
+app.get('/api/opencode/catalog', async (c) => {
+    const cwd = c.req.query('cwd')?.trim();
+    if (!cwd) return c.json({ error: 'cwd 不能为空' }, 400);
+    try {
+        return c.json(await loadOpenCodeCatalog(cwd));
+    } catch (error) {
+        return c.json({
+            error: error instanceof Error ? error.message : String(error),
+        }, 400);
+    }
+});
+
 function formatDuration(startAt: Date | null, endAt: Date | null): string {
     if (!startAt) return '—';
     const start = new Date(startAt).getTime();
@@ -309,6 +369,104 @@ function formatDuration(startAt: Date | null, endAt: Date | null): string {
     if (seconds < 60) return `${seconds}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
     return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+interface RunCommandPresentation {
+    cwd: string;
+    command: string;
+}
+
+interface RunLogPresentation {
+    command: RunCommandPresentation | null;
+    text: string;
+    errors: string[];
+    tools: string[];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null;
+}
+
+function shellQuote(value: string): string {
+    if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(value)) return value;
+    return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+export function presentRunLog(log: string): RunLogPresentation {
+    let command: RunCommandPresentation | null = null;
+    const textParts: string[] = [];
+    const errors: string[] = [];
+    const tools: string[] = [];
+
+    for (const line of log.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        let parsed: Record<string, unknown> | null = null;
+        try {
+            parsed = recordValue(JSON.parse(trimmed) as unknown);
+        } catch {
+            errors.push(line);
+            continue;
+        }
+        if (!parsed) continue;
+
+        if (parsed.type === 'supertask_command') {
+            const executable = typeof parsed.executable === 'string' ? parsed.executable : null;
+            const cwd = typeof parsed.cwd === 'string' ? parsed.cwd : null;
+            const args = Array.isArray(parsed.args) && parsed.args.every((item) => typeof item === 'string')
+                ? parsed.args as string[]
+                : null;
+            if (executable && cwd && args) {
+                command = {
+                    cwd,
+                    command: `cd ${shellQuote(cwd)} && ${[executable, ...args].map(shellQuote).join(' ')}`,
+                };
+            }
+            continue;
+        }
+
+        const part = recordValue(parsed.part);
+        const eventType = typeof parsed.type === 'string' ? parsed.type : '';
+        const partType = typeof part?.type === 'string' ? part.type : '';
+        const text = typeof part?.text === 'string'
+            ? part.text
+            : typeof parsed.text === 'string' ? parsed.text : null;
+        if (text && (eventType === 'text' || partType === 'text')) textParts.push(text);
+
+        const tool = typeof part?.tool === 'string'
+            ? part.tool
+            : typeof parsed.tool === 'string' ? parsed.tool : null;
+        if (tool && (eventType === 'tool_use' || partType === 'tool')) tools.push(tool);
+
+        const error = typeof parsed.error === 'string'
+            ? parsed.error
+            : typeof part?.error === 'string' ? part.error : null;
+        if (error) errors.push(error);
+    }
+
+    return {
+        command,
+        text: textParts.join('\n').trim(),
+        errors: [...new Set(errors)],
+        tools,
+    };
+}
+
+function renderRunLog(runId: number, taskName: string, log: string, locale: Locale): string {
+    const presentation = presentRunLog(log);
+    const command = presentation.command
+        ? `<div class="run-command"><div class="log-section-head"><strong>${t(locale, 'logs.command')}</strong><button type="button" class="btn" onclick="copyRunCommand(${runId})">${icon('copy')}${t(locale, 'action.copyCommand')}</button></div><div class="command-cwd">${esc(presentation.command.cwd)}</div><pre id="command-${runId}">${esc(presentation.command.command)}</pre></div>`
+        : '';
+    const errors = presentation.errors.length > 0
+        ? `<div class="run-error"><strong>${t(locale, 'logs.error')}</strong><pre>${esc(presentation.errors.join('\n'))}</pre></div>`
+        : '';
+    const tools = presentation.tools.length > 0
+        ? `<div class="run-tools"><strong>${t(locale, 'logs.tools')}</strong><div class="actions">${presentation.tools.map((tool) => `<span class="tag">${esc(tool)}</span>`).join('')}</div></div>`
+        : '';
+    const output = `<div class="run-output"><strong>${t(locale, 'logs.output')}</strong><pre>${esc(presentation.text || t(locale, 'logs.noText'))}</pre></div>`;
+    return `<section id="log-${runId}" class="panel log-panel" hidden><div class="panel-head"><h3>Run #${runId} · ${esc(taskName)}</h3></div><div class="log-content">${command}${errors}${output}${tools}<details class="raw-log"><summary>${t(locale, 'logs.raw')}</summary><div class="log-box">${esc(log)}</div></details></div></section>`;
 }
 
 function esc(value: string | null | undefined): string {
@@ -346,6 +504,39 @@ function statCard(value: number, label: string, tone: string, cardIcon: string, 
 function emptyState(title: string, hint: string, code = ''): string {
     return `<div class="empty-state"><div><div class="empty-icon">${icon('inbox')}</div>
       <h3>${title}</h3><p>${hint}</p>${code ? `<code>${code}</code>` : ''}</div></div>`;
+}
+
+function durationControl(
+    locale: Locale,
+    id: string,
+    value: number | null,
+    kind: 'interval' | 'retry' | 'timeout',
+): string {
+    const units = [
+        { value: 's', label: t(locale, 'duration.seconds') },
+        { value: 'min', label: t(locale, 'duration.minutes') },
+        { value: 'h', label: t(locale, 'duration.hours') },
+        { value: 'd', label: t(locale, 'duration.days') },
+    ];
+    const values = kind === 'interval'
+        ? [300_000, 900_000, 1_800_000, 3_600_000, 21_600_000, 43_200_000, 86_400_000]
+        : kind === 'retry'
+            ? [0, 10_000, 30_000, 60_000, 300_000]
+            : [300_000, 900_000, 1_800_000, 3_600_000, 7_200_000, 14_400_000];
+    const presets: Array<{ value: string; label: string }> = [
+        ...(kind === 'timeout' ? [{ value: '', label: t(locale, 'duration.systemDefault') }] : []),
+        ...values.map((milliseconds) => ({
+            value: String(milliseconds),
+            label: milliseconds === 0
+                ? t(locale, 'duration.immediate')
+                : kind === 'interval'
+                    ? t(locale, 'duration.every', { duration: formatInterval(milliseconds, locale) })
+                    : formatInterval(milliseconds, locale),
+        })),
+        { value: 'custom', label: t(locale, 'duration.custom') },
+    ];
+    const selected = value === null ? '' : String(value);
+    return `<div class="duration-picker"><select id="${id}-preset" onchange="updateDurationControl('${id}')">${presets.map((item) => `<option value="${item.value}" ${item.value === selected ? 'selected' : ''}>${item.label}</option>`).join('')}</select><div id="${id}-custom" class="duration-control" hidden><input id="${id}-value" type="number" min="${kind === 'retry' ? 0 : 0.1}" step="0.1" inputmode="decimal"><select id="${id}-unit" aria-label="${t(locale, 'duration.unit')}">${units.map((item) => `<option value="${item.value}">${item.label}</option>`).join('')}</select></div></div>`;
 }
 
 function formatInterval(milliseconds: number, locale: Locale): string {
@@ -533,13 +724,14 @@ app.get('/', async (c) => {
           <div class="dialog-body">
             <div class="template-form-grid">
               <label class="form-field"><span>${t(locale, 'template.name')}</span><input id="task-name" required maxlength="200" autocomplete="off"></label>
-              <label class="form-field"><span>${t(locale, 'template.cwd')}</span><input id="task-cwd" required autocomplete="off" list="task-cwd-options" placeholder="/path/to/project" oninput="updateTaskProjectStatus()"><small>${t(locale, 'template.cwdHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.cwd')}</span><div class="field-action"><input id="task-cwd" required autocomplete="off" list="task-cwd-options" placeholder="/path/to/project" oninput="updateTaskProjectStatus();scheduleCatalogLoad('task')"><button id="task-cwd-picker" type="button" class="btn" onclick="openDirectoryPicker('task-cwd')">${icon('folder')}${t(locale, 'action.chooseFolder')}</button></div><small>${t(locale, 'template.cwdHint')}</small></label>
               <datalist id="task-cwd-options">${projects.map((project) => `<option value="${esc(project.cwd)}"></option>`).join('')}</datalist>
-              <label class="form-field"><span>${t(locale, 'template.agent')}</span><input id="task-agent" required autocomplete="off" value="build" placeholder="build"></label>
-              <label class="form-field"><span>${t(locale, 'template.model')}</span><input id="task-model" required autocomplete="off" value="default" placeholder="default"></label>
+              <label class="form-field"><span>${t(locale, 'template.agent')}</span><select id="task-agent" required><option value="">${t(locale, 'catalog.chooseProject')}</option></select><small>${t(locale, 'catalog.agentHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.model')}</span><div class="model-selector"><select id="task-model-provider" aria-label="${t(locale, 'catalog.provider')}" onchange="populateModelOptions('task')"><option value="">${t(locale, 'catalog.defaultProvider')}</option></select><select id="task-model" required aria-label="${t(locale, 'catalog.model')}" disabled><option value="default">${t(locale, 'catalog.defaultModel')}</option></select></div><small>${t(locale, 'catalog.modelHint')}</small></label>
               <label class="form-field form-field-wide"><span>${t(locale, 'template.prompt')}</span><textarea id="task-prompt" rows="6" required></textarea></label>
             </div>
             <p id="task-project-status" class="form-note"></p>
+            <p id="task-catalog-status" class="form-note catalog-status"></p>
             <details class="advanced-fields">
               <summary>${t(locale, 'template.advanced')}</summary>
               <div class="template-form-grid">
@@ -548,8 +740,8 @@ app.get('/', async (c) => {
                 <label class="form-field"><span>${t(locale, 'template.importance')}</span><input id="task-importance" type="number" min="1" max="5" step="1" value="3" required></label>
                 <label class="form-field"><span>${t(locale, 'template.urgency')}</span><input id="task-urgency" type="number" min="1" max="5" step="1" value="3" required></label>
                 <label class="form-field"><span>${t(locale, 'template.maxRetries')}</span><input id="task-max-retries" type="number" min="0" max="1000" step="1" value="3" required></label>
-                <label class="form-field"><span>${t(locale, 'template.retryBackoff')}</span><input id="task-retry-backoff" autocomplete="off" value="30s"><small>${t(locale, 'template.durationHint')}</small></label>
-                <label class="form-field"><span>${t(locale, 'template.timeout')}</span><input id="task-timeout" autocomplete="off" placeholder="30min"><small>${t(locale, 'template.optional')}</small></label>
+                <label class="form-field"><span>${t(locale, 'template.retryBackoff')}</span>${durationControl(locale, 'task-retry-backoff', 30_000, 'retry')}<small>${t(locale, 'template.retryBackoffHint')}</small></label>
+                <label class="form-field"><span>${t(locale, 'template.timeout')}</span>${durationControl(locale, 'task-timeout', null, 'timeout')}<small>${t(locale, 'template.timeoutHint')}</small></label>
               </div>
             </details>
           </div>
@@ -622,15 +814,16 @@ app.get('/templates', async (c) => {
           <div class="dialog-body">
             <div class="template-form-grid">
               <label class="form-field"><span>${t(locale, 'template.name')}</span><input id="template-name" required maxlength="200" autocomplete="off"></label>
-              <label class="form-field"><span>${t(locale, 'template.cwd')}</span><input id="template-cwd" required autocomplete="off" placeholder="/path/to/project"><small>${t(locale, 'template.cwdHint')}</small></label>
-              <label class="form-field"><span>${t(locale, 'template.agent')}</span><input id="template-agent" required autocomplete="off" placeholder="build"></label>
-              <label class="form-field"><span>${t(locale, 'template.model')}</span><input id="template-model" required autocomplete="off" value="default" placeholder="default"></label>
+              <label class="form-field"><span>${t(locale, 'template.cwd')}</span><div class="field-action"><input id="template-cwd" required autocomplete="off" placeholder="/path/to/project" oninput="scheduleCatalogLoad('template')"><button type="button" class="btn" onclick="openDirectoryPicker('template-cwd')">${icon('folder')}${t(locale, 'action.chooseFolder')}</button></div><small>${t(locale, 'template.cwdHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.agent')}</span><select id="template-agent" required><option value="">${t(locale, 'catalog.chooseProject')}</option></select><small>${t(locale, 'catalog.agentHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.model')}</span><div class="model-selector"><select id="template-model-provider" aria-label="${t(locale, 'catalog.provider')}" onchange="populateModelOptions('template')"><option value="">${t(locale, 'catalog.defaultProvider')}</option></select><select id="template-model" required aria-label="${t(locale, 'catalog.model')}" disabled><option value="default">${t(locale, 'catalog.defaultModel')}</option></select></div><small>${t(locale, 'catalog.modelHint')}</small></label>
               <label class="form-field form-field-wide"><span>${t(locale, 'template.prompt')}</span><textarea id="template-prompt" rows="6" required></textarea></label>
               <label class="form-field"><span>${t(locale, 'template.scheduleType')}</span><select id="template-schedule-type" onchange="updateTemplateScheduleFields()"><option value="recurring">${t(locale, 'schedule.recurring')}</option><option value="delayed">${t(locale, 'schedule.delayed')}</option><option value="cron">${t(locale, 'schedule.cron')}</option></select></label>
               <label id="template-cron-field" class="form-field" hidden><span>${t(locale, 'template.cronExpr')}</span><input id="template-cron" autocomplete="off" placeholder="0 9 * * *"><small>${t(locale, 'template.cronHint')}</small></label>
-              <label id="template-interval-field" class="form-field"><span>${t(locale, 'template.interval')}</span><input id="template-interval" autocomplete="off" value="1h" placeholder="30s / 5min / 1h"><small>${t(locale, 'template.durationHint')}</small></label>
+              <label id="template-interval-field" class="form-field"><span>${t(locale, 'template.interval')}</span>${durationControl(locale, 'template-interval', 3_600_000, 'interval')}<small>${t(locale, 'template.intervalHint')}</small></label>
               <label id="template-run-at-field" class="form-field" hidden><span>${t(locale, 'template.runAt')}</span><input id="template-run-at" type="datetime-local" step="0.001"></label>
             </div>
+            <p id="template-catalog-status" class="form-note catalog-status"></p>
             <details class="advanced-fields">
               <summary>${t(locale, 'template.advanced')}</summary>
               <div class="template-form-grid">
@@ -640,8 +833,8 @@ app.get('/templates', async (c) => {
                 <label class="form-field"><span>${t(locale, 'template.urgency')}</span><input id="template-urgency" type="number" min="1" max="5" step="1" value="3" required></label>
                 <label class="form-field"><span>${t(locale, 'template.maxInstances')}</span><input id="template-max-instances" type="number" min="1" max="1000" step="1" value="1" required><small>${t(locale, 'template.maxInstancesHint')}</small></label>
                 <label class="form-field"><span>${t(locale, 'template.maxRetries')}</span><input id="template-max-retries" type="number" min="0" max="1000" step="1" value="3" required></label>
-                <label class="form-field"><span>${t(locale, 'template.retryBackoff')}</span><input id="template-retry-backoff" autocomplete="off" value="30s"><small>${t(locale, 'template.durationHint')}</small></label>
-                <label class="form-field"><span>${t(locale, 'template.timeout')}</span><input id="template-timeout" autocomplete="off" placeholder="30min"><small>${t(locale, 'template.optional')}</small></label>
+                <label class="form-field"><span>${t(locale, 'template.retryBackoff')}</span>${durationControl(locale, 'template-retry-backoff', 30_000, 'retry')}<small>${t(locale, 'template.retryBackoffHint')}</small></label>
+                <label class="form-field"><span>${t(locale, 'template.timeout')}</span>${durationControl(locale, 'template-timeout', null, 'timeout')}<small>${t(locale, 'template.timeoutHint')}</small></label>
               </div>
             </details>
             <p class="form-note">${t(locale, 'template.futureOnly')}</p>
@@ -679,7 +872,7 @@ app.get('/runs', async (c) => {
         const status = safeStatus(run.status);
         const resumable = isValidSessionId(run.sessionId);
         if (run.log) {
-            logs.push(`<section id="log-${run.id}" class="panel log-panel" hidden><div class="panel-head"><h3>Run #${run.id} · ${esc(run.taskName)}</h3></div><div class="log-box">${esc(run.log)}</div></section>`);
+            logs.push(renderRunLog(run.id, run.taskName, run.log, locale));
         }
         return `<tr>
           <td class="faint" data-label="${t(locale, 'table.run')}">#${run.id}</td>

@@ -5,6 +5,7 @@ import { setupTestDb } from './helpers/mock-db';
 import dashboardServer, {
     dashboardApp,
     isSafeDashboardRestartTarget,
+    presentRunLog,
     resolveDashboardConfigState,
 } from '../src/web/index';
 import { resolveEditedRunAt } from '../src/web/ui';
@@ -130,6 +131,15 @@ describe('Dashboard 安全边界', () => {
         expect(html).toContain('项目分组');
         expect(html).toContain('id="task-dialog"');
         expect(html).toContain('id="task-project-status"');
+        expect(html).toContain('id="task-cwd-picker"');
+        expect(html).toContain('id="task-agent" required><option');
+        expect(html).toContain('id="task-model-provider"');
+        expect(html).toContain('id="task-model" required');
+        expect(html).toContain('跟随 Agent / OpenCode 默认模型');
+        expect(html).toContain("fetch('/api/opencode/catalog?cwd='");
+        expect(html).toContain('id="task-timeout-preset"');
+        expect(html).toContain('使用 Gateway 默认超时');
+        expect(html).not.toContain('id="task-timeout" autocomplete="off"');
         expect(html).toContain('function updateTaskProjectStatus()');
         expect(html).toContain(`openTaskEditor(${createdBody.task.id})`);
         expect(html).toContain('taskField(\'cwd\').readOnly=true');
@@ -171,6 +181,12 @@ describe('Dashboard 安全边界', () => {
             },
         );
         expect(runningEdit.status).toBe(409);
+
+        const directories = await dashboardApp.request(
+            `http://localhost/api/filesystem/directories?path=${encodeURIComponent(process.cwd())}`,
+        );
+        expect(directories.status).toBe(200);
+        expect(await directories.json()).toMatchObject({ path: process.cwd() });
     });
 
     test('项目视图覆盖数百任务规模，并为旧版无目录任务提供未分组入口', async () => {
@@ -235,6 +251,10 @@ describe('Dashboard 安全边界', () => {
         expect(html).toContain('新建定时任务');
         expect(html).toContain('id="template-dialog"');
         expect(html).toContain('id="template-model"');
+        expect(html).toContain('id="template-interval-preset"');
+        expect(html).toContain('每 1 小时');
+        expect(html).toContain('id="template-cwd"');
+        expect(html).toContain("openDirectoryPicker('template-cwd')");
         expect(html).toContain('id="template-prompt"');
         expect(html).toContain('type="datetime-local" step="0.001"');
         expect(html).toContain("toISOString().slice(0,23)");
@@ -413,6 +433,27 @@ describe('Dashboard 安全边界', () => {
         expect(await commandResponse.json()).toEqual({
             command: 'opencode --session ses_abc123XYZ',
         });
+    });
+
+    test('执行日志提取模型文本、失败原因和实际命令，同时保留原始日志', () => {
+        const command = JSON.stringify({
+            type: 'supertask_command',
+            executable: '/opt/Open Code/opencode',
+            cwd: '/tmp/project with space',
+            args: ['run', '--agent', 'build', '--format', 'json', '-m', 'openai/gpt-5', 'say "hi"'],
+        });
+        const output = JSON.stringify({
+            type: 'text',
+            part: { type: 'text', text: '任务完成' },
+        });
+        const presented = presentRunLog(`opencode 退出码 1\n${command}\n${output}`);
+
+        expect(presented.command).toEqual({
+            cwd: '/tmp/project with space',
+            command: "cd '/tmp/project with space' && '/opt/Open Code/opencode' run --agent build --format json -m openai/gpt-5 'say \"hi\"'",
+        });
+        expect(presented.text).toBe('任务完成');
+        expect(presented.errors).toEqual(['opencode 退出码 1']);
     });
 
     test('异常 Session ID 不生成终端命令', async () => {

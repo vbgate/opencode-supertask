@@ -2,6 +2,21 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.35] - 2026-07-18
+
+### Added
+
+- Task and scheduled-task forms now include a server-side project folder browser. After a project is selected, the Dashboard runs that project's local `opencode agent list` and `opencode models` commands and exposes only directly runnable Agents plus the models actually available on the machine.
+- Retry delays, run timeouts, and recurring intervals now use common human-readable presets. Number-and-unit input is shown only after choosing “Custom”; one-time schedules continue to use a local date/time picker.
+- New Worker runs record the exact executable, argument array, and working directory. Execution Logs present the reproducible shell command, model text, failure diagnostics, and tool activity while retaining the complete raw OpenCode JSONL.
+
+### Fixed
+
+- The model selector now explains that “default” follows the selected Agent/OpenCode configuration and does not pass `-m`, and splits large model catalogs into provider and model selectors.
+- OpenCode subagents are no longer offered as direct `opencode run --agent` choices, avoiding silent fallback to a default primary Agent. Existing task values remain editable for compatibility.
+
+[0.1.35]: https://github.com/vbgate/opencode-supertask/compare/v0.1.34...v0.1.35
+
 ## [0.1.34] - 2026-07-18
 
 ### Fixed

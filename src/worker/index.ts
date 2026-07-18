@@ -46,6 +46,7 @@ interface RunningTask {
     runId: number;
     launchIdentity: string;
     child: ChildProcess;
+    commandContext: string;
     output: string;
     sessionId: string | null;
     timeoutTimer: ReturnType<typeof setTimeout> | null;
@@ -60,6 +61,15 @@ interface RunningTask {
 export interface InterruptedTaskRun {
     taskId: number;
     runId: number;
+}
+
+export function runCommandContext(executable: string, args: string[], cwd: string): string {
+    return JSON.stringify({
+        type: 'supertask_command',
+        executable,
+        args,
+        cwd,
+    });
 }
 
 export function assertWorkerProcessIsolationSupported(
@@ -302,6 +312,7 @@ export class WorkerEngine {
             runId,
             launchIdentity,
             child,
+            commandContext: runCommandContext(this.opencodeBin, args, task.cwd || process.cwd()),
             output: '',
             sessionId: null,
             timeoutTimer: null,
@@ -501,7 +512,7 @@ export class WorkerEngine {
         if (termination?.kind === 'shutdown') return;
 
         if (termination?.kind === 'cancel') {
-            const output = entry.output.trim();
+            const output = this.outputWithCommand(entry);
             const log = `${termination.message}${output ? `\n${output}` : ''}`;
             await TaskRunService.fail(entry.runId, log);
             console.log(JSON.stringify({
@@ -516,7 +527,7 @@ export class WorkerEngine {
         const currentRun = await TaskRunService.getById(entry.runId);
         if (!currentRun || currentRun.status !== 'running') return;
 
-        const output = entry.output.trim();
+        const output = this.outputWithCommand(entry);
         const log = failure
             ? `${failure}${output ? `\n${output}` : ''}`
             : output;
@@ -689,6 +700,11 @@ export class WorkerEngine {
     private releaseBatch(task: Task) {
         const batchId = normalizeTaskBatchId(task.batchId);
         if (batchId) this.activeBatchIds.delete(batchId);
+    }
+
+    private outputWithCommand(entry: RunningTask): string {
+        const output = entry.output.trim();
+        return `${entry.commandContext}${output ? `\n${output}` : ''}`;
     }
 
     private resolveModel(taskModel: string | null): string | null {

@@ -42,6 +42,13 @@ const ZH = {
     'action.updateTask': '保存修改',
     'action.createTemplate': '新建定时任务',
     'action.saveTemplate': '保存定时任务',
+    'action.chooseFolder': '选择文件夹',
+    'action.chooseThisFolder': '选择当前文件夹',
+    'action.home': '主目录',
+    'action.up': '上一级',
+    'action.copyCommand': '复制命令',
+    'action.showHidden': '显示隐藏文件夹',
+    'action.hideHidden': '隐藏隐藏文件夹',
     'status.pending': '待执行',
     'status.running': '运行中',
     'status.done': '已完成',
@@ -108,6 +115,15 @@ const ZH = {
     'schedule.hours': '{count} 小时',
     'schedule.days': '{count} 天',
     'schedule.overdue': '已到期',
+    'duration.unit': '时间单位',
+    'duration.seconds': '秒',
+    'duration.minutes': '分钟',
+    'duration.hours': '小时',
+    'duration.days': '天',
+    'duration.systemDefault': '使用 Gateway 默认超时',
+    'duration.immediate': '立即重试',
+    'duration.custom': '自定义…',
+    'duration.every': '每 {duration}',
     'system.worker': '任务执行',
     'system.scheduler': '定时任务服务',
     'system.watchdog': '运行监控',
@@ -155,6 +171,9 @@ const ZH = {
     'template.interval': '执行间隔',
     'template.runAt': '执行时间',
     'template.durationHint': '支持 30s、5min、1h、2d',
+    'template.intervalHint': '直接选择常用频率；只有特殊需求才需要自定义。',
+    'template.retryBackoffHint': '一次失败后，等待多久再重试。',
+    'template.timeoutHint': '留空表示使用 Gateway 的默认任务超时。',
     'template.advanced': '更多执行设置',
     'template.category': '分类',
     'template.batchId': '批次 ID',
@@ -179,6 +198,28 @@ const ZH = {
     'task.batchHint': '相同非空批次 ID 的任务严格串行；留空则不受批次串行限制，但仍受全局并发和依赖约束。',
     'task.projectExisting': '此项目现有 {total} 个任务：运行 {running}，排队 {pending}，异常 {failed}。',
     'task.projectNew': '这是一个新项目分组；创建后会出现在项目列表中。',
+    'catalog.chooseProject': '请先选择项目目录',
+    'catalog.defaultModel': '跟随 Agent / OpenCode 默认模型',
+    'catalog.defaultProvider': '默认模型',
+    'catalog.provider': '模型提供商',
+    'catalog.model': '具体模型',
+    'catalog.modelHint': '先选提供商，再选本项目 opencode models 返回的模型；默认选项不会传入 -m。',
+    'catalog.agentHint': '来自当前项目的 opencode agent list。',
+    'catalog.loading': '正在读取此项目可用的 Agent 和模型…',
+    'catalog.loaded': '已从本机 OpenCode 读取 {agents} 个 Agent、{models} 个模型。',
+    'catalog.failed': '无法读取此项目的 OpenCode 配置：{error}',
+    'catalog.primary': '主 Agent',
+    'catalog.subagent': '子 Agent',
+    'catalog.all': '通用 Agent',
+    'directory.title': '选择项目目录',
+    'directory.subtitle': '选择后，系统会在该目录运行 OpenCode，并读取该项目可用的 Agent 和模型。',
+    'directory.empty': '这个文件夹中没有子文件夹',
+    'logs.command': '实际执行命令',
+    'logs.output': 'Agent 输出',
+    'logs.error': '失败原因',
+    'logs.tools': '工具调用',
+    'logs.raw': '查看原始执行日志',
+    'logs.noText': '这次执行没有产生可展示的文本输出，请查看原始日志。',
     'theme.label': '主题',
     'theme.system': '跟随系统',
     'theme.light': '浅色',
@@ -216,6 +257,7 @@ const ZH = {
     'feedback.templateUpdated': '定时任务已更新',
     'feedback.configSaved': '设置已保存',
     'feedback.sessionCommandCopied': '会话命令已复制，可直接粘贴到终端运行',
+    'feedback.commandCopied': '执行命令已复制',
     'feedback.restarting': 'Gateway 正在重启，请稍候…',
     'feedback.restartTimeout': 'Gateway 尚未恢复，请稍后刷新或检查 PM2 状态',
     'feedback.databaseCleared': '数据库已清空，备份位于：{path}',
@@ -267,6 +309,13 @@ const EN: Record<MessageKey, string> = {
     'action.updateTask': 'Save changes',
     'action.createTemplate': 'New scheduled task',
     'action.saveTemplate': 'Save scheduled task',
+    'action.chooseFolder': 'Choose folder',
+    'action.chooseThisFolder': 'Choose this folder',
+    'action.home': 'Home',
+    'action.up': 'Up',
+    'action.copyCommand': 'Copy command',
+    'action.showHidden': 'Show hidden folders',
+    'action.hideHidden': 'Hide hidden folders',
     'status.pending': 'Pending',
     'status.running': 'Running',
     'status.done': 'Done',
@@ -333,6 +382,15 @@ const EN: Record<MessageKey, string> = {
     'schedule.hours': '{count} hr',
     'schedule.days': '{count} days',
     'schedule.overdue': 'Overdue',
+    'duration.unit': 'Time unit',
+    'duration.seconds': 'seconds',
+    'duration.minutes': 'minutes',
+    'duration.hours': 'hours',
+    'duration.days': 'days',
+    'duration.systemDefault': 'Use Gateway default timeout',
+    'duration.immediate': 'Retry immediately',
+    'duration.custom': 'Custom…',
+    'duration.every': 'Every {duration}',
     'system.worker': 'Task execution',
     'system.scheduler': 'Scheduled task service',
     'system.watchdog': 'Runtime monitor',
@@ -380,6 +438,9 @@ const EN: Record<MessageKey, string> = {
     'template.interval': 'Interval',
     'template.runAt': 'Run at',
     'template.durationHint': 'Supports 30s, 5min, 1h, 2d',
+    'template.intervalHint': 'Choose a common frequency directly; customize only when necessary.',
+    'template.retryBackoffHint': 'How long to wait after a failure before retrying.',
+    'template.timeoutHint': 'Leave blank to use the Gateway default task timeout.',
     'template.advanced': 'More execution settings',
     'template.category': 'Category',
     'template.batchId': 'Batch ID',
@@ -404,6 +465,28 @@ const EN: Record<MessageKey, string> = {
     'task.batchHint': 'Tasks with the same non-empty batch ID run serially. Blank removes the batch constraint; global concurrency and dependencies still apply.',
     'task.projectExisting': 'This project has {total} tasks: {running} running, {pending} queued, and {failed} with issues.',
     'task.projectNew': 'This is a new project group. It appears in the project list after creation.',
+    'catalog.chooseProject': 'Choose a project directory first',
+    'catalog.defaultModel': 'Use the Agent / OpenCode default model',
+    'catalog.defaultProvider': 'Default model',
+    'catalog.provider': 'Model provider',
+    'catalog.model': 'Model',
+    'catalog.modelHint': 'Choose a provider, then a model returned by opencode models for this project. Default does not pass -m.',
+    'catalog.agentHint': 'Loaded from opencode agent list for this project.',
+    'catalog.loading': 'Loading Agents and models available to this project…',
+    'catalog.loaded': 'Loaded {agents} Agents and {models} models from local OpenCode.',
+    'catalog.failed': 'Could not load this project’s OpenCode configuration: {error}',
+    'catalog.primary': 'primary Agent',
+    'catalog.subagent': 'subagent',
+    'catalog.all': 'general Agent',
+    'directory.title': 'Choose project directory',
+    'directory.subtitle': 'OpenCode runs in this directory, and its project-specific Agents and models are loaded.',
+    'directory.empty': 'This folder has no subfolders',
+    'logs.command': 'Executed command',
+    'logs.output': 'Agent output',
+    'logs.error': 'Failure reason',
+    'logs.tools': 'Tool calls',
+    'logs.raw': 'View raw execution log',
+    'logs.noText': 'This run produced no displayable text. Inspect the raw log for details.',
     'theme.label': 'Theme',
     'theme.system': 'System',
     'theme.light': 'Light',
@@ -441,6 +524,7 @@ const EN: Record<MessageKey, string> = {
     'feedback.templateUpdated': 'Scheduled task updated',
     'feedback.configSaved': 'Settings saved',
     'feedback.sessionCommandCopied': 'Session command copied. Paste it into a terminal to continue.',
+    'feedback.commandCopied': 'Execution command copied',
     'feedback.restarting': 'Gateway is restarting…',
     'feedback.restartTimeout': 'Gateway has not recovered yet. Refresh later or check PM2 status.',
     'feedback.databaseCleared': 'Database cleared. Backup: {path}',
@@ -508,7 +592,7 @@ export function formatDateTime(value: Date | number | null, locale: Locale): str
 
 type IconName = 'brand' | 'tasks' | 'templates' | 'runs' | 'system' | 'refresh'
     | 'search' | 'sun' | 'globe' | 'chevronLeft' | 'chevronRight' | 'copy'
-    | 'close' | 'inbox' | 'activity' | 'check' | 'alert' | 'clock' | 'database';
+    | 'close' | 'inbox' | 'activity' | 'check' | 'alert' | 'clock' | 'database' | 'folder';
 
 export function icon(name: IconName, className = 'icon'): string {
     const paths: Record<IconName, string> = {
@@ -531,6 +615,7 @@ export function icon(name: IconName, className = 'icon'): string {
         alert: '<path d="M12 3 2.8 19h18.4L12 3Z"/><path d="M12 9v4M12 17h.01"/>',
         clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
         database: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
+        folder: '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z"/>',
     };
     return `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${paths[name]}</svg>`;
 }
@@ -738,6 +823,18 @@ const STYLES = `
   .danger-card h2 .icon { width:17px; height:17px; }
   .danger-card p { max-width:800px; margin:0 0 14px; color:var(--text-2); font-size:12px; }
   .log-panel { margin:12px 0; animation:reveal .18s ease both; }
+  .log-content { display:grid; gap:14px; padding:16px; }
+  .log-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:7px; }
+  .run-command,.run-output,.run-error,.run-tools { min-width:0; }
+  .run-command strong,.run-output>strong,.run-error>strong,.run-tools>strong { display:block; margin-bottom:7px; font-size:12px; }
+  .command-cwd { margin-bottom:6px; color:var(--text-3); font-family:"SFMono-Regular",Consolas,monospace; font-size:10px; overflow-wrap:anywhere; }
+  .run-command pre,.run-output pre,.run-error pre { margin:0; padding:12px; overflow:auto; border:1px solid var(--border); border-radius:9px;
+    color:var(--text-2); background:var(--surface-2); font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .run-output pre { color:var(--text); font-family:inherit; font-size:13px; line-height:1.65; }
+  .run-error pre { color:var(--red); border-color:color-mix(in srgb,var(--red) 28%,var(--border)); background:var(--red-soft); }
+  .raw-log { padding-top:12px; border-top:1px solid var(--border); }
+  .raw-log summary { color:var(--text-2); cursor:pointer; font-size:12px; font-weight:650; }
+  .raw-log .log-box { margin-top:10px; border-radius:9px; }
   .log-box { max-height:360px; overflow:auto; padding:16px; color:var(--text-2); background:#0b1018; font-family:"SFMono-Regular",Consolas,monospace;
     font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
   :root[data-theme="light"] .log-box { color:#dbe5f3; }
@@ -756,12 +853,33 @@ const STYLES = `
   .form-field-wide { grid-column:1 / -1; }
   .form-field input,.form-field select,.form-field textarea { width:100%; min-height:39px; padding:8px 10px; border:1px solid var(--border); border-radius:9px;
     outline:none; color:var(--text); background:var(--surface-2); font-weight:450; }
+  .field-action { display:flex; align-items:stretch; gap:7px; }
+  .field-action input { min-width:0; flex:1; }
+  .field-action .btn { flex:0 0 auto; white-space:nowrap; }
+  .model-selector { display:grid; grid-template-columns:minmax(120px,.75fr) minmax(0,1.25fr); gap:7px; }
+  .duration-picker { display:grid; gap:7px; }
+  .duration-control { display:grid; grid-template-columns:minmax(0,1fr) 112px; gap:7px; }
+  .duration-control input,.duration-control select { min-width:0; }
   .form-field textarea { resize:vertical; line-height:1.5; }
   .form-field input:focus,.form-field select:focus,.form-field textarea:focus { border-color:var(--primary); box-shadow:var(--focus); background:var(--surface); }
   .form-field small { color:var(--text-3); font-size:10px; font-weight:450; }
   .advanced-fields { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); }
   .advanced-fields summary { margin-bottom:14px; color:var(--text-2); cursor:pointer; font-size:12px; font-weight:700; }
   .form-note { margin:16px 0 0; color:var(--text-3); font-size:11px; }
+  .catalog-status[data-state="loading"] { color:var(--blue); }
+  .catalog-status[data-state="ready"] { color:var(--green); }
+  .catalog-status[data-state="error"] { color:var(--red); }
+  .directory-dialog { width:min(720px,calc(100% - 32px)); }
+  .directory-toolbar { display:flex; align-items:center; gap:8px; margin-bottom:12px; }
+  .directory-path { min-width:0; flex:1; padding:9px 11px; overflow:hidden; border:1px solid var(--border); border-radius:9px;
+    color:var(--text-2); background:var(--surface-2); font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; text-overflow:ellipsis; white-space:nowrap; }
+  .directory-list { min-height:260px; max-height:48vh; display:grid; align-content:start; gap:6px; overflow:auto; }
+  .directory-item { width:100%; min-height:40px; display:flex; align-items:center; gap:9px; padding:0 11px; border:1px solid transparent; border-radius:9px;
+    color:var(--text-2); background:transparent; cursor:pointer; text-align:left; transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .12s ease; }
+  .directory-item:hover { color:var(--text); border-color:var(--border); background:var(--surface-2); }
+  .directory-item:active { transform:scale(.99); }
+  .directory-item .icon { width:17px; height:17px; color:var(--primary); flex:0 0 auto; }
+  .directory-empty { min-height:220px; display:grid; place-items:center; color:var(--text-3); }
   .json-view { min-height:160px; margin:0; padding:15px; overflow:auto; border:1px solid var(--border); border-radius:10px; color:var(--text-2);
     background:var(--surface-2); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .confirm-copy { color:var(--text-2); margin:0; }
@@ -830,6 +948,9 @@ const STYLES = `
     .project-grid { grid-template-columns:1fr; }
     .template-form-grid { grid-template-columns:1fr; }
     .form-field-wide { grid-column:auto; }
+    .field-action { align-items:stretch; flex-direction:column; }
+    .field-action .btn { width:100%; }
+    .model-selector { grid-template-columns:1fr; }
   }
   @media (max-width:520px) {
     .stats-grid,.stats-grid.three { grid-template-columns:1fr 1fr; }
@@ -867,6 +988,9 @@ function clientMessages(locale: Locale) {
         'feedback.configSaved', 'feedback.databaseCleared', 'feedback.templateCreated',
         'feedback.templateUpdated', 'feedback.sessionCommandCopied', 'feedback.restarting',
         'feedback.restartTimeout', 'template.createTitle', 'template.editTitle', 'filter.noResults',
+        'catalog.chooseProject', 'catalog.defaultModel', 'catalog.defaultProvider', 'catalog.loading', 'catalog.loaded',
+        'catalog.failed', 'catalog.primary', 'catalog.subagent', 'catalog.all',
+        'directory.empty', 'feedback.commandCopied', 'action.showHidden', 'action.hideHidden',
     ] as const;
     return Object.fromEntries(keys.map((key) => [key, t(locale, key)]));
 }
@@ -939,6 +1063,11 @@ export function renderLayout(options: {
     <footer>${t(locale, 'app.footer')}</footer>
   </div>
   <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
+  <dialog id="directory-dialog" class="directory-dialog">
+    <div class="dialog-head"><div><h2>${t(locale, 'directory.title')}</h2><p>${t(locale, 'directory.subtitle')}</p></div><button type="button" class="icon-button" onclick="document.getElementById('directory-dialog').close()" aria-label="${t(locale, 'action.close')}">${icon('close')}</button></div>
+    <div class="dialog-body"><div class="directory-toolbar"><button id="directory-home" type="button" class="btn">${t(locale, 'action.home')}</button><button id="directory-up" type="button" class="btn">${t(locale, 'action.up')}</button><button id="directory-hidden" type="button" class="btn">${t(locale, 'action.showHidden')}</button><div id="directory-path" class="directory-path"></div></div><div id="directory-list" class="directory-list"></div></div>
+    <div class="dialog-actions"><button type="button" class="btn" onclick="document.getElementById('directory-dialog').close()">${t(locale, 'action.cancel')}</button><button id="directory-choose" type="button" class="btn btn-primary">${icon('folder')}${t(locale, 'action.chooseThisFolder')}</button></div>
+  </dialog>
   <dialog id="detail-dialog">
     <div class="dialog-head"><div><h2>${t(locale, 'details.title')}</h2><p>${t(locale, 'details.subtitle')}</p></div><button class="icon-button" onclick="document.getElementById('detail-dialog').close()" aria-label="${t(locale, 'action.close')}">${icon('close')}</button></div>
     <div class="dialog-body"><pre id="detail-content" class="json-view"></pre></div>
@@ -977,21 +1106,38 @@ export function renderLayout(options: {
     const showDetail=id=>showRecord('/api/tasks/'+id);const showRunDetail=id=>showRecord('/api/runs/'+id);const showTemplateDetail=id=>showRecord('/api/templates/'+id);
     async function copyDetails(){try{await navigator.clipboard.writeText(document.getElementById('detail-content').textContent);showToast(text('details.copySuccess'))}catch{showToast(text('feedback.copyFailed'),'error')}}
     async function copySessionCommand(id){try{const data=await readJson(await fetch('/api/runs/'+id+'/session-command'));await navigator.clipboard.writeText(data.command);showToast(text('feedback.sessionCommandCopied'))}catch(error){showToast(error.message||text('feedback.copyFailed'),'error')}}
+    async function copyRunCommand(id){try{await navigator.clipboard.writeText(document.getElementById('command-'+id).textContent);showToast(text('feedback.commandCopied'))}catch{showToast(text('feedback.copyFailed'),'error')}}
     function taskField(name){return document.getElementById('task-'+name)}
+    function templateField(name){return document.getElementById('template-'+name)}
     function taskProjects(){const node=document.getElementById('task-project-data');if(!node)return {};try{return JSON.parse(node.textContent||'{}')}catch{return {}}}
     function updateTaskProjectStatus(){const node=taskField('project-status');if(!node)return;const cwd=taskField('cwd').value.trim();if(!cwd){node.textContent='';return}const project=taskProjects()[cwd];node.textContent=project?text('task.projectExisting',project):text('task.projectNew')}
-    function openTaskCreator(){const form=document.getElementById('task-form');form.reset();taskField('id').value='';taskField('cwd').readOnly=false;taskField('cwd').value=form.dataset.defaultCwd||'';taskField('dialog-title').textContent=text('task.createTitle');taskField('save').textContent=text('action.saveTask');updateTaskProjectStatus();document.getElementById('task-dialog').showModal();setTimeout(()=>taskField('name').focus(),50)}
-    async function openTaskEditor(id){try{const data=await readJson(await fetch('/api/tasks/'+id));taskField('id').value=String(id);taskField('name').value=data.name||'';taskField('cwd').value=data.cwd||'';taskField('cwd').readOnly=true;taskField('agent').value=data.agent||'';taskField('model').value=data.model||'default';taskField('prompt').value=data.prompt||'';taskField('category').value=data.category||'general';taskField('batch').value=data.batchId||'';taskField('importance').value=String(data.importance??3);taskField('urgency').value=String(data.urgency??3);taskField('max-retries').value=String(data.maxRetries??3);taskField('retry-backoff').value=durationInput(data.retryBackoffMs??30000);taskField('timeout').value=durationInput(data.timeoutMs);taskField('dialog-title').textContent=text('task.editTitle');taskField('save').textContent=text('action.updateTask');updateTaskProjectStatus();document.getElementById('task-dialog').showModal();setTimeout(()=>taskField('name').focus(),50)}catch(error){showToast(error.message,'error')}}
-    async function saveTask(event){event.preventDefault();const form=document.getElementById('task-form');if(!form.reportValidity())return;const id=taskField('id').value;const body={name:taskField('name').value,cwd:taskField('cwd').value,agent:taskField('agent').value,model:taskField('model').value,prompt:taskField('prompt').value,category:taskField('category').value,batchId:taskField('batch').value,importance:Number(taskField('importance').value),urgency:Number(taskField('urgency').value),maxRetries:Number(taskField('max-retries').value),retryBackoff:taskField('retry-backoff').value,timeout:taskField('timeout').value};const button=taskField('save');button.disabled=true;try{const data=await readJson(await fetch(id?'/api/tasks/'+id:'/api/tasks',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));showToast(text(id?'feedback.taskUpdated':'feedback.taskCreated',{id:data.task.id}));document.getElementById('task-dialog').close();setTimeout(()=>location.assign(id?location.href:'/?cwd='+encodeURIComponent(data.task.cwd||'')),450)}catch(error){showToast(error.message,'error')}finally{button.disabled=false}}
-    function templateField(name){return document.getElementById('template-'+name)}
-    function durationInput(milliseconds){if(milliseconds==null)return '';if(milliseconds===0)return '0';const units=[['d',86400000],['h',3600000],['min',60000],['s',1000],['ms',1]];for(const [unit,factor] of units){if(milliseconds%factor===0)return String(milliseconds/factor)+unit}return String(milliseconds)+'ms'}
+    const catalogTimers={};const catalogRequests={};const catalogModels={};
+    function catalogField(prefix,name){return document.getElementById(prefix+'-'+name)}
+    function resetCatalog(prefix){const agent=catalogField(prefix,'agent');const provider=catalogField(prefix,'model-provider');const model=catalogField(prefix,'model');if(!agent||!provider||!model)return;catalogModels[prefix]=[];agent.replaceChildren(new Option(text('catalog.chooseProject'),''));provider.replaceChildren(new Option(text('catalog.defaultProvider'),''));model.replaceChildren(new Option(text('catalog.defaultModel'),'default'));agent.disabled=false;provider.disabled=true;model.disabled=true;catalogField(prefix,'catalog-status').textContent='';}
+    function appendCurrentOption(select,value){if(!value||[...select.options].some(option=>option.value===value))return;select.appendChild(new Option(value,value));}
+    function modelProvider(value){const slash=value.indexOf('/');return slash>0?value.slice(0,slash):''}
+    function populateModelOptions(prefix,preferredModel=''){const provider=catalogField(prefix,'model-provider');const model=catalogField(prefix,'model');if(!provider||!model)return;const selectedProvider=provider.value;model.replaceChildren();if(!selectedProvider){model.appendChild(new Option(text('catalog.defaultModel'),'default'));model.disabled=true;return}const available=(catalogModels[prefix]||[]).filter(value=>modelProvider(value)===selectedProvider);for(const value of available)model.appendChild(new Option(value,value));if(preferredModel&&available.includes(preferredModel))model.value=preferredModel;model.disabled=available.length===0}
+    async function loadCatalog(prefix,preferredAgent='',preferredModel='default',preserveUnavailable=false){const cwd=catalogField(prefix,'cwd')?.value.trim()||'';const status=catalogField(prefix,'catalog-status');const agent=catalogField(prefix,'agent');const provider=catalogField(prefix,'model-provider');const model=catalogField(prefix,'model');if(!cwd||!status||!agent||!provider||!model){if(!cwd)resetCatalog(prefix);return}const request=(catalogRequests[prefix]||0)+1;catalogRequests[prefix]=request;status.dataset.state='loading';status.textContent=text('catalog.loading');agent.disabled=true;provider.disabled=true;model.disabled=true;try{const data=await readJson(await fetch('/api/opencode/catalog?cwd='+encodeURIComponent(cwd)));if(catalogRequests[prefix]!==request||catalogField(prefix,'cwd').value.trim()!==cwd)return;agent.replaceChildren();for(const item of data.agents){const label=item.name+' — '+text('catalog.'+item.mode);agent.appendChild(new Option(label,item.name))}if(preserveUnavailable)appendCurrentOption(agent,preferredAgent);const defaultAgent=preferredAgent||data.agents.find(item=>item.name==='build')?.name||data.agents.find(item=>item.mode==='primary')?.name||data.agents[0]?.name||'';agent.value=[...agent.options].some(option=>option.value===defaultAgent)?defaultAgent:(agent.options[0]?.value||'');catalogModels[prefix]=[...data.models];if(preserveUnavailable&&preferredModel&&preferredModel!=='default'&&!catalogModels[prefix].includes(preferredModel))catalogModels[prefix].push(preferredModel);provider.replaceChildren(new Option(text('catalog.defaultProvider'),''));for(const name of [...new Set(catalogModels[prefix].map(modelProvider).filter(Boolean))].sort())provider.appendChild(new Option(name,name));const preferredProvider=preferredModel==='default'?'':modelProvider(preferredModel);provider.value=[...provider.options].some(option=>option.value===preferredProvider)?preferredProvider:'';populateModelOptions(prefix,preferredModel);status.dataset.state='ready';status.textContent=text('catalog.loaded',{agents:data.agents.length,models:data.models.length})}catch(error){if(catalogRequests[prefix]!==request)return;resetCatalog(prefix);if(preserveUnavailable){appendCurrentOption(agent,preferredAgent);if(preferredModel&&preferredModel!=='default'){catalogModels[prefix]=[preferredModel];appendCurrentOption(provider,modelProvider(preferredModel));provider.value=modelProvider(preferredModel);populateModelOptions(prefix,preferredModel)}}status.dataset.state='error';status.textContent=text('catalog.failed',{error:error.message})}finally{if(catalogRequests[prefix]===request){agent.disabled=false;provider.disabled=false;if(provider.value)model.disabled=false}}}
+    function scheduleCatalogLoad(prefix){clearTimeout(catalogTimers[prefix]);catalogTimers[prefix]=setTimeout(()=>loadCatalog(prefix),450)}
+    let directoryTargetId='';let directoryCurrent='';let directoryEntries=[];let directoryShowHidden=false;
+    function renderDirectoryEntries(){const list=document.getElementById('directory-list');list.replaceChildren();const entries=directoryEntries.filter(entry=>directoryShowHidden||!entry.hidden);const hidden=document.getElementById('directory-hidden');hidden.textContent=text(directoryShowHidden?'action.hideHidden':'action.showHidden');if(entries.length===0){const empty=document.createElement('div');empty.className='directory-empty';empty.textContent=text('directory.empty');list.appendChild(empty);return}for(const entry of entries){const button=document.createElement('button');button.type='button';button.className='directory-item';button.innerHTML='${icon('folder')}<span></span>';button.querySelector('span').textContent=entry.name;button.onclick=()=>browseDirectory(entry.path);list.appendChild(button)}}
+    async function browseDirectory(path=''){const choose=document.getElementById('directory-choose');choose.disabled=true;try{const suffix=path?'?path='+encodeURIComponent(path):'';const data=await readJson(await fetch('/api/filesystem/directories'+suffix));directoryCurrent=data.path;directoryEntries=data.directories;document.getElementById('directory-path').textContent=data.path;document.getElementById('directory-up').disabled=data.parent===data.path;document.getElementById('directory-up').onclick=()=>browseDirectory(data.parent);document.getElementById('directory-home').onclick=()=>browseDirectory(data.home);renderDirectoryEntries();choose.disabled=false;return true}catch(error){directoryCurrent='';directoryEntries=[];document.getElementById('directory-path').textContent='';renderDirectoryEntries();showToast(error.message,'error');return false}}
+    document.getElementById('directory-hidden').onclick=()=>{directoryShowHidden=!directoryShowHidden;renderDirectoryEntries()};
+    async function openDirectoryPicker(targetId){const input=document.getElementById(targetId);if(!input||input.readOnly)return;directoryTargetId=targetId;directoryShowHidden=false;document.getElementById('directory-dialog').showModal();if(!await browseDirectory(input.value.trim()||''))await browseDirectory('')}
+    document.getElementById('directory-choose').onclick=()=>{const input=document.getElementById(directoryTargetId);if(!input||!directoryCurrent)return;input.value=directoryCurrent;input.dispatchEvent(new Event('input',{bubbles:true}));document.getElementById('directory-dialog').close();const prefix=directoryTargetId.startsWith('task-')?'task':'template';loadCatalog(prefix)};
+    function updateDurationControl(id){const preset=document.getElementById(id+'-preset');const custom=document.getElementById(id+'-custom');const input=document.getElementById(id+'-value');const visible=preset.value==='custom';custom.hidden=!visible;input.required=visible;if(visible&&!input.value)input.value='1'}
+    function readDuration(id){const preset=document.getElementById(id+'-preset').value;if(preset==='')return '';if(preset!=='custom')return preset==='0'?'0':preset+'ms';const value=document.getElementById(id+'-value').value.trim();return value===''?'':value+document.getElementById(id+'-unit').value}
+    function setDuration(id,milliseconds){const preset=document.getElementById(id+'-preset');const exact=milliseconds==null?'':String(milliseconds);if([...preset.options].some(option=>option.value===exact)){preset.value=exact;updateDurationControl(id);return}preset.value='custom';const input=document.getElementById(id+'-value');const unit=document.getElementById(id+'-unit');const units=[['d',86400000],['h',3600000],['min',60000],['s',1000]];let matched=false;for(const [name,factor] of units){if(milliseconds!=null&&(milliseconds===0||milliseconds%factor===0)){input.value=String(milliseconds/factor);unit.value=name;matched=true;break}}if(!matched){input.value=String((milliseconds??60000)/1000);unit.value='s'}updateDurationControl(id)}
+    function openTaskCreator(){const form=document.getElementById('task-form');form.reset();taskField('id').value='';taskField('cwd').readOnly=false;taskField('cwd-picker').hidden=false;taskField('cwd').value=form.dataset.defaultCwd||'';setDuration('task-retry-backoff',30000);setDuration('task-timeout',null);taskField('dialog-title').textContent=text('task.createTitle');taskField('save').textContent=text('action.saveTask');updateTaskProjectStatus();resetCatalog('task');document.getElementById('task-dialog').showModal();if(taskField('cwd').value)loadCatalog('task');setTimeout(()=>taskField('name').focus(),50)}
+    async function openTaskEditor(id){try{const data=await readJson(await fetch('/api/tasks/'+id));taskField('id').value=String(id);taskField('cwd').value=data.cwd||'';taskField('cwd').readOnly=true;taskField('cwd-picker').hidden=true;taskField('name').value=data.name||'';taskField('prompt').value=data.prompt||'';taskField('category').value=data.category||'general';taskField('batch').value=data.batchId||'';taskField('importance').value=String(data.importance??3);taskField('urgency').value=String(data.urgency??3);taskField('max-retries').value=String(data.maxRetries??3);setDuration('task-retry-backoff',data.retryBackoffMs??30000);setDuration('task-timeout',data.timeoutMs);taskField('dialog-title').textContent=text('task.editTitle');taskField('save').textContent=text('action.updateTask');updateTaskProjectStatus();resetCatalog('task');document.getElementById('task-dialog').showModal();loadCatalog('task',data.agent||'',data.model||'default',true);setTimeout(()=>taskField('name').focus(),50)}catch(error){showToast(error.message,'error')}}
+    async function saveTask(event){event.preventDefault();const form=document.getElementById('task-form');if(!form.reportValidity())return;const id=taskField('id').value;const body={name:taskField('name').value,cwd:taskField('cwd').value,agent:taskField('agent').value,model:taskField('model').value,prompt:taskField('prompt').value,category:taskField('category').value,batchId:taskField('batch').value,importance:Number(taskField('importance').value),urgency:Number(taskField('urgency').value),maxRetries:Number(taskField('max-retries').value),retryBackoff:readDuration('task-retry-backoff'),timeout:readDuration('task-timeout')};const button=taskField('save');button.disabled=true;try{const data=await readJson(await fetch(id?'/api/tasks/'+id:'/api/tasks',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));showToast(text(id?'feedback.taskUpdated':'feedback.taskCreated',{id:data.task.id}));document.getElementById('task-dialog').close();setTimeout(()=>location.assign(id?location.href:'/?cwd='+encodeURIComponent(data.task.cwd||'')),450)}catch(error){showToast(error.message,'error')}finally{button.disabled=false}}
     function localDateTime(milliseconds){const date=new Date(milliseconds);const local=new Date(milliseconds-date.getTimezoneOffset()*60000);return local.toISOString().slice(0,23)}
-    function updateTemplateScheduleFields(){const type=templateField('schedule-type').value;const fields={cron:templateField('cron-field'),recurring:templateField('interval-field'),delayed:templateField('run-at-field')};for(const [name,node] of Object.entries(fields)){node.hidden=name!==type;node.querySelector('input').required=name===type}}
+    function updateTemplateScheduleFields(){const type=templateField('schedule-type').value;const fields={cron:templateField('cron-field'),recurring:templateField('interval-field'),delayed:templateField('run-at-field')};for(const [name,node] of Object.entries(fields)){node.hidden=name!==type;for(const control of node.querySelectorAll('input,select'))control.required=false;const required=name==='recurring'?node.querySelector('[id$="-preset"]'):node.querySelector('input');if(required)required.required=name===type;if(name==='recurring'&&name===type)updateDurationControl('template-interval')}}
     function setOriginalRunAt(epoch){const input=templateField('run-at');const local=epoch?localDateTime(epoch):'';input.value=local;input.dataset.originalEpoch=epoch?String(epoch):'';input.dataset.originalLocal=local}
     function selectedRunAt(){const input=templateField('run-at');return resolveEditedRunAt(input.dataset.originalEpoch?Number(input.dataset.originalEpoch):null,input.dataset.originalLocal||'',input.value)}
-    function openTemplateCreator(){const form=document.getElementById('template-form');form.reset();templateField('id').value='';templateField('dialog-title').textContent=text('template.createTitle');setOriginalRunAt(null);templateField('run-at').value=localDateTime(Date.now()+3600000);updateTemplateScheduleFields();document.getElementById('template-dialog').showModal();setTimeout(()=>templateField('name').focus(),50)}
-    async function openTemplateEditor(id){try{const data=await readJson(await fetch('/api/templates/'+id));templateField('id').value=String(id);templateField('dialog-title').textContent=text('template.editTitle');templateField('name').value=data.name||'';templateField('cwd').value=data.cwd||'';templateField('agent').value=data.agent||'';templateField('model').value=data.model||'default';templateField('prompt').value=data.prompt||'';templateField('schedule-type').value=data.scheduleType;templateField('cron').value=data.cronExpr||'';templateField('interval').value=durationInput(data.intervalMs);setOriginalRunAt(data.runAt||null);if(!data.runAt)templateField('run-at').value=localDateTime(Date.now()+3600000);templateField('category').value=data.category||'general';templateField('batch').value=data.batchId||'';templateField('importance').value=String(data.importance??3);templateField('urgency').value=String(data.urgency??3);templateField('max-instances').value=String(data.maxInstances??1);templateField('max-retries').value=String(data.maxRetries??3);templateField('retry-backoff').value=durationInput(data.retryBackoffMs??30000);templateField('timeout').value=durationInput(data.timeoutMs);updateTemplateScheduleFields();document.getElementById('template-dialog').showModal();setTimeout(()=>templateField('name').focus(),50)}catch(error){showToast(error.message,'error')}}
-    async function saveTemplate(event){event.preventDefault();const form=document.getElementById('template-form');if(!form.reportValidity())return;const id=templateField('id').value;const type=templateField('schedule-type').value;const body={name:templateField('name').value,cwd:templateField('cwd').value,agent:templateField('agent').value,model:templateField('model').value,prompt:templateField('prompt').value,scheduleType:type,cronExpr:templateField('cron').value,interval:templateField('interval').value,runAt:type==='delayed'?selectedRunAt():null,category:templateField('category').value,batchId:templateField('batch').value,importance:Number(templateField('importance').value),urgency:Number(templateField('urgency').value),maxInstances:Number(templateField('max-instances').value),maxRetries:Number(templateField('max-retries').value),retryBackoff:templateField('retry-backoff').value,timeout:templateField('timeout').value};const button=templateField('save');button.disabled=true;try{await readJson(await fetch(id?'/api/templates/'+id:'/api/templates',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));showToast(text(id?'feedback.templateUpdated':'feedback.templateCreated'));document.getElementById('template-dialog').close();setTimeout(()=>location.assign(id?location.href:'/templates'),450)}catch(error){showToast(error.message,'error')}finally{button.disabled=false}}
+    function openTemplateCreator(){const form=document.getElementById('template-form');form.reset();templateField('id').value='';templateField('dialog-title').textContent=text('template.createTitle');setDuration('template-interval',3600000);setDuration('template-retry-backoff',30000);setDuration('template-timeout',null);setOriginalRunAt(null);templateField('run-at').value=localDateTime(Date.now()+3600000);updateTemplateScheduleFields();resetCatalog('template');document.getElementById('template-dialog').showModal();if(templateField('cwd').value)loadCatalog('template');setTimeout(()=>templateField('name').focus(),50)}
+    async function openTemplateEditor(id){try{const data=await readJson(await fetch('/api/templates/'+id));templateField('id').value=String(id);templateField('dialog-title').textContent=text('template.editTitle');templateField('name').value=data.name||'';templateField('cwd').value=data.cwd||'';templateField('prompt').value=data.prompt||'';templateField('schedule-type').value=data.scheduleType;templateField('cron').value=data.cronExpr||'';setDuration('template-interval',data.intervalMs);setOriginalRunAt(data.runAt||null);if(!data.runAt)templateField('run-at').value=localDateTime(Date.now()+3600000);templateField('category').value=data.category||'general';templateField('batch').value=data.batchId||'';templateField('importance').value=String(data.importance??3);templateField('urgency').value=String(data.urgency??3);templateField('max-instances').value=String(data.maxInstances??1);templateField('max-retries').value=String(data.maxRetries??3);setDuration('template-retry-backoff',data.retryBackoffMs??30000);setDuration('template-timeout',data.timeoutMs);updateTemplateScheduleFields();resetCatalog('template');document.getElementById('template-dialog').showModal();loadCatalog('template',data.agent||'',data.model||'default',true);setTimeout(()=>templateField('name').focus(),50)}catch(error){showToast(error.message,'error')}}
+    async function saveTemplate(event){event.preventDefault();const form=document.getElementById('template-form');if(!form.reportValidity())return;const id=templateField('id').value;const type=templateField('schedule-type').value;const body={name:templateField('name').value,cwd:templateField('cwd').value,agent:templateField('agent').value,model:templateField('model').value,prompt:templateField('prompt').value,scheduleType:type,cronExpr:templateField('cron').value,interval:readDuration('template-interval'),runAt:type==='delayed'?selectedRunAt():null,category:templateField('category').value,batchId:templateField('batch').value,importance:Number(templateField('importance').value),urgency:Number(templateField('urgency').value),maxInstances:Number(templateField('max-instances').value),maxRetries:Number(templateField('max-retries').value),retryBackoff:readDuration('template-retry-backoff'),timeout:readDuration('template-timeout')};const button=templateField('save');button.disabled=true;try{await readJson(await fetch(id?'/api/templates/'+id:'/api/templates',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));showToast(text(id?'feedback.templateUpdated':'feedback.templateCreated'));document.getElementById('template-dialog').close();setTimeout(()=>location.assign(id?location.href:'/templates'),450)}catch(error){showToast(error.message,'error')}finally{button.disabled=false}}
     async function enableTmpl(id){try{await readJson(await fetch('/api/templates/'+id+'/enable',{method:'POST'}));location.reload()}catch(error){showToast(error.message,'error')}}
     async function disableTmpl(id){if(!await ask(text('dialog.disableTemplate'),text('dialog.disableTemplateBody')))return;try{await readJson(await fetch('/api/templates/'+id+'/disable',{method:'POST'}));location.reload()}catch(error){showToast(error.message,'error')}}
     async function deleteTmpl(id){if(!await ask(text('dialog.deleteTemplate'),text('dialog.deleteTemplateBody'),true))return;try{await readJson(await fetch('/api/templates/'+id,{method:'DELETE'}));location.reload()}catch(error){showToast(error.message,'error')}}
