@@ -16,7 +16,7 @@ PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler�
 | 长期后台运行 | `supertask install` | 是；缺失时会显式全局安装 |
 | 打开已运行 Gateway 的 Dashboard | `supertask ui` | 否；该命令只打开浏览器 |
 
-`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次不稳定重启、默认 512 MB 内存重启阈值，并把 PM2 kill timeout 设为 drain 宽限期加 15 秒；显式 `SUPERTASK_PM2_KILL_TIMEOUT_MS` 低于该安全下限会在删除旧进程前失败关闭。PM2 `stop/delete` 的命令等待时间至少为实际 kill timeout 加 5 秒，显式 `SUPERTASK_PM2_COMMAND_TIMEOUT_MS` 低于该值同样会在破坏性命令前拒绝。随后安装/配置 `pm2-logrotate`（单文件 10 MB、保留 7 份、压缩、每小时检查）并执行 `pm2 save`。替换、维护和卸载由独立 SQLite 事务锁串行化，并一直持锁到 `stop/delete` 返回；进程崩溃时锁由内核自动释放。替换已有 Gateway 时会沿用其 Bun 路径和完整运行环境（包括数据库、配置与 OpenCode 路径），新进程未 ready 会恢复旧入口、环境和版本。删除旧进程前还会用保存的运行环境预检 PM2；Node/npm/Homebrew 迁移导致该环境无法再执行 PM2 时会拒绝替换，避免启动与回滚同时失败。macOS 会安装用户级 `~/Library/LaunchAgents/com.supertask.pm2-resurrect.plist`；监督器只在 `jlist` 成功确认 Gateway 缺失且 `dump.pm2` 明确包含该项时执行 `resurrect`，不会绕过 PM2 的 `errored` 熔断。卸载会先保存不含 Gateway 的 dump，再停止并删除项目 LaunchAgent。
+`supertask install` 会启动名为 `supertask-gateway` 的 PM2 进程，设置 5 秒重启延迟、最多 30 次不稳定重启、默认 512 MB 内存重启阈值，并把 PM2 kill timeout 设为 drain 宽限期加 15 秒；显式 `SUPERTASK_PM2_KILL_TIMEOUT_MS` 低于该安全下限会在删除旧进程前失败关闭。PM2 `stop/delete` 的命令等待时间至少为实际 kill timeout 加 5 秒，显式 `SUPERTASK_PM2_COMMAND_TIMEOUT_MS` 低于该值同样会在破坏性命令前拒绝。随后安装/配置 `pm2-logrotate`（单文件 10 MB、保留 7 份、压缩、每小时检查）并执行 `pm2 save`。替换、维护和卸载由独立 SQLite 事务锁串行化，并一直持锁到 `stop/delete` 返回；进程崩溃时锁由内核自动释放。自动恢复沿用完整旧运行环境；用户显式执行安装/升级时，会固定旧 Bun、PM2、数据库与配置身份，同时从当前终端刷新 OpenCode/XDG/Provider 执行环境。新进程未 ready 会恢复完整旧入口、环境和版本。删除旧进程前还会用保存的运行环境预检 PM2；Node/npm/Homebrew 迁移导致该环境无法再执行 PM2 时会拒绝替换，避免启动与回滚同时失败。macOS 会安装用户级 `~/Library/LaunchAgents/com.supertask.pm2-resurrect.plist`；监督器只在 `jlist` 成功确认 Gateway 缺失且 `dump.pm2` 明确包含该项时执行 `resurrect`，不会绕过 PM2 的 `errored` 熔断。卸载会先保存不含 Gateway 的 dump，再停止并删除项目 LaunchAgent。
 
 插件加载时会检查 `gateway_lock`：已有新鲜心跳就不处理；没有运行实例且机器已安装 PM2 时，会启动或按包版本重启 Gateway；没有 PM2 时只提示用户，不会静默安装全局依赖。
 
@@ -30,7 +30,7 @@ pm2 status
 pm2 logs supertask-gateway
 ```
 
-`supertask doctor` 会读取 `opencode debug config --pure` 的最终配置，要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或版本不一致都会返回非零退出码。全局 CLI 与插件版本不一致会给出 `npm install -g` / `bun add -g` 提示，但不会把本来健康的 Gateway 判坏。
+`supertask doctor` 会读取 `opencode debug config --pure` 的最终配置，要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、全局 CLI、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或任一组件版本不一致都会返回非零退出码。
 
 修改配置后必须重启 Gateway 才生效：
 
@@ -50,7 +50,9 @@ supertask upgrade
 
 升级先查询 npm 的 `latest` 精确版本，再用 `opencode plugin opencode-supertask@<version> --global --force` 写入精确配置并确认对应缓存真实存在，最后用该缓存包的 Gateway 入口替换 PM2 进程；新 Gateway 未 ready 会回滚旧入口和旧插件版本。陈旧 `@latest` 目录可以保留，因为不会被当作目标版本；`supertask doctor` 会检查实际选中的配置和入口。OpenCode 进程仍需重启才能加载新插件。
 
-CLI 可能由 npm 或 Bun 安装，升级命令无法安全猜测原包管理器，因此不会静默改写全局 CLI。若输出或 `supertask doctor` 提示 CLI 版本落后，用最初的包管理器安装相同精确版本：
+显式 `install` / `upgrade` 还会从当前终端刷新 Gateway 的 OpenCode、XDG 与 Provider 执行环境；`HOME`、`PATH`、`PM2_HOME` 和全部 `SUPERTASK_*` 运行作用域继续使用已经验证的旧值，Bun 路径与 cwd 也不变。新 Gateway 未 ready 时，回滚使用未修改的完整旧环境。因此，自定义 Agent 只有在终端手动执行时正常的情况，应从该终端运行 `supertask install` 或 `supertask upgrade` 后再重试。PM2 环境与 dump 会持久化运行所需环境变量；敏感 Provider 凭据应按本机敏感文件同等级别保护 `PM2_HOME`。
+
+新版升级命令会从全局 `supertask` 的真实路径识别 npm 或 Bun，并在插件和 Gateway 成功替换后同步相同精确版本的 CLI；若找不到全局 CLI 则跳过，若 CLI 存在但无法确认包管理器则返回部分失败并给出人工命令。0.1.33 及更早版本没有这项能力，从旧版本升级时必须先人工更新一次 CLI，再运行新版升级流程：
 
 ```bash
 npm install -g opencode-supertask@<version>
@@ -83,6 +85,8 @@ supertask db check   # 完整性、外键、业务表和运行状态检查
 PM2 生命周期操作和 macOS supervisor 始终先获取 `PM2_HOME/supertask-gateway.manage.sqlite` 这一 canonical 锁。为兼容旧安装曾通过 `SUPERTASK_PM2_MANAGEMENT_LOCK` 指定的路径，新版本会从当前环境、PM2 dump/运行环境和 LaunchAgent 恢复旧锁，并按固定顺序同时持有 canonical 与全部旧锁后才修改 PM2；后续 shell 即使不再携带旧变量，也不会绕过仍在运行的旧 supervisor。若已安装 LaunchAgent 保存的 `PM2_HOME` 与当前 CLI 不同，所有生命周期和数据库维护操作都会在修改前失败关闭；请按错误提示用原 `PM2_HOME` 重试，避免两个 PM2 daemon 反复争抢同一 Gateway。
 
 CLI 的任务/模板 ID、优先级、重试次数和列表数量均按完整十进制整数解析；带尾随字符、小数、越界值和未知任务状态会返回非零退出码，不会再由 `parseInt` 静默截断。
+
+CLI 帮助、`doctor` 和数据库维护的交互式摘要支持 `auto | zh-CN | en`。默认 `auto` 根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 选择，非中文 locale 回退英文；可用全局 `--lang` 或 `SUPERTASK_LANG` 覆盖。JSON 字段和底层诊断错误保持原样，不因界面语言变化而破坏 Agent、管道和脚本解析。
 
 ## 完整配置
 
@@ -205,6 +209,17 @@ curl -fsS http://127.0.0.1:4680/health
 3. 运行 `supertask config` 验证配置能否加载，确认 Worker 并发不为零、Scheduler 在需要模板时已启用。
 4. 检查任务是否仍在 `retryAfter` 退避期、是否等待未完成的 `dependsOn`，或同一 `batchId` 是否已有任务运行。不可恢复或丢失的依赖会自动把下游收敛到 `dead_letter`，不会永久保持 pending。
 5. 确认 `task.agent` 存在且不是已废弃的 `supertask-runner`，并确认任务 `cwd` 可访问。
+
+### 自定义 Agent 手动正常、Gateway 失败
+
+先对比任务执行记录中的 `agent / model / cwd` 失败上下文，确认手动测试使用了完全相同的 Agent、显式模型（若有）、项目目录和提示词：
+
+```bash
+cd <任务 cwd>
+opencode run --agent <agent> --format json [-m <model>] '<prompt>'
+```
+
+若完全相同的命令在终端成功、Gateway 仍以 `Unexpected server error` 或 Provider 认证错误退出，通常说明 PM2 保存的 OpenCode/XDG/Provider 环境已落后。在这个手动命令可工作的终端执行 `supertask install`；版本升级场景执行 `supertask upgrade`。两者都会刷新执行环境并安全替换 Gateway，无需先卸载。若仍失败，保留任务/run 的完整输出和 `pm2 logs supertask-gateway`，不要只用 `general` 验证：OpenCode 可能把非主 Agent 名称降级到默认 Agent。
 
 ### Gateway 提示已有实例
 

@@ -7,7 +7,7 @@ AI-powered task queue for [OpenCode](https://opencode.ai) agents — schedule, r
 
 [简体中文](#简体中文)
 
-Documentation: [current architecture](docs/architecture.md) · [operations and troubleshooting](docs/operations.md) · [document index](docs/README.md)
+Documentation: [changelog](CHANGELOG.md) · [current architecture](docs/architecture.md) · [operations and troubleshooting](docs/operations.md) · [document index](docs/README.md)
 
 ## Installation
 
@@ -32,7 +32,11 @@ supertask gateway   # foreground mode: no pm2 required
 
 The plugin never installs global dependencies by itself. Without a running Gateway, queue-management tools still work, but scheduled and queued tasks are not executed and the Dashboard is unavailable.
 
+Upgrades do not require uninstalling. Run `supertask upgrade`: it pins the exact latest plugin, replaces the Gateway, detects whether the global `supertask` came from npm or Bun, and synchronizes the CLI to that same version. `supertask doctor` fails if the CLI, plugin, Gateway package, or ready lock disagree. Versions through 0.1.33 cannot retroactively update their own old CLI, so upgrade from those releases by installing the new global CLI once with the original package manager, then run the new `supertask upgrade`.
+
 Gateway task execution currently requires macOS or Linux. Windows is rejected at startup until the Worker can use an OS Job Object to guarantee that detached OpenCode descendants cannot survive cancellation or recovery.
+
+Run `supertask install` and `supertask upgrade` from the same terminal environment in which `opencode run --agent <name>` works. An explicit install or upgrade refreshes the Gateway's OpenCode/XDG/provider execution environment while keeping the proven Bun path, PM2 identity, database/config scope, and rollback runtime pinned. This matters when a custom primary agent selects a provider through environment variables or a non-default OpenCode config directory.
 
 ### Uninstall
 
@@ -112,6 +116,8 @@ A loop such as `opencode run ... && opencode run ...` is also a valid solution f
 SuperTask's scheduler creates ordinary durable queue tasks, so scheduled and manually submitted work share the same concurrency, retry, cancellation, and history rules. The trade-off is that the Gateway must be running to dispatch work. For 24/7 use, run it under the optional PM2 installation or another process supervisor; `crontab` remains the better choice when an OS-level fixed schedule is all you need.
 
 ## CLI Reference
+
+CLI help and interactive database/doctor summaries support Chinese and English. The default is `auto`: `zh*` system locales use Chinese and all other locales use English. Override it globally with `supertask --lang zh-CN <command>`, `supertask --lang en <command>`, or `SUPERTASK_LANG=zh-CN|en`. JSON field names and raw diagnostic errors are unchanged for scripts and Agents.
 
 ```bash
 # Gateway management
@@ -210,7 +216,7 @@ The complete configuration reference and restart semantics are documented in [Op
 
 Key mechanisms:
 - **Process supervision** — optional pm2 crash recovery with a 512 MB default memory restart threshold and a kill timeout no lower than Worker drain grace + 15 seconds; lifecycle operations and the macOS supervisor acquire the canonical `PM2_HOME` SQLite lock plus any recovered legacy custom lock for the whole mutation, reject a macOS LaunchAgent/CLI `PM2_HOME` mismatch before mutation, and never bypass PM2's `errored` fuse
-- **Version-aware restart** — package changes preserve the existing PM2 runtime environment; replacement is refused before deletion if that environment can no longer invoke PM2, and failed startup rolls back the prior entry, Bun path, environment, and version
+- **Version-aware restart** — automatic recovery preserves the existing PM2 runtime environment; an explicit install/upgrade refreshes the OpenCode/provider execution environment while pinning the prior PM2/Bun/database/config identity. Replacement is refused before deletion if the old environment can no longer invoke PM2, and failed startup rolls back the complete prior runtime and version
 - **Process lock** — SQLite `BEGIN IMMEDIATE` ensures single instance, fences a process that loses ownership, and distinguishes a stale reused PID from a live Gateway
 - **Readiness check** — PM2 PID must match a fresh, ready Gateway lock; `/health` reports Worker, Scheduler, Watchdog and cleanup-loop failures
 - **Heartbeat** — Worker updates every 30s; new runs persist a per-run UUID in `locked_by` and launcher argv, and Watchdog signals a stale process group only when that identity and its OpenCode command match. Worker settles a normal exit only after the launcher returns a matching drain proof over private IPC; an unproved guardian exit remains quarantined until its process group is confirmed absent. Live legacy/v2 groups remain quarantined; an old run is recovered automatically only after both PID and PGID are confirmed absent.
@@ -231,7 +237,7 @@ http://localhost:4680 — 4 pages:
 
 The responsive Dashboard supports Chinese and English plus system, light, and dark themes. Language is stored in a same-site cookie, while theme preference stays in browser local storage; both survive refreshes without changing Gateway configuration.
 
-Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` also checks OpenCode, SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump. It requires the effective OpenCode plugin configuration to use one exact version, verifies that exact cache package, and compares it with the actual PM2 Gateway entry and ready-lock version; floating `@latest`/`@next` Gateway paths fail diagnostics. A global CLI version mismatch is reported with the exact reinstall command but does not make a healthy Gateway unhealthy.
+Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` also checks OpenCode, SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump. It requires the effective OpenCode plugin configuration to use one exact version, verifies that exact cache package, and compares it with the global CLI, actual PM2 Gateway entry, and ready-lock version; floating `@latest`/`@next` paths or any component version mismatch fail diagnostics.
 
 | Page | Features |
 |------|----------|
@@ -262,7 +268,7 @@ MIT
 
 SuperTask 是一个基于 SQLite 的 AI Agent 任务调度系统，专为 [OpenCode](https://opencode.ai) 设计。
 
-详细文档：[当前架构与决策](docs/architecture.md) · [运行与排障手册](docs/operations.md) · [文档索引](docs/README.md)
+详细文档：[更新记录](CHANGELOG.md) · [当前架构与决策](docs/architecture.md) · [运行与排障手册](docs/operations.md) · [文档索引](docs/README.md)
 
 ### 安装
 
@@ -285,7 +291,43 @@ supertask gateway   # 前台运行：不需要 pm2
 
 插件不会自行安装全局依赖。Gateway 未运行时仍可管理队列，但不会执行排队/定时任务，也不会启动 Web 控制台。
 
-升级无需卸载，执行 `supertask upgrade`。它会精确安装最新插件并替换 Gateway；重启 OpenCode 后生效。全局 CLI 由 npm 或 Bun 安装，命令不会猜测并静默更换包管理器；若 doctor 提示版本落后，用原包管理器安装输出中的精确版本（`npm install -g` 或 `bun add -g`）。
+升级无需卸载，执行 `supertask upgrade`。它会精确安装最新插件、替换 Gateway，并根据全局 `supertask` 的真实路径识别 npm 或 Bun 后同步 CLI；无法安全确认包管理器时会明确失败并给出精确命令。`doctor` 把 CLI、插件、Gateway 任一版本不一致视为异常。由于 0.1.33 及更早版本还不具备 CLI 自动同步能力，从这些版本升级时先用原包管理器安装一次新 CLI，再运行新版 `supertask upgrade`。
+
+请在手动执行 `opencode run --agent <名称>` 能工作的同一个终端环境中运行 `supertask install` 或 `supertask upgrade`。显式安装/升级会刷新 Gateway 使用的 OpenCode、XDG 与模型 Provider 执行环境，同时固定已经验证的 Bun、PM2、数据库/配置作用域，并保留完整旧环境用于失败回滚。这能避免自定义主 Agent 在终端正常、但 Gateway 仍沿用旧 Provider 凭据或旧 OpenCode 配置目录。
+
+### 快速开始
+
+启动 Gateway 后，可以直接打开 Web 管理界面：
+
+```bash
+supertask ui          # 打开 http://127.0.0.1:4680
+```
+
+“任务队列”页可按项目目录查看、创建和编辑普通任务，设置 Agent、模型、提示词、优先级、批次、重试和超时；“定时任务”页可创建和编辑 cron、延迟执行与循环任务。并发已满时新任务仍会成功入队并等待，不会因当下没有空位而拒绝创建。
+
+### CLI 语言与命令速查
+
+CLI 帮助以及 `doctor`、数据库维护命令的交互式摘要支持中英文。默认 `auto`：系统 locale 以 `zh` 开头时显示中文，否则显示英文。可以显式切换：
+
+```bash
+supertask --lang zh-CN --help
+supertask --lang en add --help
+SUPERTASK_LANG=zh-CN supertask doctor
+```
+
+语言设置不改变 JSON 字段和后端原始诊断错误，Agent、管道与脚本仍可稳定解析。
+
+```bash
+# Gateway 与诊断
+supertask install | uninstall | gateway | ui | doctor
+
+# 普通任务
+supertask add | edit | list | get | status | retry | cancel | delete
+
+# 定时任务与数据库
+supertask template add | list | enable | disable | delete
+supertask db check | backup | clear | restore
+```
 
 ### 卸载
 
@@ -346,14 +388,14 @@ SuperTask 的定时器会生成普通的持久队列任务，因此定时任务�
 - **任务队列** — `cwd` 项目分组与查询隔离、优先级调度、全局同批次串行、依赖管理；工作目录必须是已存在的绝对目录
 - **安全停止** — 默认等待在途任务 30 秒；只有确认整棵进程树退出的任务才会被重新排队
 - **进程守护** — 可选 pm2 崩溃恢复；PM2 kill timeout 不低于 Worker drain 宽限期加 15 秒，`stop/delete` 至少再等待 5 秒并在返回前持续持有可崩溃释放的 SQLite 生命周期锁，macOS 监督器不会击穿 PM2 的 `errored` 熔断；显式 `supertask install` 同时安装/配置有限保留的日志轮转，插件加载不会安装全局依赖
-- **版本感知重启** — 已安装 pm2 时，插件加载会在包版本变化后安全替换 Gateway；旧环境无法执行 PM2 时会在删除前拒绝操作，否则保留原运行环境并在失败时回滚
+- **版本感知重启** — 自动恢复继续使用原 PM2 运行环境；显式安装/升级会刷新 OpenCode/Provider 执行环境，同时固定原 PM2、Bun、数据库与配置身份。旧环境无法执行 PM2 时会在删除前拒绝操作，新环境启动失败时完整回滚旧环境
 - **外部升级边界** — Gateway 管理的 OpenCode 任务不能调用 `supertask_upgrade`；升级必须从外部 CLI 或非队列交互会话发起，避免任务终止承载自己的 Gateway
 - **定时任务** — cron / delayed / recurring，支持友好时间格式；`maxInstances` 限制自动调度，手动“立即运行一次”始终入队并在全局并发已满时等待
 - **Web 控制台** — 按项目目录显示运行/排队/异常数量，可创建和编辑带模型、提示词、优先级、批次、重试与超时的普通任务，也可创建和编辑定时任务；普通任务编辑保持 `cwd` 不变且拒绝运行中/终态任务；支持区分已保存/正在生效的配置、PM2 托管时保存并重启、自动备份后事务性清空数据库、中英文、跟随系统/浅色/深色主题和移动端布局
 - **Session 追踪** — 自动从 opencode run 输出中捕获 session ID；任务页和执行记录页可复制经过校验的 `opencode --session …` 命令继续会话
 - **安全删除** — 活跃执行必须先取消并收敛；仍被可执行任务依赖的前置任务也不会被误删
 - **安全重试** — 仅在依赖仍存在、同项目且可恢复时重置任务，历史清理并发时不会制造悬空 `pending`
-- **一键诊断** — `supertask doctor` 检查真实 OpenCode、精确锁定的插件配置/缓存、全局 CLI 提示、PM2 实际 Gateway 入口与 ready 锁版本、SQLite、Dashboard、日志轮转和 macOS 重启恢复链路；浮动 `@latest`/`@next` Gateway 路径会判异常
+- **一键诊断** — `supertask doctor` 检查真实 OpenCode、精确锁定的插件配置/缓存、全局 CLI、PM2 实际 Gateway 入口与 ready 锁版本、SQLite、Dashboard、日志轮转和 macOS 重启恢复链路；浮动 `@latest`/`@next` 路径或任一组件版本不一致都会判异常
 
 ### 数据库维护
 
@@ -385,3 +427,10 @@ supertask db check | jq '.counts'
 
 - 数据库：`~/.local/share/opencode/tasks.db`
 - 配置：`~/.config/opencode/supertask.json`
+
+### 运行要求
+
+- Bun 1.1.45 或更高版本
+- OpenCode
+- Gateway Worker 当前支持 macOS 与 Linux；Windows 在 Job Object 进程树隔离完成前拒绝启动
+- PM2 只在运行 `supertask install` 时显式安装/使用；前台 `supertask gateway` 不依赖 PM2

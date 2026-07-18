@@ -455,7 +455,8 @@ export class WorkerEngine {
 
         const failure = code === 0
             ? undefined
-            : `${spawnError ? '无法启动 opencode' : 'opencode 退出码'} ${spawnError?.message ?? code ?? 'null'}${signal ? `，信号 ${signal}` : ''}`;
+            : `${spawnError ? '无法启动 opencode' : 'opencode 退出码'} ${spawnError?.message ?? code ?? 'null'}${signal ? `，信号 ${signal}` : ''}`
+                + `（agent=${entry.task.agent}，model=${this.resolveModel(entry.task.model) ?? 'Agent/默认配置'}，cwd=${entry.task.cwd ?? process.cwd()}）`;
         this.runDetached(
             this.settleEntry(entry, code, failure),
             'task settlement failed',

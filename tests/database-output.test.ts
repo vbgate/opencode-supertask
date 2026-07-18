@@ -23,7 +23,7 @@ describe('数据库 CLI 输出格式', () => {
         expect(output).toContain('✓ 数据库检查通过');
         expect(output).toContain('数据库：/tmp/任务数据库.db');
         expect(output).toContain('大小：288 KiB');
-        expect(output).toContain('任务 376 · 执行记录 243 · 调度模板 2');
+        expect(output).toContain('任务 376 · 执行记录 243 · 定时任务模板 2');
         expect(output).not.toStartWith('{');
     });
 
@@ -43,7 +43,7 @@ describe('数据库 CLI 输出格式', () => {
             gateway: { wasRunning: true, restarted: true, keptStopped: false },
         }, { isTTY: true });
         expect(clear).toContain('✓ 数据库已安全清空');
-        expect(clear).toContain('已删除：任务 376 · 执行记录 243 · 调度模板 2');
+        expect(clear).toContain('已删除：任务 376 · 执行记录 243 · 定时任务模板 2');
         expect(clear).toContain('Gateway：已自动停止、重启并恢复就绪');
         expect(clear).toContain('安全备份：/tmp/清空前备份.db');
 
@@ -67,6 +67,14 @@ describe('数据库 CLI 输出格式', () => {
 
         const forced = renderDatabaseResult('check', check, { isTTY: true, forceJson: true });
         expect(JSON.parse(forced)).toEqual(check);
+    });
+
+    test('英文 TTY 输出保留相同数据与操作语义', () => {
+        const output = renderDatabaseResult('check', check, { isTTY: true, locale: 'en' });
+        expect(output).toContain('✓ Database check passed');
+        expect(output).toContain('Database: /tmp/任务数据库.db');
+        expect(output).toContain('tasks 376 · runs 243 · scheduled templates 2');
+        expect(output).not.toStartWith('{');
     });
 
     test('错误同样遵循 TTY 人类格式与 JSON 兼容策略', () => {

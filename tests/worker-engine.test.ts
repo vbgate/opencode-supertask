@@ -212,6 +212,9 @@ describe('WorkerEngine', () => {
         const runs = await TaskRunService.listByTaskId(task.id);
 
         expect(failed.resultLog).toContain('退出码 7');
+        expect(failed.resultLog).toContain('agent=test-agent');
+        expect(failed.resultLog).toContain('model=Agent/默认配置');
+        expect(failed.resultLog).not.toContain('guardian 未提供进程树排空证明');
         expect(runs[0].status).toBe('failed');
         expect(runs[0].log).toContain('退出码 7');
     });

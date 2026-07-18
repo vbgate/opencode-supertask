@@ -1,4 +1,4 @@
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { TaskService, type EditableTaskUpdate } from '@core/services/task.service';
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
@@ -24,6 +24,10 @@ import {
     parseTaskStatus,
 } from './validation';
 import { getOpenCodePluginDiagnostic } from '../daemon/update';
+import { cliText, resolveCliLocale } from './i18n';
+
+const cliLocale = resolveCliLocale();
+const t = (zh: string, en: string): string => cliText(cliLocale, zh, en);
 
 async function withDb<T>(
     fn: () => Promise<T>,
@@ -62,25 +66,40 @@ const program = new Command();
 
 program
     .name('supertask')
-    .description('通用任务管理系统 - AI Agent 任务调度器')
-    .version(getPackageVersion());
+    .description(t('面向 OpenCode Agent 的持久化任务队列与定时任务系统', 'Durable task queue and scheduler for OpenCode agents'))
+    .addOption(new Option('--lang <language>', t('CLI 语言：auto / zh-CN / en', 'CLI language: auto / zh-CN / en'))
+        .choices(['auto', 'zh-CN', 'en'])
+        .default('auto'))
+    .helpOption('-h, --help', t('显示帮助', 'display help for command'))
+    .addHelpCommand('help [command]', t('显示命令帮助', 'display help for command'))
+    .version(getPackageVersion(), '-V, --version', t('显示版本号', 'output the version number'));
+
+if (cliLocale === 'zh-CN') {
+    program.configureOutput({
+        writeOut: (value) => process.stdout.write(value
+            .replace(/^Usage:/gm, '用法：')
+            .replace(/^Options:/gm, '选项：')
+            .replace(/^Commands:/gm, '命令：')
+            .replace(/^Arguments:/gm, '参数：')),
+    });
+}
 
 program
     .command('add')
-    .description('创建新任务')
-    .requiredOption('-n, --name <name>', '任务名称')
-    .requiredOption('-a, --agent <agent>', '主 Agent 名称')
-    .requiredOption('-p, --prompt <prompt>', '提示词')
-    .option('-m, --model <model>', '模型')
-    .option('-c, --category <category>', '分类', 'general')
-    .option('-i, --importance <number>', '重要程度 (1-5)', '3')
-    .option('-u, --urgency <number>', '紧急程度 (1-5)', '3')
-    .option('-b, --batch <batchId>', '批次 ID')
-    .option('-d, --depends <taskId>', '依赖的任务 ID')
-    .option('--max-retries <number>', '首次执行之外允许的重试次数', '3')
-    .option('--retry-backoff <duration>', '重试退避基础间隔，如 30s / 5min', '30s')
-    .option('--timeout <duration>', '任务硬超时，如 30min / 2h')
-    .option('-w, --cwd <path>', '(已废弃) 工作目录。系统会自动记录提交任务时的当前目录')
+    .description(t('创建新任务', 'create a queued task'))
+    .requiredOption('-n, --name <name>', t('任务名称', 'task name'))
+    .requiredOption('-a, --agent <agent>', t('主 Agent 名称', 'primary agent name'))
+    .requiredOption('-p, --prompt <prompt>', t('提示词', 'prompt'))
+    .option('-m, --model <model>', t('模型', 'model'))
+    .option('-c, --category <category>', t('分类', 'category'), 'general')
+    .option('-i, --importance <number>', t('重要程度 (1-5)', 'importance (1-5)'), '3')
+    .option('-u, --urgency <number>', t('紧急程度 (1-5)', 'urgency (1-5)'), '3')
+    .option('-b, --batch <batchId>', t('批次 ID', 'batch ID'))
+    .option('-d, --depends <taskId>', t('依赖的任务 ID', 'dependency task ID'))
+    .option('--max-retries <number>', t('首次执行之外允许的重试次数', 'retries allowed after the first attempt'), '3')
+    .option('--retry-backoff <duration>', t('重试退避基础间隔，如 30s / 5min', 'retry backoff base, e.g. 30s / 5min'), '30s')
+    .option('--timeout <duration>', t('任务硬超时，如 30min / 2h', 'hard timeout, e.g. 30min / 2h'))
+    .option('-w, --cwd <path>', t('(已废弃) 系统会自动记录提交时的当前目录', '(deprecated) the submission directory is recorded automatically'))
     .action(async (options) => withDb(async () => {
         const submitCwd = process.cwd();
         const retryBackoffMs = parseDuration(options.retryBackoff);
@@ -108,21 +127,21 @@ program
 
 program
     .command('edit')
-    .description('修改当前项目中尚未完成的任务')
-    .requiredOption('--id <id>', '任务 ID')
-    .option('-n, --name <name>', '任务名称')
-    .option('-a, --agent <agent>', 'Agent 名称')
-    .option('-m, --model <model>', '模型')
-    .option('-p, --prompt <prompt>', '提示词')
-    .option('-c, --category <category>', '分类')
-    .option('-i, --importance <number>', '重要程度 (1-5)')
-    .option('-u, --urgency <number>', '紧急程度 (1-5)')
-    .option('-b, --batch <batchId>', '批次 ID')
-    .option('--clear-batch', '清空批次 ID')
-    .option('--max-retries <number>', '首次执行之外允许的重试次数')
-    .option('--retry-backoff <duration>', '重试退避基础间隔，如 30s / 5min')
-    .option('--timeout <duration>', '任务硬超时，如 30min / 2h')
-    .option('--clear-timeout', '清空任务级超时，改用 Gateway 默认值')
+    .description(t('修改当前项目中尚未完成的任务', 'edit an unfinished task in the current project'))
+    .requiredOption('--id <id>', t('任务 ID', 'task ID'))
+    .option('-n, --name <name>', t('任务名称', 'task name'))
+    .option('-a, --agent <agent>', t('Agent 名称', 'agent name'))
+    .option('-m, --model <model>', t('模型', 'model'))
+    .option('-p, --prompt <prompt>', t('提示词', 'prompt'))
+    .option('-c, --category <category>', t('分类', 'category'))
+    .option('-i, --importance <number>', t('重要程度 (1-5)', 'importance (1-5)'))
+    .option('-u, --urgency <number>', t('紧急程度 (1-5)', 'urgency (1-5)'))
+    .option('-b, --batch <batchId>', t('批次 ID', 'batch ID'))
+    .option('--clear-batch', t('清空批次 ID', 'clear the batch ID'))
+    .option('--max-retries <number>', t('首次执行之外允许的重试次数', 'retries allowed after the first attempt'))
+    .option('--retry-backoff <duration>', t('重试退避基础间隔，如 30s / 5min', 'retry backoff base, e.g. 30s / 5min'))
+    .option('--timeout <duration>', t('任务硬超时，如 30min / 2h', 'hard timeout, e.g. 30min / 2h'))
+    .option('--clear-timeout', t('清空任务级超时，改用 Gateway 默认值', 'clear the task timeout and use the Gateway default'))
     .action(async (options) => withDb(async () => {
         if (options.batch !== undefined && options.clearBatch) {
             throw new Error('batch 和 clear-batch 不能同时使用');
@@ -164,7 +183,7 @@ program
 
 program
     .command('next')
-    .description('获取下一个待执行的任务')
+    .description(t('获取下一个待执行的任务', 'show the next runnable task'))
     .action(async () => withDb(async () => {
         const task = await TaskService.next({ cwd: process.cwd() });
         if (task) {
@@ -186,8 +205,8 @@ program
 
 program
     .command('cancel')
-    .description('取消任务')
-    .requiredOption('--id <id>', '任务 ID')
+    .description(t('取消任务', 'cancel a task'))
+    .requiredOption('--id <id>', t('任务 ID', 'task ID'))
     .action(async (options) => withDb(async () => {
         const task = await TaskService.cancel(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
         if (task) {
@@ -199,13 +218,13 @@ program
     }));
 
 const runCommand = new Command('run')
-    .description('管理隔离的执行记录');
+    .description(t('管理隔离的执行记录', 'manage quarantined task runs'));
 
 runCommand
     .command('abandon')
-    .description('人工关闭已确认不存在遗留进程的旧版无 PID 隔离记录')
-    .requiredOption('--id <id>', '执行记录 run ID')
-    .option('--confirm <word>', '危险操作确认，必须填写 ABANDON')
+    .description(t('人工关闭已确认不存在遗留进程的旧版无 PID 隔离记录', 'close a legacy no-PID quarantine after confirming no process remains'))
+    .requiredOption('--id <id>', t('执行记录 run ID', 'run ID'))
+    .option('--confirm <word>', t('危险操作确认，必须填写 ABANDON', 'confirmation word; must be ABANDON'))
     .action(async (options: { id: string; confirm?: string }) => withDb(async () => {
         if (options.confirm !== 'ABANDON') {
             throw new Error('关闭旧版隔离 run 必须显式传入 --confirm ABANDON');
@@ -220,9 +239,9 @@ program.addCommand(runCommand);
 
 program
     .command('retry')
-    .description('重试失败的任务')
-    .option('--id <id>', '任务 ID')
-    .option('-b, --batch <batchId>', '批次 ID（批量重试）')
+    .description(t('重试失败的任务', 'retry failed tasks'))
+    .option('--id <id>', t('任务 ID', 'task ID'))
+    .option('-b, --batch <batchId>', t('批次 ID（批量重试）', 'batch ID for bulk retry'))
     .action(async (options) => withDb(async () => {
         if (options.id) {
             const task = await TaskService.retry(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
@@ -243,8 +262,8 @@ program
 
 program
     .command('status')
-    .description('查看任务统计')
-    .option('-b, --batch <batchId>', '按批次统计')
+    .description(t('查看任务统计', 'show task counts'))
+    .option('-b, --batch <batchId>', t('按批次统计', 'filter counts by batch'))
     .action(async (options) => withDb(async () => {
         const stats = await TaskService.stats({ batchId: options.batch, cwd: process.cwd() });
         console.log(JSON.stringify(stats, null, 2));
@@ -252,11 +271,11 @@ program
 
 program
     .command('list')
-    .description('列出任务')
-    .option('-s, --status <status>', '按状态筛选')
-    .option('-b, --batch <batchId>', '按批次筛选')
-    .option('-c, --category <category>', '按分类筛选')
-    .option('-l, --limit <number>', '限制数量', '20')
+    .description(t('列出任务', 'list tasks'))
+    .option('-s, --status <status>', t('按状态筛选', 'filter by status'))
+    .option('-b, --batch <batchId>', t('按批次筛选', 'filter by batch'))
+    .option('-c, --category <category>', t('按分类筛选', 'filter by category'))
+    .option('-l, --limit <number>', t('限制数量', 'maximum rows'), '20')
     .action(async (options) => withDb(async () => {
         const tasks = await TaskService.list({
             status: parseTaskStatus(options.status),
@@ -270,8 +289,8 @@ program
 
 program
     .command('get')
-    .description('获取单个任务详情')
-    .requiredOption('--id <id>', '任务 ID')
+    .description(t('获取单个任务详情', 'show one task'))
+    .requiredOption('--id <id>', t('任务 ID', 'task ID'))
     .action(async (options) => withDb(async () => {
         const task = await TaskService.getById(parsePositiveInteger(options.id, 'id'), { cwd: process.cwd() });
         if (task) {
@@ -284,8 +303,8 @@ program
 
 program
     .command('delete')
-    .description('删除任务')
-    .requiredOption('--id <id>', '任务 ID')
+    .description(t('删除任务', 'delete a task'))
+    .requiredOption('--id <id>', t('任务 ID', 'task ID'))
     .action(async (options) => withDb(async () => {
         const id = parsePositiveInteger(options.id, 'id');
         const deleted = await TaskService.delete(id, { cwd: process.cwd() });
@@ -294,26 +313,26 @@ program
 
 program
     .command('template')
-    .description('管理任务调度模板')
+    .description(t('管理定时任务模板', 'manage scheduled task templates'))
     .addCommand(
         new Command('add')
-            .description('创建调度模板')
-            .requiredOption('-n, --name <name>', '模板名称')
-            .requiredOption('-a, --agent <agent>', 'Agent 名称')
-            .requiredOption('-p, --prompt <prompt>', '提示词')
-            .requiredOption('-t, --type <type>', '调度类型：cron/delayed/recurring')
-            .option('--cron <expr>', 'cron 表达式（cron 类型必填）')
-            .option('--delay <duration>', '延迟时间（delayed 类型必填），如 30s / 5min / 1h / 2d')
-            .option('--interval <duration>', '循环间隔（recurring 类型必填），如 1h / 30min / 5s')
-            .option('-m, --model <model>', '模型')
-            .option('-c, --category <category>', '分类', 'general')
-            .option('-i, --importance <number>', '重要程度 1-5', '3')
-            .option('-u, --urgency <number>', '紧急程度 1-5', '3')
-            .option('-b, --batch <batchId>', '模板生成任务的批次 ID')
-            .option('--max-instances <number>', '自动调度活跃实例上限（手动触发不受限）', '1')
-            .option('--max-retries <number>', '最大重试次数', '3')
-            .option('--retry-backoff <duration>', '退避基础间隔，如 30s / 5min', '30s')
-            .option('--timeout <duration>', '每次任务硬超时，如 30min / 2h')
+            .description(t('创建定时任务模板', 'create a scheduled task template'))
+            .requiredOption('-n, --name <name>', t('模板名称', 'template name'))
+            .requiredOption('-a, --agent <agent>', t('Agent 名称', 'agent name'))
+            .requiredOption('-p, --prompt <prompt>', t('提示词', 'prompt'))
+            .requiredOption('-t, --type <type>', t('定时类型：cron/delayed/recurring', 'schedule type: cron/delayed/recurring'))
+            .option('--cron <expr>', t('cron 表达式（cron 类型必填）', 'cron expression (required for cron)'))
+            .option('--delay <duration>', t('延迟时间（delayed 必填），如 30s / 5min / 1h / 2d', 'delay (required for delayed), e.g. 30s / 5min / 1h / 2d'))
+            .option('--interval <duration>', t('循环间隔（recurring 必填），如 1h / 30min / 5s', 'interval (required for recurring), e.g. 1h / 30min / 5s'))
+            .option('-m, --model <model>', t('模型', 'model'))
+            .option('-c, --category <category>', t('分类', 'category'), 'general')
+            .option('-i, --importance <number>', t('重要程度 1-5', 'importance 1-5'), '3')
+            .option('-u, --urgency <number>', t('紧急程度 1-5', 'urgency 1-5'), '3')
+            .option('-b, --batch <batchId>', t('模板生成任务的批次 ID', 'batch ID for generated tasks'))
+            .option('--max-instances <number>', t('自动定时任务的活跃实例上限（立即触发不受限）', 'active instance limit for automatic scheduling (Run now is unrestricted)'), '1')
+            .option('--max-retries <number>', t('最大重试次数', 'maximum retries'), '3')
+            .option('--retry-backoff <duration>', t('退避基础间隔，如 30s / 5min', 'retry backoff base, e.g. 30s / 5min'), '30s')
+            .option('--timeout <duration>', t('每次任务硬超时，如 30min / 2h', 'hard timeout per task, e.g. 30min / 2h'))
             .action(async (options) => withDb(async () => {
                 let intervalMs: number | null = null;
                 let runAt: number | null = null;
@@ -364,7 +383,7 @@ program
     )
     .addCommand(
         new Command('list')
-            .description('列出调度模板')
+            .description(t('列出定时任务模板', 'list scheduled task templates'))
             .action(async () => withDb(async () => {
                 const templates = await TaskTemplateService.list();
                 console.log(JSON.stringify(templates, null, 2));
@@ -372,8 +391,8 @@ program
     )
     .addCommand(
         new Command('enable')
-            .description('启用模板')
-            .requiredOption('--id <id>', '模板 ID')
+            .description(t('启用模板', 'enable a template'))
+            .requiredOption('--id <id>', t('模板 ID', 'template ID'))
             .action(async (options) => withDb(async () => {
                 const tmpl = await TaskTemplateService.enable(parsePositiveInteger(options.id, 'id'));
                 if (tmpl) {
@@ -386,8 +405,8 @@ program
     )
     .addCommand(
         new Command('disable')
-            .description('禁用模板')
-            .requiredOption('--id <id>', '模板 ID')
+            .description(t('禁用模板', 'disable a template'))
+            .requiredOption('--id <id>', t('模板 ID', 'template ID'))
             .action(async (options) => withDb(async () => {
                 const tmpl = await TaskTemplateService.disable(parsePositiveInteger(options.id, 'id'));
                 if (tmpl) {
@@ -400,8 +419,8 @@ program
     )
     .addCommand(
         new Command('delete')
-            .description('删除模板')
-            .requiredOption('--id <id>', '模板 ID')
+            .description(t('删除模板', 'delete a template'))
+            .requiredOption('--id <id>', t('模板 ID', 'template ID'))
             .action(async (options) => withDb(async () => {
                 const id = parsePositiveInteger(options.id, 'id');
                 const deleted = await TaskTemplateService.delete(id);
@@ -410,34 +429,34 @@ program
     );
 
 const databaseCommand = new Command('db')
-    .description('数据库检查、备份、清空与恢复');
+    .description(t('数据库检查、备份、清空与恢复', 'check, back up, clear, and restore the database'));
 
 databaseCommand
     .command('check')
-    .description('检查数据库完整性、外键和业务表统计')
-    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .description(t('检查数据库完整性、外键和业务表统计', 'check integrity, foreign keys, and table counts'))
+    .option('--json', t('强制输出 JSON（非交互调用默认已输出 JSON）', 'force JSON output (already the default when non-interactive)'))
     .action(async (options: { json?: boolean }) => withDb(async () => {
         const result = DatabaseMaintenanceService.check();
-        console.log(renderDatabaseResult('check', result, { forceJson: options.json }));
+        console.log(renderDatabaseResult('check', result, { forceJson: options.json, locale: cliLocale }));
         if (!result.ok) process.exitCode = 1;
     }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand
     .command('backup')
-    .description('创建经过完整性校验的一致性备份')
-    .option('-o, --output <path>', '备份文件路径（默认写入数据库目录）')
-    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .description(t('创建经过完整性校验的一致性备份', 'create a consistent, integrity-checked backup'))
+    .option('-o, --output <path>', t('备份文件路径（默认写入数据库目录）', 'backup path (defaults to the database directory)'))
+    .option('--json', t('强制输出 JSON（非交互调用默认已输出 JSON）', 'force JSON output (already the default when non-interactive)'))
     .action(async (options: { output?: string; json?: boolean }) => withDb(async () => {
         const result = DatabaseMaintenanceService.backup(options.output);
-        console.log(renderDatabaseResult('backup', result, { forceJson: options.json }));
+        console.log(renderDatabaseResult('backup', result, { forceJson: options.json, locale: cliLocale }));
     }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand
     .command('clear')
-    .description('备份后事务性清空任务、执行记录和调度模板')
-    .option('--confirm <word>', '危险操作确认，必须填写 CLEAR')
-    .option('--keep-stopped', '维护结束后不重启原本由 PM2 管理的 Gateway')
-    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .description(t('备份后事务性清空任务、执行记录和定时任务模板', 'back up, then transactionally clear tasks, runs, and scheduled templates'))
+    .option('--confirm <word>', t('危险操作确认，必须填写 CLEAR', 'confirmation word; must be CLEAR'))
+    .option('--keep-stopped', t('维护结束后不重启原本由 PM2 管理的 Gateway', 'leave a previously managed Gateway stopped'))
+    .option('--json', t('强制输出 JSON（非交互调用默认已输出 JSON）', 'force JSON output (already the default when non-interactive)'))
     .action(async (options: { confirm?: string; keepStopped?: boolean; json?: boolean }) => withDb(async () => {
         if (options.confirm !== 'CLEAR') {
             throw new Error('清空数据库必须显式传入 --confirm CLEAR');
@@ -446,16 +465,16 @@ databaseCommand
             options.keepStopped ?? false,
             () => DatabaseMaintenanceService.clear(),
         );
-        console.log(renderDatabaseResult('clear', result, { forceJson: options.json }));
+        console.log(renderDatabaseResult('clear', result, { forceJson: options.json, locale: cliLocale }));
     }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 databaseCommand
     .command('restore')
-    .description('自动备份当前库后，从指定备份恢复数据库')
-    .requiredOption('--from <path>', '要恢复的 SQLite 备份文件')
-    .option('--confirm <word>', '危险操作确认，必须填写 RESTORE')
-    .option('--keep-stopped', '维护结束后不重启原本由 PM2 管理的 Gateway')
-    .option('--json', '强制输出 JSON（非交互调用默认已输出 JSON）')
+    .description(t('自动备份当前库后，从指定备份恢复数据库', 'back up the live database, then restore from a backup'))
+    .requiredOption('--from <path>', t('要恢复的 SQLite 备份文件', 'SQLite backup to restore'))
+    .option('--confirm <word>', t('危险操作确认，必须填写 RESTORE', 'confirmation word; must be RESTORE'))
+    .option('--keep-stopped', t('维护结束后不重启原本由 PM2 管理的 Gateway', 'leave a previously managed Gateway stopped'))
+    .option('--json', t('强制输出 JSON（非交互调用默认已输出 JSON）', 'force JSON output (already the default when non-interactive)'))
     .action(async (options: { from: string; confirm?: string; keepStopped?: boolean; json?: boolean }) => withDb(async () => {
         if (options.confirm !== 'RESTORE') {
             throw new Error('恢复数据库必须显式传入 --confirm RESTORE');
@@ -464,14 +483,14 @@ databaseCommand
             options.keepStopped ?? false,
             () => DatabaseMaintenanceService.restore(options.from),
         );
-        console.log(renderDatabaseResult('restore', result, { forceJson: options.json }));
+        console.log(renderDatabaseResult('restore', result, { forceJson: options.json, locale: cliLocale }));
     }, (error) => renderDatabaseError(error, { forceJson: options.json })));
 
 program.addCommand(databaseCommand);
 
 program
     .command('init')
-    .description('Initialize SuperTask (create config + run migrations)')
+    .description(t('初始化 SuperTask（创建配置并执行迁移）', 'initialize SuperTask (create config and run migrations)'))
     .action(async () => withDb(async () => {
         const { existsSync, mkdirSync, writeFileSync } = await import('fs');
         const { dirname } = await import('path');
@@ -498,7 +517,7 @@ program
 
 program
     .command('migrate')
-    .description('Run database migrations')
+    .description(t('执行数据库迁移', 'run database migrations'))
     .action(async () => withDb(async () => {
         const { getDb } = await import('@core/db');
         getDb();
@@ -507,7 +526,7 @@ program
 
 program
     .command('gateway')
-    .description('Start the Gateway process (foreground)')
+    .description(t('在前台启动 Gateway', 'start the Gateway in the foreground'))
     .action(async () => {
         const { main } = await import('@gateway/index');
         await main();
@@ -515,7 +534,7 @@ program
 
 program
     .command('ui')
-    .description('Open Web Dashboard (embedded in Gateway)')
+    .description(t('打开 Gateway 内置的 Web 管理界面', 'open the Web Dashboard embedded in the Gateway'))
     .action(async () => {
         const { loadConfig } = await import('@gateway/config');
         const cfg = loadConfig();
@@ -530,7 +549,7 @@ program
 
 program
     .command('config')
-    .description('Show current configuration')
+    .description(t('显示当前配置', 'show the current configuration'))
     .action(async () => {
         const { loadConfig } = await import('@gateway/config');
         const cfg = loadConfig();
@@ -539,8 +558,8 @@ program
 
 program
     .command('doctor')
-    .description('检查 OpenCode、数据库、Gateway、Dashboard 和日志轮转')
-    .option('--json', '强制输出 JSON')
+    .description(t('检查 OpenCode、数据库、Gateway、Web 界面和日志轮转', 'diagnose OpenCode, database, Gateway, Dashboard, and log rotation'))
+    .option('--json', t('强制输出 JSON', 'force JSON output'))
     .action(async (options: { json?: boolean }) => withDb(async () => {
         const config = loadConfig();
         const database = DatabaseMaintenanceService.check();
@@ -562,7 +581,7 @@ program
                 : null,
             error: opencodeResult.status === 0
                 ? null
-                : (opencodeResult.error?.message || opencodeResult.stderr.trim() || `退出码 ${opencodeResult.status}`),
+                : (opencodeResult.error?.message || opencodeResult.stderr.trim() || t(`退出码 ${opencodeResult.status}`, `exit code ${opencodeResult.status}`)),
         };
         const plugin = getOpenCodePluginDiagnostic();
 
@@ -592,46 +611,72 @@ program
             && gateway.runningVersion === gateway.gatewayPackageVersion;
         const configuredVersionsMatch = plugin.ok
             && plugin.version === gateway.gatewayPackageVersion;
+        const cliVersionMatchesPlugin = plugin.ok
+            && plugin.version === packageVersion;
         if (!plugin.ok && plugin.error) {
             warnings.push(plugin.error);
         }
         if (plugin.version !== null && plugin.version !== packageVersion) {
-            warnings.push(`当前 CLI v${packageVersion} 与 OpenCode 插件 v${plugin.version} 不一致；请用原包管理器全局安装 opencode-supertask@${plugin.version}（npm install -g 或 bun add -g）`);
+            warnings.push(t(
+                `当前 CLI v${packageVersion} 与 OpenCode 插件 v${plugin.version} 不一致；执行 supertask upgrade 让 CLI、插件和 Gateway 收敛到同一精确版本`,
+                `CLI v${packageVersion} does not match OpenCode plugin v${plugin.version}; run supertask upgrade to converge the CLI, plugin, and Gateway on one exact version`,
+            ));
         }
         if (!gatewayEntryPinned) {
-            warnings.push(`PM2 Gateway 仍从浮动缓存路径启动：${gateway.gatewayEntry}`);
+            warnings.push(t(
+                `PM2 Gateway 仍从浮动缓存路径启动：${gateway.gatewayEntry}`,
+                `The PM2 Gateway still starts from a floating cache path: ${gateway.gatewayEntry}`,
+            ));
         }
         if (gateway.processFound && gateway.gatewayPackageVersion === null) {
-            warnings.push(`无法从 PM2 Gateway 入口确认 opencode-supertask 包版本：${gateway.gatewayEntry ?? 'unknown'}`);
+            warnings.push(t(
+                `无法从 PM2 Gateway 入口确认 opencode-supertask 包版本：${gateway.gatewayEntry ?? 'unknown'}`,
+                `Could not determine the opencode-supertask package version from the PM2 Gateway entry: ${gateway.gatewayEntry ?? 'unknown'}`,
+            ));
         } else if (gateway.processFound && !gatewayVersionMatchesPackage) {
-            warnings.push(`Gateway ready 锁版本 ${gateway.runningVersion ?? 'unknown'} 与入口包版本 ${gateway.gatewayPackageVersion ?? 'unknown'} 不一致`);
+            warnings.push(t(
+                `Gateway ready 锁版本 ${gateway.runningVersion ?? 'unknown'} 与入口包版本 ${gateway.gatewayPackageVersion ?? 'unknown'} 不一致`,
+                `Gateway ready-lock version ${gateway.runningVersion ?? 'unknown'} does not match entry package version ${gateway.gatewayPackageVersion ?? 'unknown'}`,
+            ));
         }
         if (plugin.version !== null && gateway.gatewayPackageVersion !== null
             && plugin.version !== gateway.gatewayPackageVersion) {
-            warnings.push(`OpenCode 插件 v${plugin.version} 与 PM2 Gateway v${gateway.gatewayPackageVersion} 不一致；执行 supertask upgrade`);
+            warnings.push(t(
+                `OpenCode 插件 v${plugin.version} 与 PM2 Gateway v${gateway.gatewayPackageVersion} 不一致；执行 supertask upgrade`,
+                `OpenCode plugin v${plugin.version} does not match PM2 Gateway v${gateway.gatewayPackageVersion}; run supertask upgrade`,
+            ));
         }
         if (gateway.pm2Installed && !gateway.logRotationInstalled) {
-            warnings.push('未检测到 pm2-logrotate；长期运行前建议安装并限制日志保留量');
+            warnings.push(t(
+                '未检测到 pm2-logrotate；长期运行前建议安装并限制日志保留量',
+                'pm2-logrotate was not detected; install it and limit log retention before long-running use',
+            ));
         }
         if (gateway.startupConfigured === false) {
             warnings.push(process.platform === 'linux'
-                ? '未检测到已启用且包含可恢复 PM2 dump 的 systemd 自启服务'
-                : '未检测到正在运行且包含可恢复 PM2 dump 的 macOS LaunchAgent');
+                ? t('未检测到已启用且包含可恢复 PM2 dump 的 systemd 自启服务', 'No enabled systemd startup service with a recoverable PM2 dump was detected')
+                : t('未检测到正在运行且包含可恢复 PM2 dump 的 macOS LaunchAgent', 'No running macOS LaunchAgent with a recoverable PM2 dump was detected'));
         }
         if (gateway.processFound && !gateway.scopeMatches) {
-            warnings.push('当前 CLI/OpenCode 与 PM2 Gateway 的数据库、配置或 OpenCode 可执行文件作用域不一致');
+            warnings.push(t(
+                '当前 CLI/OpenCode 与 PM2 Gateway 的数据库、配置或 OpenCode 可执行文件作用域不一致',
+                'The current CLI/OpenCode database, config, or OpenCode executable scope does not match the PM2 Gateway',
+            ));
         }
         for (const run of legacyQuarantinedRuns) {
-            const cwdHint = run.taskCwd == null ? '（旧任务没有 cwd，请先在 Dashboard 取消）' : `（在 ${run.taskCwd} 执行）`;
+            const cwdHint = run.taskCwd == null
+                ? t('（旧任务没有 cwd，请先在 Dashboard 取消）', ' (the legacy task has no cwd; cancel it in the Dashboard first)')
+                : t(`（在 ${run.taskCwd} 执行）`, ` (run in ${run.taskCwd})`);
             const cancel = run.taskStatus === 'cancelled'
                 ? ''
-                : `先${cwdHint} supertask cancel --id ${run.taskId}；`;
+                : t(`先${cwdHint} supertask cancel --id ${run.taskId}；`, `first${cwdHint}: supertask cancel --id ${run.taskId}; `);
             const owner = run.ownerAlive
-                ? `owner PID ${run.workerPid} 仍存活，先确认并停止对应进程；`
+                ? t(`owner PID ${run.workerPid} 仍存活，先确认并停止对应进程；`, `owner PID ${run.workerPid} is still alive; confirm and stop it first; `)
                 : '';
-            warnings.push(
+            warnings.push(t(
                 `旧版隔离 run #${run.runId}：${owner}${cancel}确认没有遗留 OpenCode 进程后执行 supertask run abandon --id ${run.runId} --confirm ABANDON`,
-            );
+                `Legacy quarantined run #${run.runId}: ${owner}${cancel}after confirming no OpenCode process remains, run supertask run abandon --id ${run.runId} --confirm ABANDON`,
+            ));
         }
         const ok = opencode.ok
             && plugin.ok
@@ -643,6 +688,7 @@ program
             && gatewayEntryPinned
             && gatewayVersionMatchesPackage
             && configuredVersionsMatch
+            && cliVersionMatchesPlugin
             && gateway.scopeMatches
             && gateway.logRotationInstalled
             && gateway.startupConfigured !== false
@@ -650,6 +696,7 @@ program
         const report = {
             ok,
             packageVersion,
+            cliVersionMatchesPlugin,
             configPath: getConfigPath(),
             opencode,
             plugin,
@@ -665,12 +712,12 @@ program
             console.log(JSON.stringify(report, null, 2));
         } else {
             const mark = (value: boolean) => value ? '✓' : '✗';
-            console.log(`SuperTask doctor: ${ok ? '正常' : '异常'}`);
-            console.log(`${mark(opencode.ok)} OpenCode ${opencode.version ?? opencode.error ?? '不可用'}`);
-            console.log(`${mark(plugin.ok)} OpenCode 插件 ${plugin.spec || plugin.error || '未配置'}${plugin.cachedVersion ? `（缓存 v${plugin.cachedVersion}）` : ''}`);
-            console.log(`${mark(database.ok)} 数据库 ${database.path}（任务 ${database.counts.tasks}，运行中 ${database.runningTasks}）`);
+            console.log(`SuperTask doctor: ${ok ? t('正常', 'healthy') : t('异常', 'unhealthy')}`);
+            console.log(`${mark(opencode.ok)} OpenCode ${opencode.version ?? opencode.error ?? t('不可用', 'unavailable')}`);
+            console.log(`${mark(plugin.ok)} ${t('OpenCode 插件', 'OpenCode plugin')} ${plugin.spec || plugin.error || t('未配置', 'not configured')}${plugin.cachedVersion ? t(`（缓存 v${plugin.cachedVersion}）`, ` (cached v${plugin.cachedVersion})`) : ''}`);
+            console.log(`${mark(database.ok)} ${t('数据库', 'Database')} ${database.path}${t(`（任务 ${database.counts.tasks}，运行中 ${database.runningTasks}）`, ` (tasks ${database.counts.tasks}, running ${database.runningTasks})`)}`);
             console.log(`${mark(gateway.status === 'online' && gateway.ready && gatewayEntryPinned && gatewayVersionMatchesPackage)} Gateway ${gateway.status ?? 'missing'}${gateway.pid ? `，PID ${gateway.pid}` : ''}${gateway.runningVersion ? `，v${gateway.runningVersion}` : ''}${gateway.gatewayEntry ? `，${gateway.gatewayEntry}` : ''}`);
-            console.log(`${mark(dashboard.ok)} Dashboard ${dashboard.enabled ? dashboard.url : '已禁用'}`);
+            console.log(`${mark(dashboard.ok)} Dashboard ${dashboard.enabled ? dashboard.url : t('已禁用', 'disabled')}`);
             for (const warning of warnings) console.log(`! ${warning}`);
         }
         if (!ok) process.exitCode = 1;
@@ -678,7 +725,7 @@ program
 
 program
     .command('install')
-    .description('Install Gateway as pm2 service (auto-start, crash recovery, log rotation)')
+    .description(t('用 PM2 安装 Gateway（开机启动、崩溃恢复、日志轮转）', 'install the Gateway with PM2 (startup, crash recovery, log rotation)'))
     .action(async () => {
         try {
             const { install: pm2Install } = await import('../daemon/pm2');
@@ -691,7 +738,7 @@ program
 
 program
     .command('uninstall')
-    .description('Stop and remove Gateway pm2 service')
+    .description(t('停止并移除 PM2 Gateway', 'stop and remove the PM2 Gateway'))
     .action(async () => {
         try {
             const { uninstall: pm2Uninstall } = await import('../daemon/pm2');
@@ -704,16 +751,17 @@ program
 
 program
     .command('upgrade')
-    .description('Update OpenCode plugin cache and restart Gateway')
+    .description(t('更新 OpenCode 插件缓存并重启 Gateway', 'update the OpenCode plugin cache and restart the Gateway'))
     .action(async () => {
-        console.log('Updating opencode-supertask...');
+        console.log(t('正在更新 opencode-supertask...', 'Updating opencode-supertask...'));
         let installed: { gatewayEntry: string; version: string };
         let previousVersion: string;
         try {
             const { resolveInstalledPlugin } = await import('../daemon/update');
             previousVersion = resolveInstalledPlugin().version;
         } catch (error) {
-            console.error(`无法确认当前 OpenCode 插件版本，已取消升级: ${error instanceof Error ? error.message : String(error)}`);
+            console.error(t('无法确认当前 OpenCode 插件版本，已取消升级：', 'Could not determine the current OpenCode plugin version; upgrade cancelled: ')
+                + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
         }
         try {
@@ -728,17 +776,40 @@ program
                 detail += `; OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
             }
             console.error(detail);
-            console.error('Try manually: query npm dist-tags.latest, then install that exact version with opencode plugin.');
+            console.error(t(
+                '可人工查询 npm dist-tags.latest，再用 opencode plugin 安装该精确版本。',
+                'Try manually: query npm dist-tags.latest, then install that exact version with opencode plugin.',
+            ));
             process.exit(1);
         }
 
         try {
             const { upgrade: pm2Upgrade } = await import('../daemon/pm2');
             const result = pm2Upgrade(installed);
-            console.log(`\nSuperTask upgraded: ${result.before ?? 'unknown'} → ${result.after}`);
-            console.log('Gateway restarted. Please restart opencode to load the new plugin.');
-            if (getPackageVersion() !== installed.version) {
-                console.log(`Global CLI remains v${getPackageVersion()}. Update it with your original package manager to opencode-supertask@${installed.version} (npm install -g or bun add -g).`);
+            console.log(t(
+                `\nSuperTask 已升级：${result.before ?? 'unknown'} → ${result.after}`,
+                `\nSuperTask upgraded: ${result.before ?? 'unknown'} → ${result.after}`,
+            ));
+            console.log(t('Gateway 已重启。请重启 OpenCode 加载新插件。', 'Gateway restarted. Restart OpenCode to load the new plugin.'));
+            try {
+                const { updateGlobalCli } = await import('../daemon/update');
+                const cli = updateGlobalCli(installed.version);
+                if (cli.action === 'updated') {
+                    console.log(t(
+                        `已使用 ${cli.packageManager} 将全局 CLI 更新到 v${installed.version}。`,
+                        `Global CLI updated to v${installed.version} with ${cli.packageManager}.`,
+                    ));
+                } else if (cli.action === 'not-installed') {
+                    console.log(t('未找到全局 CLI；插件和 Gateway 升级已完成。', 'No global CLI installation was found; plugin and Gateway upgrade is complete.'));
+                }
+            } catch (cliError) {
+                console.error(t('插件和 Gateway 已升级，但全局 CLI 未更新：', 'Plugin and Gateway were upgraded, but the global CLI was not: ')
+                    + (cliError instanceof Error ? cliError.message : String(cliError)));
+                console.error(t(
+                    `执行 npm install -g opencode-supertask@${installed.version} 或 bun add -g opencode-supertask@${installed.version}，再运行 supertask doctor。`,
+                    `Run npm install -g opencode-supertask@${installed.version} or bun add -g opencode-supertask@${installed.version}, then run supertask doctor.`,
+                ));
+                process.exit(1);
             }
         } catch (err) {
             let detail = err instanceof Error ? err.message : String(err);
@@ -750,7 +821,7 @@ program
             } catch (rollbackError) {
                 detail += `; Gateway 已回滚，但 OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
             }
-            console.error('Gateway restart failed:', detail);
+            console.error(t('Gateway 重启失败：', 'Gateway restart failed:'), detail);
             process.exit(1);
         }
     });

@@ -133,6 +133,7 @@ pending / running / failed ──cancel──> cancelled
 |---|---|---|---|
 | 执行模型 | Worker 直接运行目标 Agent | 少一层 LLM、状态写入者明确、PID 更可控 | 需要独立远程执行协议时 |
 | 进程守护 | PM2 可选，前台模式始终可用 | 守护不应成为开发和插件加载的硬依赖 | 有统一容器或 OS 服务管理平台时 |
+| Gateway 执行环境 | 自动恢复沿用旧环境；显式安装/升级刷新 OpenCode/XDG/Provider 环境，但固定 PM2、Bun、数据库与配置身份 | 自定义 Agent 应与发起安装/升级的可用终端一致，同时不能让环境刷新误切数据库或 PM2 daemon | 引入独立密钥/执行环境管理器时 |
 | PM2 生命周期互斥 | 先持有 `PM2_HOME` 下的 canonical SQLite `BEGIN IMMEDIATE` 锁，再按固定顺序持有从当前环境、dump/运行环境和 LaunchAgent 恢复的旧 custom 锁；LaunchAgent 与当前 CLI 的 `PM2_HOME` 不同则在修改前失败关闭；`stop/delete` 持锁等待至少 kill timeout + 5 秒 | 崩溃自动释放，避免绕过旧 supervisor、启动第二个 PM2 daemon、PID 复用、stale-unlink ABA 或 PM2 尚未结束时提前进入下一临界区 | 迁移到单一外部服务管理器时 |
 | 持久化 | SQLite WAL | 零服务依赖，适合单机队列 | 多机消费、高写入并发或 HA 时 |
 | migration 回滚 | N/N-1 expand/contract 兼容 | PM2 可在新版未 ready 时安全恢复旧二进制 | 引入数据库版本化快照回滚协议时 |
@@ -151,7 +152,7 @@ Dashboard 只绑定 `127.0.0.1`，浏览器写请求检查 `Sec-Fetch-Site` 和�
 
 以下是当前源码行为，不应由文档掩盖：
 
-- `/health` 检查 ready 锁、Worker/Scheduler/Watchdog/历史清理活跃时间和连续失败，并保留最近错误；`supertask doctor` 还解析 OpenCode 最终插件配置，要求精确版本并核对对应缓存、PM2 实际 Gateway 入口包和 ready 锁版本，同时验证 macOS LaunchAgent 的程序路径、加载状态和 PM2 dump 可恢复性。浮动 `@latest`/`@next` Gateway 入口失败关闭；全局 CLI 版本不同只给出原包管理器的更新提示。macOS supervisor 只恢复 dump 中明确存在但 `jlist` 确认缺失的 Gateway，不会把状态未知或 `errored` 当作恢复信号。显式 `supertask install` 会配置 `pm2-logrotate`，但仍没有指标导出和告警集成。
+- `/health` 检查 ready 锁、Worker/Scheduler/Watchdog/历史清理活跃时间和连续失败，并保留最近错误；`supertask doctor` 还解析 OpenCode 最终插件配置，要求精确版本并核对对应缓存、全局 CLI、PM2 实际 Gateway 入口包和 ready 锁版本，同时验证 macOS LaunchAgent 的程序路径、加载状态和 PM2 dump 可恢复性。浮动 `@latest`/`@next` 入口或任一组件版本不一致都失败关闭。macOS supervisor 只恢复 dump 中明确存在但 `jlist` 确认缺失的 Gateway，不会把状态未知或 `errored` 当作恢复信号。显式 `supertask install` 会配置 `pm2-logrotate`，但仍没有指标导出和告警集成。
 - 单实例锁、任务抢占和状态更新足以覆盖当前单机模型，但不提供分布式租约和 exactly-once 保证。
 
 这些限制一旦成为真实故障来源，应先写复现测试，再调整实现与本文档。

@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'fs';
 import { homedir } from 'os';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { compareSemanticVersions, isSemanticVersion } from '@core/semver';
 
 const PACKAGE_NAME = 'opencode-supertask';
@@ -23,6 +23,20 @@ export interface OpenCodePluginDiagnostic extends ConfiguredPluginSpec {
     cachedVersion: string | null;
     packageDir: string | null;
     error: string | null;
+}
+
+export type GlobalCliPackageManager = 'npm' | 'bun';
+
+export interface GlobalCliDiagnostic {
+    installed: boolean;
+    executable: string | null;
+    packageDir: string | null;
+    version: string | null;
+    packageManager: GlobalCliPackageManager | null;
+}
+
+export interface GlobalCliUpdateResult extends GlobalCliDiagnostic {
+    action: 'not-installed' | 'already-current' | 'updated';
 }
 
 function pluginAt(packageDir: string): InstalledPlugin | null {
@@ -85,6 +99,150 @@ function opencodeBin(): string {
 
 function npmBin(): string {
     return process.env.SUPERTASK_NPM_BIN ?? 'npm';
+}
+
+function bunBin(): string {
+    return process.env.SUPERTASK_BUN_BIN ?? 'bun';
+}
+
+function resolveGlobalCliExecutable(): string | null {
+    const override = process.env.SUPERTASK_CLI_BIN;
+    if (override) return existsSync(override) ? resolve(override) : null;
+    const result = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['supertask'], {
+        encoding: 'utf8',
+        env: process.env,
+        timeout: 10_000,
+    });
+    if (result.status !== 0) return null;
+    const executable = `${result.stdout ?? ''}`.trim().split(/\r?\n/)[0];
+    return executable && existsSync(executable) ? resolve(executable) : null;
+}
+
+function cliPackageDir(executable: string): string | null {
+    try {
+        let directory = dirname(realpathSync(executable));
+        for (let depth = 0; depth < 6; depth += 1) {
+            const packagePath = join(directory, 'package.json');
+            if (existsSync(packagePath)) {
+                const pkg = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+                    name?: unknown;
+                };
+                if (pkg.name === PACKAGE_NAME) return directory;
+            }
+            const parent = dirname(directory);
+            if (parent === directory) break;
+            directory = parent;
+        }
+    } catch {}
+    return null;
+}
+
+function packageVersion(packageDir: string): string | null {
+    try {
+        const pkg = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8')) as {
+            name?: unknown;
+            version?: unknown;
+        };
+        return pkg.name === PACKAGE_NAME && typeof pkg.version === 'string'
+            ? pkg.version
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function npmGlobalRoot(): string | null {
+    const result = spawnSync(npmBin(), ['root', '-g'], {
+        encoding: 'utf8',
+        env: process.env,
+        timeout: 30_000,
+    });
+    if (result.status !== 0) return null;
+    const root = `${result.stdout ?? ''}`.trim();
+    if (!root) return null;
+    try {
+        return realpathSync(root);
+    } catch {
+        return resolve(root);
+    }
+}
+
+function globalCliPackageManager(packageDir: string): GlobalCliPackageManager | null {
+    const normalized = packageDir.replaceAll('\\', '/');
+    if (normalized.includes('/install/global/node_modules/')) return 'bun';
+    const npmRoot = npmGlobalRoot();
+    if (npmRoot && resolve(packageDir) === join(npmRoot, PACKAGE_NAME)) return 'npm';
+    return null;
+}
+
+export function getGlobalCliDiagnostic(): GlobalCliDiagnostic {
+    const executable = resolveGlobalCliExecutable();
+    if (!executable) {
+        return {
+            installed: false,
+            executable: null,
+            packageDir: null,
+            version: null,
+            packageManager: null,
+        };
+    }
+    const packageDir = cliPackageDir(executable);
+    if (!packageDir) {
+        return {
+            installed: true,
+            executable,
+            packageDir: null,
+            version: null,
+            packageManager: null,
+        };
+    }
+    return {
+        installed: true,
+        executable,
+        packageDir,
+        version: packageVersion(packageDir),
+        packageManager: globalCliPackageManager(packageDir),
+    };
+}
+
+export function updateGlobalCli(version: string): GlobalCliUpdateResult {
+    if (!isSemanticVersion(version)) {
+        throw new Error(`[supertask] 全局 CLI 目标版本无效: ${version}`);
+    }
+    const before = getGlobalCliDiagnostic();
+    if (!before.installed) return { ...before, action: 'not-installed' };
+    if (before.version === version) return { ...before, action: 'already-current' };
+    if (!before.packageManager) {
+        throw new Error(
+            `[supertask] 无法确认全局 CLI 的包管理器（当前 ${before.version ?? 'unknown'}，目标 ${version}）；`
+            + `请执行 npm install -g ${PACKAGE_NAME}@${version} 或 bun add -g ${PACKAGE_NAME}@${version}`,
+        );
+    }
+
+    const command = before.packageManager === 'npm' ? npmBin() : bunBin();
+    const args = before.packageManager === 'npm'
+        ? ['install', '-g', `${PACKAGE_NAME}@${version}`]
+        : ['add', '-g', `${PACKAGE_NAME}@${version}`];
+    const result = spawnSync(command, args, {
+        encoding: 'utf8',
+        env: process.env,
+        timeout: 120_000,
+    });
+    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+    if (result.error) {
+        throw new Error(`[supertask] 全局 CLI 更新失败: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+        throw new Error(`[supertask] 全局 CLI 更新失败: ${output || `退出码 ${result.status}`}`);
+    }
+
+    const after = getGlobalCliDiagnostic();
+    if (after.version !== version) {
+        throw new Error(
+            `[supertask] 全局 CLI 更新后版本不匹配：期望 ${version}，实际 ${after.version ?? 'unknown'}`,
+        );
+    }
+    return { ...after, action: 'updated' };
 }
 
 function latestVersion(): string {

@@ -776,6 +776,36 @@ function currentGatewayRuntime(gatewayEntry = resolveGatewayEntry()): GatewayRun
     };
 }
 
+function refreshGatewayExecutionEnvironment(
+    runtime: GatewayRuntime,
+    gatewayEntry: string,
+): GatewayRuntime {
+    const env = { ...process.env };
+
+    // The explicit install/upgrade command is the point where users expect a
+    // Gateway to pick up the same OpenCode/provider environment as their shell.
+    // Keep daemon identity and SuperTask scope pinned to the proven old runtime;
+    // everything else (including OPENCODE_*, XDG_* and provider credentials)
+    // comes from the invoking environment.
+    for (const key of new Set([
+        ...Object.keys(runtime.env).filter((name) => name.startsWith('SUPERTASK_')),
+        ...Object.keys(env).filter((name) => name.startsWith('SUPERTASK_')),
+        'HOME',
+        'PATH',
+        'PM2_HOME',
+    ])) {
+        const value = runtime.env[key];
+        if (value === undefined) delete env[key];
+        else env[key] = value;
+    }
+
+    return {
+        ...runtime,
+        gatewayEntry: resolve(gatewayEntry),
+        env,
+    };
+}
+
 export function isGatewayRunning(): boolean {
     if (!isPm2Installed()) return false;
     const proc = pm2JsonList().find((item) => item.name === PROCESS_NAME);
@@ -1221,7 +1251,7 @@ function installUnlocked(): void {
     const existing = pm2JsonList().find((item) => item.name === PROCESS_NAME);
     const oldRuntime = gatewayRuntimeFromProcess(existing);
     const targetRuntime = oldRuntime
-        ? { ...oldRuntime, gatewayEntry: resolve(resolveGatewayEntry()) }
+        ? refreshGatewayExecutionEnvironment(oldRuntime, resolveGatewayEntry())
         : currentGatewayRuntime();
     const before = getRunningVersion(oldRuntime?.env ?? process.env, oldRuntime?.cwd);
     if (oldRuntime && !scopesMatch(currentScope(), runtimeScope(oldRuntime))) {
@@ -1352,7 +1382,10 @@ function upgradeUnlocked(target?: {
     const before = getRunningVersion(oldRuntime?.env ?? process.env, oldRuntime?.cwd);
     const currentVersion = target?.version ?? getPackageVersion();
     const targetRuntime = oldRuntime
-        ? { ...oldRuntime, gatewayEntry: resolve(target?.gatewayEntry ?? oldRuntime.gatewayEntry) }
+        ? refreshGatewayExecutionEnvironment(
+            oldRuntime,
+            target?.gatewayEntry ?? oldRuntime.gatewayEntry,
+        )
         : currentGatewayRuntime(target?.gatewayEntry ?? resolveGatewayEntry());
     assertRuntimeCanControlPm2(oldRuntime, existing);
     gatewayKillTimeoutMs(targetRuntime);

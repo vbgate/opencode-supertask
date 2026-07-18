@@ -17,6 +17,7 @@ import { ensureGateway, getPackageVersion, upgrade as pm2Upgrade } from "../src/
 import {
     installLatestPlugin,
     installPluginVersion,
+    updateGlobalCli,
 } from "../src/daemon/update";
 
 let _initialized = false;
@@ -501,12 +502,27 @@ export const SuperTaskPlugin: Plugin = async () => {
                             }
                             throw upgradeError;
                         }
+                        let cliUpdate: ReturnType<typeof updateGlobalCli>;
+                        try {
+                            cliUpdate = updateGlobalCli(result.after);
+                        } catch (cliError) {
+                            return JSON.stringify({
+                                success: false,
+                                partial: true,
+                                before: result.before,
+                                after: result.after,
+                                restarted: result.restarted,
+                                error: `插件和 Gateway 已升级，但全局 CLI 更新失败：${cliError instanceof Error ? cliError.message : String(cliError)}`,
+                                hint: `请执行 npm install -g opencode-supertask@${result.after} 或 bun add -g opencode-supertask@${result.after}，然后运行 supertask doctor。`,
+                            });
+                        }
                         return JSON.stringify({
                             success: true,
                             before: result.before,
                             after: result.after,
                             restarted: result.restarted,
-                            message: `SuperTask 已从 ${result.before ?? "unknown"} 升级到 ${result.after}，Gateway 已重启。请重启 opencode 以加载新版插件；若使用全局 CLI，请用原包管理器将它更新到 opencode-supertask@${result.after}（npm install -g 或 bun add -g）。`,
+                            cli: cliUpdate,
+                            message: `SuperTask 已从 ${result.before ?? "unknown"} 升级到 ${result.after}，Gateway 已重启，全局 CLI 已同步或本机未安装 CLI。请重启 opencode 以加载新版插件。`,
                         });
                     } catch (error) {
                         return JSON.stringify({

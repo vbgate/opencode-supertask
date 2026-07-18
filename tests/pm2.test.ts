@@ -41,6 +41,8 @@ const originalEnv = {
     systemdUnit: process.env.SUPERTASK_PM2_SYSTEMD_UNIT,
     pm2Home: process.env.PM2_HOME,
     launchVerifyTimeout: process.env.SUPERTASK_LAUNCH_AGENT_VERIFY_TIMEOUT_MS,
+    customProviderToken: process.env.CUSTOM_PROVIDER_TOKEN,
+    opencodeConfigDir: process.env.OPENCODE_CONFIG_DIR,
 };
 
 beforeEach(() => {
@@ -70,6 +72,8 @@ afterEach(() => {
     restoreEnv('SUPERTASK_PM2_SYSTEMD_UNIT', originalEnv.systemdUnit);
     restoreEnv('PM2_HOME', originalEnv.pm2Home);
     restoreEnv('SUPERTASK_LAUNCH_AGENT_VERIFY_TIMEOUT_MS', originalEnv.launchVerifyTimeout);
+    restoreEnv('CUSTOM_PROVIDER_TOKEN', originalEnv.customProviderToken);
+    restoreEnv('OPENCODE_CONFIG_DIR', originalEnv.opencodeConfigDir);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -1058,7 +1062,11 @@ appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
 if (args[0] === 'delete') rmSync(${JSON.stringify(state)}, { force: true });
 if (args[0] === 'start') {
     writeFileSync(${JSON.stringify(state)}, JSON.stringify({ entry: args.at(-1) }));
-    writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({ dbPath: process.env.SUPERTASK_DB_PATH }));
+    writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({
+        dbPath: process.env.SUPERTASK_DB_PATH,
+        providerToken: process.env.CUSTOM_PROVIDER_TOKEN,
+        opencodeConfigDir: process.env.OPENCODE_CONFIG_DIR
+    }));
     const db = new Database(process.env.SUPERTASK_DB_PATH);
     db.exec('CREATE TABLE IF NOT EXISTS gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
     db.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), Date.now());
@@ -1073,13 +1081,19 @@ if (args[0] === 'start') {
         process.env.SUPERTASK_VERSION_FILE = versionFile;
         process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '100';
         process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '45000';
+        process.env.CUSTOM_PROVIDER_TOKEN = 'fresh-provider-token';
+        process.env.OPENCODE_CONFIG_DIR = join(dir, 'fresh-opencode-config');
 
         expect(upgrade({ gatewayEntry: newGateway, version: '0.1.21' })).toEqual({
             before: '0.1.20', after: '0.1.21', restarted: true,
         });
         const calls = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
         expect(calls.find((call) => call[0] === 'start')?.at(-1)).toBe(newGateway);
-        expect(JSON.parse(readFileSync(envLog, 'utf8'))).toEqual({ dbPath });
+        expect(JSON.parse(readFileSync(envLog, 'utf8'))).toEqual({
+            dbPath,
+            providerToken: 'fresh-provider-token',
+            opencodeConfigDir: join(dir, 'fresh-opencode-config'),
+        });
         expect(readFileSync(versionFile, 'utf8')).toBe('0.1.21');
     });
 
