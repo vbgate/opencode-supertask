@@ -90,10 +90,10 @@ describe('边界条件测试', () => {
         });
 
         test('stats 按 cwd 过滤', async () => {
-            await TaskService.add({ name: 'T1', agent: 'a', prompt: 'p', cwd: '/dir1' });
-            await TaskService.add({ name: 'T2', agent: 'a', prompt: 'p', cwd: '/dir2' });
+            await TaskService.add({ name: 'T1', agent: 'a', prompt: 'p', cwd: process.cwd() });
+            await TaskService.add({ name: 'T2', agent: 'a', prompt: 'p', cwd: '/tmp' });
 
-            const stats = await TaskService.stats({ cwd: '/dir1' });
+            const stats = await TaskService.stats({ cwd: process.cwd() });
             expect(stats.total).toBe(1);
         });
 

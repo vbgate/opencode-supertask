@@ -37,6 +37,51 @@ describe('OpenCode 插件注册', () => {
         );
         expect(output.system).toHaveLength(1);
         expect(output.system[0]).toContain('supertask_schedule');
+        expect(output.system[0]).toContain('所有具有相同非空 `batchId` 的任务也不会同时执行');
+        expect(output.system[0]).toContain('即使任务属于不同项目目录');
+        expect(output.system[0]).toContain('`globalBatch.activeRunning`');
+        expect(output.system[0]).toContain('若任务 B 必须等待任务 A 完成');
+
+        const add = hooks.tool?.supertask_add;
+        const schedule = hooks.tool?.supertask_schedule;
+        if (!add || !schedule) throw new Error('任务创建工具未注册');
+        expect(add.description).toContain('跨项目的相同非空 batchId 任务全局严格串行');
+        expect(schedule.args.batchId.description).toContain('不会同时执行');
+        expect(schedule.args.max_instances.description).toContain('自动调度');
+        expect(schedule.args.max_instances.description).toContain('排队');
+        expect(schedule.args.max_instances.description).toContain('手动立即运行不受此限制');
+        expect(add.args.batchId.safeParse(undefined).success).toBe(true);
+        expect(add.args.batchId.safeParse('').success).toBe(false);
+        expect(schedule.args.batchId.safeParse('   ').success).toBe(false);
+    });
+
+    test('按 batchId 查询时同时返回当前项目和跨项目占用状态', async () => {
+        const otherProjectTask = await TaskService.add({
+            name: '其他项目批次任务',
+            agent: 'build',
+            prompt: '占用全局批次',
+            cwd: '/tmp',
+            batchId: 'shared-batch',
+        });
+        await TaskService.start(otherProjectTask.id);
+
+        const hooks = await SuperTaskPlugin({} as Parameters<typeof SuperTaskPlugin>[0]);
+        const status = hooks.tool?.supertask_status;
+        if (!status) throw new Error('supertask_status 未注册');
+        const result = JSON.parse(await status.execute(
+            { batchId: 'shared-batch' },
+            { directory: process.cwd() } as Parameters<typeof status.execute>[1],
+        )) as {
+            total: number;
+            activeRunning: number;
+            blockedByOtherProject: boolean;
+            globalBatch: { total: number; activeRunning: number };
+        };
+
+        expect(result.total).toBe(0);
+        expect(result.activeRunning).toBe(0);
+        expect(result.globalBatch).toMatchObject({ total: 1, activeRunning: 1 });
+        expect(result.blockedByOtherProject).toBe(true);
     });
 
     test('新插件可自动替换旧 Gateway，旧 OpenCode 进程不会反向降级新 Gateway', () => {
@@ -55,17 +100,17 @@ describe('OpenCode 插件注册', () => {
         const add = hooks.tool?.supertask_add;
         if (!add) throw new Error('supertask_add 未注册');
         const context = {
-            directory: '/actual/project',
+            directory: process.cwd(),
         } as Parameters<typeof add.execute>[1];
 
         const output = JSON.parse(await add.execute({
             name: '上下文隔离',
             agent: 'build',
             prompt: '验证 cwd',
-            cwd: '/forged/project',
+            cwd: `${process.cwd()}/package.json`,
         }, context)) as { id: number };
 
-        expect((await TaskService.getById(output.id))?.cwd).toBe('/actual/project');
+        expect((await TaskService.getById(output.id))?.cwd).toBe(process.cwd());
     });
 
     test('Gateway 管理的队列任务拒绝在自身进程树内升级', async () => {

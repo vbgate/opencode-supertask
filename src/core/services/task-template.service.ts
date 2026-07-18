@@ -2,25 +2,37 @@ import { db, schema } from '@core/db';
 import { and, eq, desc, sql } from 'drizzle-orm';
 import type { TaskTemplate, NewTaskTemplate, ScheduleType } from '@core/db/schema';
 import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
+import { validateTaskWorkingDirectory } from '@core/task-working-directory';
+import { normalizeTaskBatchId } from '@core/task-batch';
 
 const { taskTemplates } = schema;
 
+export type TaskTemplateUpdate = Pick<TaskTemplate,
+    'name' | 'agent' | 'model' | 'prompt' | 'cwd' | 'category' | 'importance' | 'urgency'
+    | 'batchId' | 'scheduleType' | 'cronExpr' | 'intervalMs' | 'runAt' | 'maxInstances'
+    | 'maxRetries' | 'retryBackoffMs' | 'timeoutMs'
+>;
+
 export class TaskTemplateService {
     static async create(data: NewTaskTemplate): Promise<TaskTemplate> {
-        this.validate(data);
+        const normalizedData = {
+            ...data,
+            batchId: normalizeTaskBatchId(data.batchId),
+        };
+        this.validate(normalizedData);
         const now = Date.now();
-        const nextRunAt = data.nextRunAt ?? this.calculateNextRunAt(
-            data.scheduleType as ScheduleType,
+        const nextRunAt = normalizedData.nextRunAt ?? this.calculateNextRunAt(
+            normalizedData.scheduleType as ScheduleType,
             {
-                cronExpr: data.cronExpr ?? null,
-                intervalMs: data.intervalMs ?? null,
-                runAt: data.runAt ?? null,
+                cronExpr: normalizedData.cronExpr ?? null,
+                intervalMs: normalizedData.intervalMs ?? null,
+                runAt: normalizedData.runAt ?? null,
             },
             now,
         );
         const result = await db
             .insert(taskTemplates)
-            .values({ ...data, nextRunAt, createdAt: now, updatedAt: now })
+            .values({ ...normalizedData, nextRunAt, createdAt: now, updatedAt: now })
             .returning();
         return result[0];
     }
@@ -29,6 +41,7 @@ export class TaskTemplateService {
         if (!data.name.trim()) throw new Error('name 不能为空');
         if (!data.agent.trim()) throw new Error('agent 不能为空');
         if (!data.prompt.trim()) throw new Error('prompt 不能为空');
+        validateTaskWorkingDirectory(data.cwd);
 
         const scheduleType = data.scheduleType as ScheduleType;
         if (!['cron', 'delayed', 'recurring'].includes(scheduleType)) {
@@ -64,17 +77,59 @@ export class TaskTemplateService {
         }
     }
 
-    static async list(limit = 50): Promise<TaskTemplate[]> {
+    static async list(limit = 50, offset = 0): Promise<TaskTemplate[]> {
         return await db
             .select()
             .from(taskTemplates)
             .orderBy(desc(taskTemplates.createdAt), desc(taskTemplates.id))
-            .limit(limit);
+            .limit(limit)
+            .offset(offset);
+    }
+
+    static async stats(): Promise<{ total: number; enabled: number; disabled: number }> {
+        const result = await db.select({
+            total: sql<number>`count(*)`,
+            enabled: sql<number>`sum(case when ${taskTemplates.enabled} = 1 then 1 else 0 end)`,
+        }).from(taskTemplates);
+        const total = Number(result[0]?.total ?? 0);
+        const enabled = Number(result[0]?.enabled ?? 0);
+        return { total, enabled, disabled: total - enabled };
     }
 
     static async getById(id: number): Promise<TaskTemplate | null> {
         const result = await db.select().from(taskTemplates).where(eq(taskTemplates.id, id));
         return result[0] || null;
+    }
+
+    static async update(id: number, data: TaskTemplateUpdate): Promise<TaskTemplate | null> {
+        const normalizedData = {
+            ...data,
+            batchId: normalizeTaskBatchId(data.batchId) ?? null,
+        };
+        this.validate(normalizedData);
+        const now = Date.now();
+        const nextRunAt = this.calculateNextRunAt(
+            normalizedData.scheduleType as ScheduleType,
+            normalizedData,
+            now,
+        );
+
+        return db.transaction((tx) => {
+            const existing = tx
+                .select({ id: taskTemplates.id })
+                .from(taskTemplates)
+                .where(eq(taskTemplates.id, id))
+                .limit(1)
+                .get();
+            if (!existing) return null;
+
+            return tx
+                .update(taskTemplates)
+                .set({ ...normalizedData, nextRunAt, updatedAt: now })
+                .where(eq(taskTemplates.id, id))
+                .returning()
+                .get() ?? null;
+        }, { behavior: 'immediate' });
     }
 
     static async enable(id: number): Promise<TaskTemplate | null> {

@@ -52,7 +52,7 @@ export class Scheduler {
             const lastTemplate = dueTemplates.at(-1);
             for (const tmpl of dueTemplates) {
                 try {
-                    const task = await cloneTaskFromTemplate(tmpl.id);
+                    const task = await cloneTaskFromTemplate(tmpl.id, tmpl.nextRunAt!);
                     if (task) {
                         console.log(JSON.stringify({
                             ts: new Date().toISOString(),

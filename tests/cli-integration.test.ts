@@ -65,6 +65,21 @@ describe('CLI integration', () => {
         expect(task.timeoutMs).toBe(120000);
     });
 
+    test('edit pending task model and priority', () => {
+        const edited = runJson<{ id: number; status: string; updated: boolean }>(
+            `edit --id ${taskId1} --model "openai/gpt-5" --prompt "修改后的提示词" --importance 5 --urgency 2 --clear-batch --retry-backoff 10s --clear-timeout`,
+        );
+        expect(edited).toEqual({ id: taskId1, status: 'pending', updated: true });
+        const task = runJson<{
+            model: string; prompt: string; importance: number; urgency: number;
+            batchId: string | null; retryBackoffMs: number; timeoutMs: number | null;
+        }>(`get --id ${taskId1}`);
+        expect(task).toMatchObject({
+            model: 'openai/gpt-5', prompt: '修改后的提示词', importance: 5, urgency: 2,
+            batchId: null, retryBackoffMs: 10_000, timeoutMs: null,
+        });
+    });
+
     test('next returns a pending task', () => {
         const task = runJson<{ id: number } | { id: null }>('next');
         expect(task).toBeDefined();

@@ -4,17 +4,17 @@ export type ActiveTab = 'tasks' | 'templates' | 'runs' | 'system';
 const ZH = {
     'app.name': 'SuperTask',
     'app.dashboard': '控制台',
-    'app.tagline': '可靠的本地 Agent 调度中心',
+    'app.tagline': '可靠的本地 Agent 任务中心',
     'app.local': '本地运行',
     'app.footer': 'Local-first · 数据留在你的设备上',
     'nav.tasks': '任务',
-    'nav.templates': '调度',
+    'nav.templates': '定时任务',
     'nav.runs': '执行记录',
     'nav.system': '系统',
     'page.tasks.title': '任务队列',
     'page.tasks.description': '查看优先级、执行状态与重试情况，快速处理需要关注的任务。',
-    'page.templates.title': '调度模板',
-    'page.templates.description': '管理 Cron、延迟和循环任务，让重复工作按计划自动运行。',
+    'page.templates.title': '定时任务',
+    'page.templates.description': '在网页创建和编辑 Cron、固定间隔及一次性任务，包括模型、Agent 和提示词。',
     'page.runs.title': '执行记录',
     'page.runs.description': '追踪每次 Agent 执行的状态、耗时、心跳与输出。',
     'page.system.title': '系统设置',
@@ -24,29 +24,43 @@ const ZH = {
     'action.retry': '重试',
     'action.cancel': '取消',
     'action.delete': '删除',
+    'action.edit': '编辑',
     'action.enable': '启用',
     'action.disable': '禁用',
-    'action.trigger': '立即触发',
+    'action.trigger': '立即运行一次',
+    'action.continueSession': '继续会话',
     'action.logs': '查看日志',
     'action.hideLogs': '收起日志',
     'action.save': '保存设置',
+    'action.saveAndRestart': '保存并重启',
     'action.copy': '复制 JSON',
     'action.close': '关闭',
     'action.confirm': '确认',
     'action.clearDatabase': '清空数据库',
+    'action.createTask': '新建任务',
+    'action.saveTask': '加入队列',
+    'action.updateTask': '保存修改',
+    'action.createTemplate': '新建定时任务',
+    'action.saveTemplate': '保存定时任务',
     'status.pending': '待执行',
     'status.running': '运行中',
     'status.done': '已完成',
-    'status.failed': '失败',
-    'status.dead_letter': '死信',
+    'status.failed': '等待重试',
+    'status.dead_letter': '已停止',
+    'status.deadLetterHint': '系统不会再自动运行。可能是重试次数已用完，或依赖任务无法继续；请查看失败原因，确认后手动重试。',
+    'status.deadLetterAction': '需检查原因后手动重试',
     'status.cancelled': '已取消',
+    'status.executionStillActive': '执行进程仍在退出，暂时占用并发',
     'status.unknown': '未知',
+    'runStatus.running': '运行中',
+    'runStatus.done': '成功',
+    'runStatus.failed': '失败',
     'stats.total': '总任务',
     'stats.pending': '待执行',
     'stats.running': '运行中',
     'stats.done': '已完成',
-    'stats.failedDead': '失败与死信',
-    'stats.templates': '模板总数',
+    'stats.failedDead': '等待重试与已停止',
+    'stats.templates': '定时任务总数',
     'stats.enabled': '已启用',
     'stats.disabled': '已禁用',
     'stats.records': '执行总数',
@@ -54,7 +68,7 @@ const ZH = {
     'stats.pageFailed': '本页失败',
     'stats.pageRunning': '本页运行中',
     'filter.all': '全部',
-    'filter.searchTasks': '搜索当前页的任务、Agent 或提示词',
+    'filter.searchTasks': '搜索当前页的任务、项目、批次、Agent 或提示词',
     'filter.noResults': '没有符合当前搜索条件的任务',
     'table.id': 'ID',
     'table.task': '任务',
@@ -70,7 +84,7 @@ const ZH = {
     'table.nextRun': '下次执行',
     'table.run': 'Run',
     'table.heartbeat': '心跳',
-    'table.session': 'Session',
+    'table.session': '会话',
     'table.model': '模型',
     'table.startedAt': '启动时间',
     'table.pid': 'PID',
@@ -78,14 +92,14 @@ const ZH = {
     'pagination.next': '下一页',
     'pagination.summary': '第 {page} 页，共 {pages} 页 · {total} 条',
     'empty.tasks': '队列里还没有任务',
-    'empty.tasksHint': '通过 OpenCode 插件或 supertask add 创建第一个任务。',
-    'empty.templates': '还没有调度模板',
-    'empty.templatesHint': '使用 CLI 创建：supertask template add',
+    'empty.tasksHint': '点击“新建任务”，或通过 OpenCode 插件和 supertask add 创建第一个任务。',
+    'empty.templates': '还没有定时任务',
+    'empty.templatesHint': '点击右上角“新建定时任务”开始创建。',
     'empty.runs': '还没有执行记录',
     'empty.running': '当前没有运行中的任务',
     'schedule.cron': 'Cron',
-    'schedule.recurring': '循环',
-    'schedule.delayed': '延迟',
+    'schedule.recurring': '固定间隔',
+    'schedule.delayed': '一次性',
     'schedule.unknown': '未知',
     'schedule.enabled': '已启用',
     'schedule.disabled': '已禁用',
@@ -94,14 +108,14 @@ const ZH = {
     'schedule.hours': '{count} 小时',
     'schedule.days': '{count} 天',
     'schedule.overdue': '已到期',
-    'system.worker': 'Worker',
-    'system.scheduler': 'Scheduler',
-    'system.watchdog': 'Watchdog',
+    'system.worker': '任务执行',
+    'system.scheduler': '定时任务服务',
+    'system.watchdog': '运行监控',
     'system.maxConcurrency': '最大并发',
     'system.pollInterval': '轮询间隔',
     'system.heartbeatInterval': '心跳间隔',
     'system.taskTimeout': '任务超时',
-    'system.schedulerEnabled': '启用调度',
+    'system.schedulerEnabled': '启用定时任务',
     'system.checkInterval': '检查间隔',
     'system.heartbeatTimeout': '心跳超时',
     'system.cleanupInterval': '清理间隔',
@@ -111,8 +125,12 @@ const ZH = {
     'system.minutes': '分钟',
     'system.hours': '小时',
     'system.days': '天',
-    'system.activeTemplates': '活跃模板',
-    'system.saveHint': '保存后需重启 Gateway 生效',
+    'system.activeTemplates': '已启用定时任务',
+    'system.saveHint': '设置保存后需要重启 Gateway 才能生效。',
+    'system.configApplied': '页面中的设置正在生效。',
+    'system.configPending': '设置已保存，但当前 Gateway 仍在使用上次启动时的设置。',
+    'system.configForeground': '此页面未连接到 Gateway 的运行配置；保存后请重启 Gateway。',
+    'system.configRestartManually': '设置已保存但尚未生效。请回到启动 Gateway 的终端，按 Ctrl-C 后重新运行 supertask gateway。',
     'system.runningTasks': '当前运行任务（{running} / {limit} 并发）',
     'system.taskStats': '任务概览',
     'system.configFile': '配置文件',
@@ -121,7 +139,46 @@ const ZH = {
     'system.yes': '是',
     'system.noDefault': '否，当前使用默认值',
     'system.danger': '危险操作',
-    'system.dangerDescription': '系统会先创建可校验备份，再事务性清空任务、执行记录和调度模板；存在运行任务时会拒绝操作。',
+    'system.dangerDescription': '系统会先创建可校验备份，再事务性清空任务、执行记录和定时任务；存在运行任务时会拒绝操作。',
+    'template.createTitle': '新建定时任务',
+    'template.editTitle': '编辑定时任务',
+    'template.formSubtitle': '设置何时运行，以及 OpenCode 要使用的项目、模型和提示词。',
+    'template.name': '名称',
+    'template.cwd': '项目目录',
+    'template.cwdHint': 'OpenCode 会在这个目录中执行任务。',
+    'template.agent': 'Agent',
+    'template.model': '模型',
+    'template.prompt': '提示词',
+    'template.scheduleType': '执行方式',
+    'template.cronExpr': 'Cron 表达式',
+    'template.cronHint': '例如：0 9 * * *（每天 09:00）',
+    'template.interval': '执行间隔',
+    'template.runAt': '执行时间',
+    'template.durationHint': '支持 30s、5min、1h、2d',
+    'template.advanced': '更多执行设置',
+    'template.category': '分类',
+    'template.batchId': '批次 ID',
+    'template.importance': '重要程度（1-5）',
+    'template.urgency': '紧急程度（1-5）',
+    'template.maxInstances': '自动调度上限',
+    'template.maxInstancesHint': '仅限制自动调度；手动“立即运行一次”始终加入队列。活跃任务包含待执行、运行中和等待重试。',
+    'template.maxRetries': '失败重试次数',
+    'template.retryBackoff': '重试等待',
+    'template.timeout': '单次超时',
+    'template.optional': '可选',
+    'template.futureOnly': '保存后的设置用于以后生成的任务；编辑不会改变已经进入队列或正在执行的任务。',
+    'projects.title': '项目分组',
+    'projects.description': '项目目录是隔离键；先看每个项目有没有运行中或排队任务，再决定是否继续添加。',
+    'projects.all': '全部项目',
+    'projects.legacy': '未分组',
+    'projects.legacyHint': '旧版本中没有项目目录的任务；可查看、取消或删除，需要修改时请在正确项目目录下重新创建。',
+    'projects.counts': '运行 {running} · 排队 {pending} · 异常 {failed}',
+    'task.createTitle': '新建任务',
+    'task.editTitle': '编辑任务',
+    'task.formSubtitle': '任务会立即加入持久队列；并发已满时会自动等待。',
+    'task.batchHint': '相同非空批次 ID 的任务严格串行；留空则不受批次串行限制，但仍受全局并发和依赖约束。',
+    'task.projectExisting': '此项目现有 {total} 个任务：运行 {running}，排队 {pending}，异常 {failed}。',
+    'task.projectNew': '这是一个新项目分组；创建后会出现在项目列表中。',
     'theme.label': '主题',
     'theme.system': '跟随系统',
     'theme.light': '浅色',
@@ -136,21 +193,31 @@ const ZH = {
     'dialog.retryTaskBody': '任务将回到待执行状态，并重置自动重试预算。',
     'dialog.deleteTask': '删除任务 #{id}？',
     'dialog.deleteTaskBody': '任务及关联执行记录将永久删除，此操作无法撤销。',
-    'dialog.disableTemplate': '禁用这个调度模板？',
-    'dialog.disableTemplateBody': '模板将停止自动创建新任务，已有任务不受影响。',
-    'dialog.deleteTemplate': '删除这个调度模板？',
-    'dialog.deleteTemplateBody': '模板配置将永久删除，此操作无法撤销。',
-    'dialog.triggerTemplate': '立即触发一次？',
-    'dialog.triggerTemplateBody': '系统会按当前模板创建一个新任务，并遵守最大实例限制。',
+    'dialog.disableTemplate': '禁用这个定时任务？',
+    'dialog.disableTemplateBody': '它将停止自动创建新任务，已有任务不受影响。',
+    'dialog.deleteTemplate': '删除这个定时任务？',
+    'dialog.deleteTemplateBody': '定时任务配置将永久删除，此操作无法撤销。',
+    'dialog.triggerTemplate': '立即运行一次？',
+    'dialog.triggerTemplateBody': '系统会按当前设置立即创建一个任务并加入队列；若全局并发已满，任务会等待执行。',
     'dialog.clearTitle': '确认清空数据库',
-    'dialog.clearBody': '这会删除全部任务、执行记录和调度模板。系统会先自动备份。',
+    'dialog.clearBody': '这会删除全部任务、执行记录和定时任务。系统会先自动备份。',
     'dialog.clearInstruction': '输入 CLEAR 以确认',
+    'dialog.restartGateway': '重启并应用设置？',
+    'dialog.restartGatewayBody': 'Gateway 会短暂离线，通常数秒后由 PM2 自动恢复。',
+    'dialog.restartGatewayRunningBody': '当前有 {count} 个任务在运行。系统会先等待它们完成；超时后，未完成任务会被安全停止并放回队列，然后 Gateway 由 PM2 自动恢复。',
     'feedback.retryFailed': '重试失败',
     'feedback.cancelFailed': '取消失败',
     'feedback.deleteFailed': '删除失败',
     'feedback.requestFailed': '请求失败',
     'feedback.triggered': '已创建任务 #{id}',
-    'feedback.configSaved': '设置已保存，重启 Gateway 后生效',
+    'feedback.taskCreated': '任务 #{id} 已加入队列',
+    'feedback.taskUpdated': '任务 #{id} 已更新',
+    'feedback.templateCreated': '定时任务已创建',
+    'feedback.templateUpdated': '定时任务已更新',
+    'feedback.configSaved': '设置已保存',
+    'feedback.sessionCommandCopied': '会话命令已复制，可直接粘贴到终端运行',
+    'feedback.restarting': 'Gateway 正在重启，请稍候…',
+    'feedback.restartTimeout': 'Gateway 尚未恢复，请稍后刷新或检查 PM2 状态',
     'feedback.databaseCleared': '数据库已清空，备份位于：{path}',
     'feedback.copyFailed': '复制失败，请手动选择内容',
     'a11y.skip': '跳到主要内容',
@@ -166,13 +233,13 @@ const EN: Record<MessageKey, string> = {
     'app.local': 'Running locally',
     'app.footer': 'Local-first · Your data stays on this device',
     'nav.tasks': 'Tasks',
-    'nav.templates': 'Schedules',
+    'nav.templates': 'Scheduled tasks',
     'nav.runs': 'Runs',
     'nav.system': 'System',
     'page.tasks.title': 'Task queue',
     'page.tasks.description': 'Track priority, execution state, and retries, then act on tasks that need attention.',
-    'page.templates.title': 'Schedule templates',
-    'page.templates.description': 'Manage cron, delayed, and recurring work so repeated tasks run on time.',
+    'page.templates.title': 'Scheduled tasks',
+    'page.templates.description': 'Create and edit cron, fixed-interval, and one-time tasks, including their model, agent, and prompt.',
     'page.runs.title': 'Execution history',
     'page.runs.description': 'Inspect the status, duration, heartbeat, and output of every agent run.',
     'page.system.title': 'System settings',
@@ -182,29 +249,43 @@ const EN: Record<MessageKey, string> = {
     'action.retry': 'Retry',
     'action.cancel': 'Cancel',
     'action.delete': 'Delete',
+    'action.edit': 'Edit',
     'action.enable': 'Enable',
     'action.disable': 'Disable',
     'action.trigger': 'Run now',
+    'action.continueSession': 'Continue session',
     'action.logs': 'View log',
     'action.hideLogs': 'Hide log',
     'action.save': 'Save settings',
+    'action.saveAndRestart': 'Save and restart',
     'action.copy': 'Copy JSON',
     'action.close': 'Close',
     'action.confirm': 'Confirm',
     'action.clearDatabase': 'Clear database',
+    'action.createTask': 'New task',
+    'action.saveTask': 'Add to queue',
+    'action.updateTask': 'Save changes',
+    'action.createTemplate': 'New scheduled task',
+    'action.saveTemplate': 'Save scheduled task',
     'status.pending': 'Pending',
     'status.running': 'Running',
     'status.done': 'Done',
-    'status.failed': 'Failed',
-    'status.dead_letter': 'Dead letter',
+    'status.failed': 'Waiting to retry',
+    'status.dead_letter': 'Stopped',
+    'status.deadLetterHint': 'The system will not run this task automatically again. Its retries may be exhausted or a dependency cannot continue; inspect the error, then retry manually if appropriate.',
+    'status.deadLetterAction': 'Inspect the error, then retry manually',
     'status.cancelled': 'Cancelled',
+    'status.executionStillActive': 'The execution process is still stopping and temporarily occupies a slot',
     'status.unknown': 'Unknown',
+    'runStatus.running': 'Running',
+    'runStatus.done': 'Succeeded',
+    'runStatus.failed': 'Failed',
     'stats.total': 'Total tasks',
     'stats.pending': 'Pending',
     'stats.running': 'Running',
     'stats.done': 'Completed',
-    'stats.failedDead': 'Failed & dead',
-    'stats.templates': 'Templates',
+    'stats.failedDead': 'Waiting to retry & stopped',
+    'stats.templates': 'Scheduled tasks',
     'stats.enabled': 'Enabled',
     'stats.disabled': 'Disabled',
     'stats.records': 'Total runs',
@@ -212,7 +293,7 @@ const EN: Record<MessageKey, string> = {
     'stats.pageFailed': 'Failed here',
     'stats.pageRunning': 'Running here',
     'filter.all': 'All',
-    'filter.searchTasks': 'Search tasks, agents, or prompts on this page',
+    'filter.searchTasks': 'Search tasks, projects, batches, agents, or prompts on this page',
     'filter.noResults': 'No tasks match this search',
     'table.id': 'ID',
     'table.task': 'Task',
@@ -236,14 +317,14 @@ const EN: Record<MessageKey, string> = {
     'pagination.next': 'Next',
     'pagination.summary': 'Page {page} of {pages} · {total} items',
     'empty.tasks': 'Your queue is empty',
-    'empty.tasksHint': 'Create the first task with the OpenCode plugin or supertask add.',
-    'empty.templates': 'No schedule templates yet',
-    'empty.templatesHint': 'Create one with: supertask template add',
+    'empty.tasksHint': 'Select “New task”, or use the OpenCode plugin or supertask add.',
+    'empty.templates': 'No scheduled tasks yet',
+    'empty.templatesHint': 'Select “New scheduled task” to create one.',
     'empty.runs': 'No execution history yet',
     'empty.running': 'No tasks are running right now',
     'schedule.cron': 'Cron',
-    'schedule.recurring': 'Recurring',
-    'schedule.delayed': 'Delayed',
+    'schedule.recurring': 'Fixed interval',
+    'schedule.delayed': 'One-time',
     'schedule.unknown': 'Unknown',
     'schedule.enabled': 'Enabled',
     'schedule.disabled': 'Disabled',
@@ -252,14 +333,14 @@ const EN: Record<MessageKey, string> = {
     'schedule.hours': '{count} hr',
     'schedule.days': '{count} days',
     'schedule.overdue': 'Overdue',
-    'system.worker': 'Worker',
-    'system.scheduler': 'Scheduler',
-    'system.watchdog': 'Watchdog',
+    'system.worker': 'Task execution',
+    'system.scheduler': 'Scheduled task service',
+    'system.watchdog': 'Runtime monitor',
     'system.maxConcurrency': 'Max concurrency',
     'system.pollInterval': 'Poll interval',
     'system.heartbeatInterval': 'Heartbeat interval',
     'system.taskTimeout': 'Task timeout',
-    'system.schedulerEnabled': 'Enable scheduler',
+    'system.schedulerEnabled': 'Enable scheduled tasks',
     'system.checkInterval': 'Check interval',
     'system.heartbeatTimeout': 'Heartbeat timeout',
     'system.cleanupInterval': 'Cleanup interval',
@@ -269,8 +350,12 @@ const EN: Record<MessageKey, string> = {
     'system.minutes': 'minutes',
     'system.hours': 'hours',
     'system.days': 'days',
-    'system.activeTemplates': 'Active templates',
-    'system.saveHint': 'Restart Gateway to apply saved settings',
+    'system.activeTemplates': 'Enabled scheduled tasks',
+    'system.saveHint': 'Restart Gateway to apply saved settings.',
+    'system.configApplied': 'The settings shown here are active.',
+    'system.configPending': 'Settings are saved, but this Gateway is still using the values from its last start.',
+    'system.configForeground': 'This page is not connected to Gateway runtime settings. Restart Gateway after saving.',
+    'system.configRestartManually': 'Settings are saved but not active. Return to the terminal that launched Gateway, press Ctrl-C, then run supertask gateway again.',
     'system.runningTasks': 'Active tasks ({running} / {limit} concurrent)',
     'system.taskStats': 'Task overview',
     'system.configFile': 'Configuration file',
@@ -280,6 +365,45 @@ const EN: Record<MessageKey, string> = {
     'system.noDefault': 'No, using defaults',
     'system.danger': 'Danger zone',
     'system.dangerDescription': 'A verified backup is created first, then tasks, runs, and templates are cleared transactionally. Active work blocks this operation.',
+    'template.createTitle': 'New scheduled task',
+    'template.editTitle': 'Edit scheduled task',
+    'template.formSubtitle': 'Choose when to run and which project, model, and prompt OpenCode should use.',
+    'template.name': 'Name',
+    'template.cwd': 'Project directory',
+    'template.cwdHint': 'OpenCode runs the task in this directory.',
+    'template.agent': 'Agent',
+    'template.model': 'Model',
+    'template.prompt': 'Prompt',
+    'template.scheduleType': 'Schedule',
+    'template.cronExpr': 'Cron expression',
+    'template.cronHint': 'Example: 0 9 * * * (daily at 09:00)',
+    'template.interval': 'Interval',
+    'template.runAt': 'Run at',
+    'template.durationHint': 'Supports 30s, 5min, 1h, 2d',
+    'template.advanced': 'More execution settings',
+    'template.category': 'Category',
+    'template.batchId': 'Batch ID',
+    'template.importance': 'Importance (1-5)',
+    'template.urgency': 'Urgency (1-5)',
+    'template.maxInstances': 'Automatic scheduling limit',
+    'template.maxInstancesHint': 'Limits automatic scheduling only. “Run now” always queues a task. Active instances include pending, running, and retry-waiting tasks.',
+    'template.maxRetries': 'Failure retries',
+    'template.retryBackoff': 'Retry delay',
+    'template.timeout': 'Run timeout',
+    'template.optional': 'Optional',
+    'template.futureOnly': 'Saved settings apply to tasks created in the future. Editing does not change queued or running tasks.',
+    'projects.title': 'Projects',
+    'projects.description': 'The project directory is the isolation key. Check active and queued work before adding more.',
+    'projects.all': 'All projects',
+    'projects.legacy': 'Ungrouped',
+    'projects.legacyHint': 'Legacy tasks without a project directory. View, cancel, or delete them; recreate under the correct project to make changes.',
+    'projects.counts': 'Running {running} · queued {pending} · issues {failed}',
+    'task.createTitle': 'New task',
+    'task.editTitle': 'Edit task',
+    'task.formSubtitle': 'The task enters the durable queue immediately and waits automatically when concurrency is full.',
+    'task.batchHint': 'Tasks with the same non-empty batch ID run serially. Blank removes the batch constraint; global concurrency and dependencies still apply.',
+    'task.projectExisting': 'This project has {total} tasks: {running} running, {pending} queued, and {failed} with issues.',
+    'task.projectNew': 'This is a new project group. It appears in the project list after creation.',
     'theme.label': 'Theme',
     'theme.system': 'System',
     'theme.light': 'Light',
@@ -297,18 +421,28 @@ const EN: Record<MessageKey, string> = {
     'dialog.disableTemplate': 'Disable this schedule?',
     'dialog.disableTemplateBody': 'It will stop creating new tasks automatically. Existing tasks are unchanged.',
     'dialog.deleteTemplate': 'Delete this schedule?',
-    'dialog.deleteTemplateBody': 'This template configuration will be permanently deleted.',
+    'dialog.deleteTemplateBody': 'This scheduled task configuration will be permanently deleted.',
     'dialog.triggerTemplate': 'Run this schedule now?',
-    'dialog.triggerTemplateBody': 'A new task is created from the template, subject to its instance limit.',
+    'dialog.triggerTemplateBody': 'A task is queued immediately using the current settings. If global concurrency is full, it waits to run.',
     'dialog.clearTitle': 'Confirm database clear',
-    'dialog.clearBody': 'This deletes every task, run, and schedule template after creating a backup.',
+    'dialog.clearBody': 'This deletes every task, run, and scheduled task after creating a backup.',
     'dialog.clearInstruction': 'Type CLEAR to confirm',
+    'dialog.restartGateway': 'Restart and apply settings?',
+    'dialog.restartGatewayBody': 'Gateway will be briefly unavailable and should recover through PM2 within a few seconds.',
+    'dialog.restartGatewayRunningBody': '{count} tasks are running. The system waits for them first; after the grace period, unfinished tasks are stopped safely and returned to the queue before PM2 restores Gateway.',
     'feedback.retryFailed': 'Retry failed',
     'feedback.cancelFailed': 'Cancellation failed',
     'feedback.deleteFailed': 'Delete failed',
     'feedback.requestFailed': 'Request failed',
     'feedback.triggered': 'Task #{id} created',
-    'feedback.configSaved': 'Settings saved. Restart Gateway to apply them.',
+    'feedback.taskCreated': 'Task #{id} added to the queue',
+    'feedback.taskUpdated': 'Task #{id} updated',
+    'feedback.templateCreated': 'Scheduled task created',
+    'feedback.templateUpdated': 'Scheduled task updated',
+    'feedback.configSaved': 'Settings saved',
+    'feedback.sessionCommandCopied': 'Session command copied. Paste it into a terminal to continue.',
+    'feedback.restarting': 'Gateway is restarting…',
+    'feedback.restartTimeout': 'Gateway has not recovered yet. Refresh later or check PM2 status.',
     'feedback.databaseCleared': 'Database cleared. Backup: {path}',
     'feedback.copyFailed': 'Copy failed. Select the content manually.',
     'a11y.skip': 'Skip to main content',
@@ -327,6 +461,20 @@ export function t(
 export function statusText(locale: Locale, status: string): string {
     const key = `status.${status}` as MessageKey;
     return key in ZH ? t(locale, key) : t(locale, 'status.unknown');
+}
+
+export function runStatusText(locale: Locale, status: string): string {
+    const key = `runStatus.${status}` as MessageKey;
+    return key in ZH ? t(locale, key) : t(locale, 'status.unknown');
+}
+
+export function resolveEditedRunAt(
+    originalEpoch: number | null,
+    originalLocal: string,
+    currentLocal: string,
+): number {
+    if (originalEpoch !== null && originalLocal === currentLocal) return originalEpoch;
+    return new Date(currentLocal).getTime();
 }
 
 export function formatRelative(timestamp: number | null, locale: Locale): string {
@@ -416,8 +564,8 @@ const STYLES = `
     radial-gradient(circle at 10% -10%,var(--bg-glow),transparent 34rem),var(--bg);
     font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
     font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased; }
-  button,input,select { font:inherit; }
-  button,a,select,input { -webkit-tap-highlight-color:transparent; }
+  button,input,select,textarea { font:inherit; }
+  button,a,select,input,textarea { -webkit-tap-highlight-color:transparent; }
   a { color:inherit; }
   code,.mono,.m { font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace; }
   .skip-link { position:fixed; left:16px; top:-60px; z-index:200; padding:10px 14px; border-radius:8px;
@@ -498,6 +646,16 @@ const STYLES = `
   .panel-head { min-height:52px; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:0 18px;
     border-bottom:1px solid var(--border); }
   .panel-head h2,.panel-head h3 { margin:0; font-size:14px; letter-spacing:-.01em; }
+  .panel-head p { margin:3px 0 0; color:var(--text-2); font-size:11px; }
+  .project-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:10px; padding:14px; }
+  .project-card { min-width:0; padding:12px; border:1px solid var(--border); border-radius:10px; color:var(--text); background:var(--surface-2); text-decoration:none; }
+  .project-card:hover { border-color:var(--border-strong); background:var(--surface-3); }
+  .project-card.active { border-color:color-mix(in srgb,var(--primary) 45%,var(--border)); background:var(--primary-soft); }
+  .project-card-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+  .project-card-head strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .project-card-head span { color:var(--text-3); font-size:11px; }
+  .project-path { margin-top:4px; overflow:hidden; color:var(--text-3); font-family:"SFMono-Regular",Consolas,monospace; font-size:10px; text-overflow:ellipsis; white-space:nowrap; }
+  .project-counts { margin-top:8px; color:var(--text-2); font-size:11px; }
   .table-wrap { width:100%; overflow-x:auto; }
   table { width:100%; border-collapse:separate; border-spacing:0; font-size:13px; }
   th { height:42px; padding:0 13px; color:var(--text-3); background:var(--surface-2); border-bottom:1px solid var(--border);
@@ -508,6 +666,7 @@ const STYLES = `
   tbody tr:hover { background:color-mix(in srgb,var(--primary-soft) 30%,transparent); }
   .task-name { font-weight:680; color:var(--text); }
   .task-prompt { max-width:520px; margin-top:3px; color:var(--text-2); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .task-context { margin-top:6px; }
   .muted,.mu { color:var(--text-2); }
   .faint { color:var(--text-3); }
   .small,.sm { font-size:12px; }
@@ -591,6 +750,18 @@ const STYLES = `
   .dialog-head p { margin:3px 0 0; color:var(--text-2); font-size:11px; }
   .dialog-body { max-height:70vh; overflow:auto; padding:18px; }
   .dialog-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; padding:14px 18px; border-top:1px solid var(--border); }
+  .template-dialog { width:min(880px,calc(100% - 32px)); }
+  .template-form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:15px; }
+  .form-field { display:flex; min-width:0; flex-direction:column; gap:6px; color:var(--text-2); font-size:12px; font-weight:650; }
+  .form-field-wide { grid-column:1 / -1; }
+  .form-field input,.form-field select,.form-field textarea { width:100%; min-height:39px; padding:8px 10px; border:1px solid var(--border); border-radius:9px;
+    outline:none; color:var(--text); background:var(--surface-2); font-weight:450; }
+  .form-field textarea { resize:vertical; line-height:1.5; }
+  .form-field input:focus,.form-field select:focus,.form-field textarea:focus { border-color:var(--primary); box-shadow:var(--focus); background:var(--surface); }
+  .form-field small { color:var(--text-3); font-size:10px; font-weight:450; }
+  .advanced-fields { margin-top:18px; padding-top:14px; border-top:1px solid var(--border); }
+  .advanced-fields summary { margin-bottom:14px; color:var(--text-2); cursor:pointer; font-size:12px; font-weight:700; }
+  .form-note { margin:16px 0 0; color:var(--text-3); font-size:11px; }
   .json-view { min-height:160px; margin:0; padding:15px; overflow:auto; border:1px solid var(--border); border-radius:10px; color:var(--text-2);
     background:var(--surface-2); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .confirm-copy { color:var(--text-2); margin:0; }
@@ -656,6 +827,9 @@ const STYLES = `
     .responsive-table td[data-primary]::before { display:none; }
     .responsive-table .task-prompt { max-width:100%; }
     .responsive-table .actions { justify-content:flex-start; }
+    .project-grid { grid-template-columns:1fr; }
+    .template-form-grid { grid-template-columns:1fr; }
+    .form-field-wide { grid-column:auto; }
   }
   @media (max-width:520px) {
     .stats-grid,.stats-grid.three { grid-template-columns:1fr 1fr; }
@@ -685,9 +859,14 @@ function clientMessages(locale: Locale) {
         'dialog.cancelTask', 'dialog.cancelTaskBody', 'dialog.retryTask', 'dialog.retryTaskBody',
         'dialog.deleteTask', 'dialog.deleteTaskBody', 'dialog.disableTemplate', 'dialog.disableTemplateBody',
         'dialog.deleteTemplate', 'dialog.deleteTemplateBody', 'dialog.triggerTemplate', 'dialog.triggerTemplateBody',
-        'dialog.clearTitle', 'dialog.clearBody', 'dialog.clearInstruction', 'feedback.retryFailed',
+        'dialog.clearTitle', 'dialog.clearBody', 'dialog.clearInstruction', 'dialog.restartGateway',
+        'dialog.restartGatewayBody', 'dialog.restartGatewayRunningBody', 'feedback.retryFailed',
         'feedback.cancelFailed', 'feedback.deleteFailed', 'feedback.requestFailed', 'feedback.triggered',
-        'feedback.configSaved', 'feedback.databaseCleared', 'filter.noResults',
+        'feedback.taskCreated', 'feedback.taskUpdated', 'task.projectExisting', 'task.projectNew',
+        'task.createTitle', 'task.editTitle', 'action.saveTask', 'action.updateTask',
+        'feedback.configSaved', 'feedback.databaseCleared', 'feedback.templateCreated',
+        'feedback.templateUpdated', 'feedback.sessionCommandCopied', 'feedback.restarting',
+        'feedback.restartTimeout', 'template.createTitle', 'template.editTitle', 'filter.noResults',
     ] as const;
     return Object.fromEntries(keys.map((key) => [key, t(locale, key)]));
 }
@@ -785,6 +964,7 @@ export function renderLayout(options: {
     themeMedia.addEventListener?.('change',()=>{if((localStorage.getItem('supertask-theme')||'system')==='system')applyTheme('system');});
     applyTheme(localStorage.getItem('supertask-theme')||'system');
     requestAnimationFrame(()=>document.documentElement.classList.add('ui-ready'));
+    ${resolveEditedRunAt.toString()}
     function refreshPage(button){button.classList.add('refreshing');button.setAttribute('aria-label','${t(locale, 'a11y.refreshing')}');location.reload();}
     function showToast(message,type='ok'){const region=document.getElementById('toast-region');const node=document.createElement('div');node.className='toast '+type;node.innerHTML=(type==='error'?'${icon('alert')}':'${icon('check')}')+'<span></span>';node.querySelector('span').textContent=message;region.appendChild(node);setTimeout(()=>{node.classList.add('leaving');setTimeout(()=>node.remove(),220)},3600);}
     async function readJson(response){const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||text('feedback.requestFailed'));return data;}
@@ -796,6 +976,22 @@ export function renderLayout(options: {
     async function showRecord(url){try{const data=await readJson(await fetch(url));document.getElementById('detail-content').textContent=JSON.stringify(data,null,2);document.getElementById('detail-dialog').showModal()}catch(error){showToast(error.message,'error')}}
     const showDetail=id=>showRecord('/api/tasks/'+id);const showRunDetail=id=>showRecord('/api/runs/'+id);const showTemplateDetail=id=>showRecord('/api/templates/'+id);
     async function copyDetails(){try{await navigator.clipboard.writeText(document.getElementById('detail-content').textContent);showToast(text('details.copySuccess'))}catch{showToast(text('feedback.copyFailed'),'error')}}
+    async function copySessionCommand(id){try{const data=await readJson(await fetch('/api/runs/'+id+'/session-command'));await navigator.clipboard.writeText(data.command);showToast(text('feedback.sessionCommandCopied'))}catch(error){showToast(error.message||text('feedback.copyFailed'),'error')}}
+    function taskField(name){return document.getElementById('task-'+name)}
+    function taskProjects(){const node=document.getElementById('task-project-data');if(!node)return {};try{return JSON.parse(node.textContent||'{}')}catch{return {}}}
+    function updateTaskProjectStatus(){const node=taskField('project-status');if(!node)return;const cwd=taskField('cwd').value.trim();if(!cwd){node.textContent='';return}const project=taskProjects()[cwd];node.textContent=project?text('task.projectExisting',project):text('task.projectNew')}
+    function openTaskCreator(){const form=document.getElementById('task-form');form.reset();taskField('id').value='';taskField('cwd').readOnly=false;taskField('cwd').value=form.dataset.defaultCwd||'';taskField('dialog-title').textContent=text('task.createTitle');taskField('save').textContent=text('action.saveTask');updateTaskProjectStatus();document.getElementById('task-dialog').showModal();setTimeout(()=>taskField('name').focus(),50)}
+    async function openTaskEditor(id){try{const data=await readJson(await fetch('/api/tasks/'+id));taskField('id').value=String(id);taskField('name').value=data.name||'';taskField('cwd').value=data.cwd||'';taskField('cwd').readOnly=true;taskField('agent').value=data.agent||'';taskField('model').value=data.model||'default';taskField('prompt').value=data.prompt||'';taskField('category').value=data.category||'general';taskField('batch').value=data.batchId||'';taskField('importance').value=String(data.importance??3);taskField('urgency').value=String(data.urgency??3);taskField('max-retries').value=String(data.maxRetries??3);taskField('retry-backoff').value=durationInput(data.retryBackoffMs??30000);taskField('timeout').value=durationInput(data.timeoutMs);taskField('dialog-title').textContent=text('task.editTitle');taskField('save').textContent=text('action.updateTask');updateTaskProjectStatus();document.getElementById('task-dialog').showModal();setTimeout(()=>taskField('name').focus(),50)}catch(error){showToast(error.message,'error')}}
+    async function saveTask(event){event.preventDefault();const form=document.getElementById('task-form');if(!form.reportValidity())return;const id=taskField('id').value;const body={name:taskField('name').value,cwd:taskField('cwd').value,agent:taskField('agent').value,model:taskField('model').value,prompt:taskField('prompt').value,category:taskField('category').value,batchId:taskField('batch').value,importance:Number(taskField('importance').value),urgency:Number(taskField('urgency').value),maxRetries:Number(taskField('max-retries').value),retryBackoff:taskField('retry-backoff').value,timeout:taskField('timeout').value};const button=taskField('save');button.disabled=true;try{const data=await readJson(await fetch(id?'/api/tasks/'+id:'/api/tasks',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));showToast(text(id?'feedback.taskUpdated':'feedback.taskCreated',{id:data.task.id}));document.getElementById('task-dialog').close();setTimeout(()=>location.assign(id?location.href:'/?cwd='+encodeURIComponent(data.task.cwd||'')),450)}catch(error){showToast(error.message,'error')}finally{button.disabled=false}}
+    function templateField(name){return document.getElementById('template-'+name)}
+    function durationInput(milliseconds){if(milliseconds==null)return '';if(milliseconds===0)return '0';const units=[['d',86400000],['h',3600000],['min',60000],['s',1000],['ms',1]];for(const [unit,factor] of units){if(milliseconds%factor===0)return String(milliseconds/factor)+unit}return String(milliseconds)+'ms'}
+    function localDateTime(milliseconds){const date=new Date(milliseconds);const local=new Date(milliseconds-date.getTimezoneOffset()*60000);return local.toISOString().slice(0,23)}
+    function updateTemplateScheduleFields(){const type=templateField('schedule-type').value;const fields={cron:templateField('cron-field'),recurring:templateField('interval-field'),delayed:templateField('run-at-field')};for(const [name,node] of Object.entries(fields)){node.hidden=name!==type;node.querySelector('input').required=name===type}}
+    function setOriginalRunAt(epoch){const input=templateField('run-at');const local=epoch?localDateTime(epoch):'';input.value=local;input.dataset.originalEpoch=epoch?String(epoch):'';input.dataset.originalLocal=local}
+    function selectedRunAt(){const input=templateField('run-at');return resolveEditedRunAt(input.dataset.originalEpoch?Number(input.dataset.originalEpoch):null,input.dataset.originalLocal||'',input.value)}
+    function openTemplateCreator(){const form=document.getElementById('template-form');form.reset();templateField('id').value='';templateField('dialog-title').textContent=text('template.createTitle');setOriginalRunAt(null);templateField('run-at').value=localDateTime(Date.now()+3600000);updateTemplateScheduleFields();document.getElementById('template-dialog').showModal();setTimeout(()=>templateField('name').focus(),50)}
+    async function openTemplateEditor(id){try{const data=await readJson(await fetch('/api/templates/'+id));templateField('id').value=String(id);templateField('dialog-title').textContent=text('template.editTitle');templateField('name').value=data.name||'';templateField('cwd').value=data.cwd||'';templateField('agent').value=data.agent||'';templateField('model').value=data.model||'default';templateField('prompt').value=data.prompt||'';templateField('schedule-type').value=data.scheduleType;templateField('cron').value=data.cronExpr||'';templateField('interval').value=durationInput(data.intervalMs);setOriginalRunAt(data.runAt||null);if(!data.runAt)templateField('run-at').value=localDateTime(Date.now()+3600000);templateField('category').value=data.category||'general';templateField('batch').value=data.batchId||'';templateField('importance').value=String(data.importance??3);templateField('urgency').value=String(data.urgency??3);templateField('max-instances').value=String(data.maxInstances??1);templateField('max-retries').value=String(data.maxRetries??3);templateField('retry-backoff').value=durationInput(data.retryBackoffMs??30000);templateField('timeout').value=durationInput(data.timeoutMs);updateTemplateScheduleFields();document.getElementById('template-dialog').showModal();setTimeout(()=>templateField('name').focus(),50)}catch(error){showToast(error.message,'error')}}
+    async function saveTemplate(event){event.preventDefault();const form=document.getElementById('template-form');if(!form.reportValidity())return;const id=templateField('id').value;const type=templateField('schedule-type').value;const body={name:templateField('name').value,cwd:templateField('cwd').value,agent:templateField('agent').value,model:templateField('model').value,prompt:templateField('prompt').value,scheduleType:type,cronExpr:templateField('cron').value,interval:templateField('interval').value,runAt:type==='delayed'?selectedRunAt():null,category:templateField('category').value,batchId:templateField('batch').value,importance:Number(templateField('importance').value),urgency:Number(templateField('urgency').value),maxInstances:Number(templateField('max-instances').value),maxRetries:Number(templateField('max-retries').value),retryBackoff:templateField('retry-backoff').value,timeout:templateField('timeout').value};const button=templateField('save');button.disabled=true;try{await readJson(await fetch(id?'/api/templates/'+id:'/api/templates',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}));showToast(text(id?'feedback.templateUpdated':'feedback.templateCreated'));document.getElementById('template-dialog').close();setTimeout(()=>location.assign(id?location.href:'/templates'),450)}catch(error){showToast(error.message,'error')}finally{button.disabled=false}}
     async function enableTmpl(id){try{await readJson(await fetch('/api/templates/'+id+'/enable',{method:'POST'}));location.reload()}catch(error){showToast(error.message,'error')}}
     async function disableTmpl(id){if(!await ask(text('dialog.disableTemplate'),text('dialog.disableTemplateBody')))return;try{await readJson(await fetch('/api/templates/'+id+'/disable',{method:'POST'}));location.reload()}catch(error){showToast(error.message,'error')}}
     async function deleteTmpl(id){if(!await ask(text('dialog.deleteTemplate'),text('dialog.deleteTemplateBody'),true))return;try{await readJson(await fetch('/api/templates/'+id,{method:'DELETE'}));location.reload()}catch(error){showToast(error.message,'error')}}
@@ -803,7 +999,9 @@ export function renderLayout(options: {
     function toggleLog(id,button){const panel=document.getElementById('log-'+id);const hidden=!panel.hidden;panel.hidden=hidden;button.setAttribute('aria-expanded',String(!hidden));button.textContent=text(hidden?'action.logs':'action.hideLogs');}
     function filterTasks(value){const query=value.trim().toLocaleLowerCase();let visible=0;document.querySelectorAll('[data-task-row]').forEach(row=>{const match=!query||row.dataset.search.toLocaleLowerCase().includes(query);row.hidden=!match;if(match)visible++});const empty=document.getElementById('search-empty');if(empty)empty.hidden=visible!==0;}
     async function clearDatabase(){if(!await askDanger())return;try{const data=await readJson(await fetch('/api/database/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'CLEAR'})}));showToast(text('feedback.databaseCleared',{path:data.backupPath}));setTimeout(()=>location.reload(),1000)}catch(error){showToast(error.message,'error')}}
-    async function saveConfig(){const form=document.getElementById('config-form');const data={worker:{maxConcurrency:Number(form.mc.value),pollIntervalMs:Number(form.pi.value),heartbeatIntervalMs:Number(form.hi.value)*1000,taskTimeoutMs:Number(form.to.value)*60000},scheduler:{enabled:form.se.checked,checkIntervalMs:Number(form.si.value)},watchdog:{heartbeatTimeoutMs:Number(form.wt.value)*1000,checkIntervalMs:Number(form.wci.value)*1000,cleanupIntervalMs:Number(form.wcl.value)*3600000,retentionDays:Number(form.rd.value)}};try{await readJson(await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}));showToast(text('feedback.configSaved'))}catch(error){showToast(error.message,'error')}}
+    async function confirmGatewayRestart(runningCount=0){const body=runningCount>0?text('dialog.restartGatewayRunningBody',{count:runningCount}):text('dialog.restartGatewayBody');return await ask(text('dialog.restartGateway'),body)}
+    async function restartGateway(){try{const data=await readJson(await fetch('/api/gateway/restart',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'RESTART'})}));showToast(text('feedback.restarting'));for(let attempt=0;attempt<120;attempt++){await new Promise(resolve=>setTimeout(resolve,500));try{const status=await readJson(await fetch('/api/gateway/status',{cache:'no-store'}));if(status.pid!==data.previousPid&&status.managed&&status.ready&&!status.restartRequired){location.reload();return true}}catch{}}showToast(text('feedback.restartTimeout'),'error');return false}catch(error){showToast(error.message,'error');return false}}
+    async function saveConfig(restartAfterSave=false,runningCount=0){if(restartAfterSave&&!await confirmGatewayRestart(runningCount))return;const form=document.getElementById('config-form');const data={worker:{maxConcurrency:Number(form.mc.value),pollIntervalMs:Number(form.pi.value),heartbeatIntervalMs:Number(form.hi.value)*1000,taskTimeoutMs:Number(form.to.value)*60000},scheduler:{enabled:form.se.checked,checkIntervalMs:Number(form.si.value)},watchdog:{heartbeatTimeoutMs:Number(form.wt.value)*1000,checkIntervalMs:Number(form.wci.value)*1000,cleanupIntervalMs:Number(form.wcl.value)*3600000,retentionDays:Number(form.rd.value)}};try{await readJson(await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)}));showToast(text('feedback.configSaved'));if(restartAfterSave){const restarted=await restartGateway();if(!restarted)setTimeout(()=>location.reload(),500)}else{setTimeout(()=>location.reload(),500)}}catch(error){showToast(error.message,'error')}}
   </script>
 </body>
 </html>`;

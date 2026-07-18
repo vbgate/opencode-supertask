@@ -2,6 +2,7 @@ export const LEGACY_GUARDIAN_LAUNCH_PROTOCOL = 'gated-v2-guardian';
 export const TOKEN_GUARDIAN_LAUNCH_PROTOCOL = 'gated-v3-token-guardian';
 export const LAUNCH_IDENTITY_ARGUMENT = '--supertask-launch-identity';
 export const DRAIN_PROOF_MESSAGE_TYPE = 'supertask-drained';
+export const DRAIN_PROOF_ACK_MESSAGE_TYPE = 'supertask-drained-ack';
 export const MANAGED_RUN_ENV = 'SUPERTASK_MANAGED_RUN';
 export const MANAGED_RUN_ENV_VALUE = '1';
 
@@ -14,9 +15,20 @@ export function drainProofForIdentity(launchIdentity: string) {
     return { type: DRAIN_PROOF_MESSAGE_TYPE, identity: launchIdentity } as const;
 }
 
+export function drainProofAckForIdentity(launchIdentity: string) {
+    return { type: DRAIN_PROOF_ACK_MESSAGE_TYPE, identity: launchIdentity } as const;
+}
+
 export function isMatchingDrainProof(message: unknown, launchIdentity: string): boolean {
     if (typeof message !== 'object' || message == null) return false;
     const candidate = message as Record<string, unknown>;
     return candidate.type === DRAIN_PROOF_MESSAGE_TYPE
+        && candidate.identity === launchIdentity;
+}
+
+export function isMatchingDrainProofAck(message: unknown, launchIdentity: string): boolean {
+    if (typeof message !== 'object' || message == null) return false;
+    const candidate = message as Record<string, unknown>;
+    return candidate.type === DRAIN_PROOF_ACK_MESSAGE_TYPE
         && candidate.identity === launchIdentity;
 }

@@ -1,7 +1,7 @@
 # SuperTask 运行与排障手册
 
 > 状态：当前有效
-> 最后核对：2026-07-16
+> 最后核对：2026-07-18
 
 ## 启动方式与 PM2
 
@@ -30,15 +30,37 @@ pm2 status
 pm2 logs supertask-gateway
 ```
 
+`supertask doctor` 会读取 `opencode debug config --pure` 的最终配置，要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或版本不一致都会返回非零退出码。全局 CLI 与插件版本不一致会给出 `npm install -g` / `bun add -g` 提示，但不会把本来健康的 Gateway 判坏。
+
 修改配置后必须重启 Gateway 才生效：
 
 ```bash
 pm2 restart supertask-gateway
 ```
 
-前台模式则用 `Ctrl-C` 停止后重新运行。停止会先等待 drain 宽限期，随后中断未完成任务并把它们重置为 `pending`，因此有外部副作用的任务仍应保证幂等。
+Dashboard 会区分配置文件中的“已保存值”和当前 Gateway 的“正在生效值”。由同一运行作用域的 PM2 进程托管时，可点击“保存并重启”：接口确认 PM2 PID、新鲜 ready 锁和数据库/配置作用域都匹配后，先返回响应，再让 Gateway 优雅退出并由 PM2 自动拉起；不会在请求处理中同步停止自身。前台模式不显示自动重启按钮，需用 `Ctrl-C` 停止后重新运行。停止会先等待 drain 宽限期，随后中断未完成任务并把它们重置为 `pending`，因此有外部副作用的任务仍应保证幂等。
+
+## 升级
+
+无需先卸载。必须从外部终端或非队列 OpenCode 会话执行：
+
+```bash
+supertask upgrade
+```
+
+升级先查询 npm 的 `latest` 精确版本，再用 `opencode plugin opencode-supertask@<version> --global --force` 写入精确配置并确认对应缓存真实存在，最后用该缓存包的 Gateway 入口替换 PM2 进程；新 Gateway 未 ready 会回滚旧入口和旧插件版本。陈旧 `@latest` 目录可以保留，因为不会被当作目标版本；`supertask doctor` 会检查实际选中的配置和入口。OpenCode 进程仍需重启才能加载新插件。
+
+CLI 可能由 npm 或 Bun 安装，升级命令无法安全猜测原包管理器，因此不会静默改写全局 CLI。若输出或 `supertask doctor` 提示 CLI 版本落后，用最初的包管理器安装相同精确版本：
+
+```bash
+npm install -g opencode-supertask@<version>
+# 或
+bun add -g opencode-supertask@<version>
+```
 
 ## 初始化与数据位置
+
+运行时要求 Bun 1.1.45 或更高版本。CI 会用最低支持版本单独执行构建后 launcher 的真实 IPC 握手，避免最新版 Bun 测试掩盖旧版本中 `process.send` callback 不回调的问题。
 
 ```bash
 supertask init       # 首次创建最小配置并执行数据库迁移
@@ -122,7 +144,7 @@ CLI 的任务/模板 ID、优先级、重试次数和列表数量均按完整十
 - 长任务优先用任务或模板的 `timeoutMs` 单独覆盖，不要为了一个任务放大全局超时。
 - `cleanupIntervalMs` 决定检查频率，`retentionDays` 决定保留窗口，两者不是同一个概念。
 
-## 重试与调度操作
+## 重试与定时任务操作
 
 默认任务最多执行 4 次：首次执行加 3 次重试。失败退避为 30 秒、60 秒、120 秒，之后按同一指数规则增长，单次最多 30 分钟；基础间隔可由任务或模板覆盖。
 
@@ -135,7 +157,21 @@ supertask retry --id 42   # 仅 failed/dead_letter；依赖仍有效时清零重
 
 若任务的 `dependsOn` 已丢失、跨 `cwd` 或进入不可恢复终态，单个和批量重试都会跳过该任务，避免生成永远无法执行的 `pending`。
 
-模板的 `maxInstances` 统计该模板产生的 `pending`、`running` 和仍有自动重试预算的 `failed`。达到上限时保留到期状态，等容量释放后再生成一个实例；Dashboard 手动触发也不会绕过上限。不会回放离线期间错过的每个周期。
+`cwd` 同时是项目分组、查询隔离键和 OpenCode 子进程工作目录。插件、CLI、Dashboard 和定时任务模板在入库前都会拒绝空字符串、相对路径、不存在路径和文件路径；旧数据库中遗留的非法 `cwd` 若被 Worker 取到，会直接记录一次失败并进入 `dead_letter`，不会启动 OpenCode 或反复刷错。Dashboard 的任务首页按 `cwd` 汇总运行、排队和异常数量；新建普通任务时选择同一路径即可先看到该项目当前是否有任务执行。`batchId` 是独立于项目分组的全局串行键：所有相同非空值的任务不会同时执行，空白值统一保存为无批次；需要确定完成顺序时使用 `dependsOn`。
+
+`pending`、等待自动重试的 `failed` 和 `dead_letter` 任务可以在 Dashboard 编辑名称、Agent、模型、提示词、分类、优先级、批次、重试与超时；项目目录和依赖关系保持不变。CLI 使用同一 Service：
+
+```bash
+supertask edit --id 42 --model openai/gpt-5 --importance 5 --prompt "更新后的要求"
+```
+
+运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`；修改该状态后仍需人工重试才会重新入队。
+
+Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时；时间长度可写成 `30s`、`5min`、`1h` 或 `2d`。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
+
+任务页和执行记录页的“继续会话”会从服务端按 run ID 读取已捕获的 Session ID，校验格式后复制 `opencode --session <sessionId>`；完整 Session ID 不写入页面 HTML。界面中的“等待重试”对应内部 `failed`，仍会按退避策略自动执行；“已停止”对应内部 `dead_letter`，可能是重试用尽或依赖无法继续，系统不会再自动运行，需要查看失败原因后手动重试。
+
+定时任务的 `maxInstances` 只限制自动调度，统计它产生的 `pending`、`running` 和仍有自动重试预算的 `failed`。Dashboard 的“立即运行一次”始终按当前模板创建普通 `pending` 任务；若 Worker 全局并发已满，它会留在队列等待。手动创建的任务仍计入后续自动调度的活跃实例数。不会回放离线期间错过的每个周期。
 
 ## 健康检查与可观测性
 
@@ -154,6 +190,7 @@ curl -fsS http://127.0.0.1:4680/health
 - `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
 - Dashboard 顶栏可切换中文/English 和跟随系统/浅色/深色主题。语言写入当前站点 Cookie，主题写入浏览器本地存储；它们只影响当前浏览器显示，不修改 Gateway 配置。
 - 新 run 使用 `gated-v3-token-guardian`，每 run UUID 会同时写入 `task_runs.locked_by` 和 launcher argv。Watchdog 只有在 launcher、OpenCode 参数与 UUID 全部匹配时才终止进程组；Worker 仅在收到 launcher 通过独立 IPC 返回的同 UUID 排空证明后才结算正常退出。guardian 无证明退出会保持 run 和批次隔离，进程组明确消失后才作失败收敛。旧 v2/legacy 记录的 PID 或 PGID 仍存活、被复用或无法确认时只隔离且不发信号，只有二者都明确消失才恢复。无法确认子进程退出时 `/health` 会降级；旧版 `started_at`/`heartbeat_at` 同时缺失的运行记录也会立即进入诊断隔离。
+- drain proof 使用双向确认：Worker 校验同 UUID 证明后回送确认，launcher 收件后才退出，不再依赖旧 Bun 不可靠的 `process.send` callback。
 - 旧版 `launch_protocol IS NULL` 且没有 child PID 的 run 无法自动证明进程退出。`doctor` 和 Watchdog 日志会给出任务/run ID：先在任务 `cwd` 执行 `supertask cancel --id <taskId>`，人工确认没有遗留 OpenCode，再执行 `supertask run abandon --id <runId> --confirm ABANDON`。未知非空协议、当前 guardian、存活 owner 或已记录 child PID 都会失败关闭，不能用该命令绕过。
 - 最可靠的运行证据是 `supertask doctor` 全部通过、`pm2 logs supertask-gateway` 中有启动/状态变化，以及最新 `task_runs` 心跳。`doctor` 失败时返回非零退出码，适合外部巡检。
 
@@ -221,7 +258,7 @@ supertask db backup --output ~/supertask-backup/tasks.db
 - 自动备份默认与数据库放在同一目录，名称包含用途、UTC 时间和随机后缀，文件权限为 `0600`。
 - `check/backup/clear/restore` 在交互式终端输出人类可读摘要；stdout 非 TTY 时保持 JSON，终端脚本可传 `--json` 强制 JSON。成功和错误使用同一判断，便于 `supertask db check | jq` 等既有调用继续工作。
 
-清空全部任务、执行记录和调度模板：
+清空全部任务、执行记录和定时任务：
 
 ```bash
 supertask db clear --confirm CLEAR

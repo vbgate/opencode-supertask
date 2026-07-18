@@ -13,19 +13,15 @@ Documentation: [current architecture](docs/architecture.md) · [operations and t
 
 ### Quick Install
 
-Install the CLI globally:
+Resolve the current release once, then install both the CLI and OpenCode plugin with that exact version:
 
 ```bash
-npm install -g opencode-supertask
+VERSION="$(npm view opencode-supertask dist-tags.latest)"
+npm install -g "opencode-supertask@$VERSION"
+opencode plugin "opencode-supertask@$VERSION" --global --force
 ```
 
-Then add the plugin to `~/.config/opencode/opencode.json`:
-
-```json
-{
-  "plugin": ["opencode-supertask"]
-}
-```
+This writes an exact `opencode-supertask@<version>` entry. Do not change it to bare `opencode-supertask` or `@latest`; a floating cache key can select stale files after an upgrade.
 
 Restart OpenCode to load 8 queue-management `supertask_*` tools. Execution state is owned only by the Gateway; the plugin no longer exposes manual `start/done/fail` transitions. Then choose how to run the Gateway:
 
@@ -41,7 +37,7 @@ Gateway task execution currently requires macOS or Linux. Windows is rejected at
 ### Uninstall
 
 1. Run `supertask uninstall` to stop the Gateway and remove it from pm2
-2. Remove `"opencode-supertask"` from `~/.config/opencode/opencode.json`
+2. Remove the `"opencode-supertask@<version>"` entry from `~/.config/opencode/opencode.json`
 3. Restart OpenCode
 
 To clear all task data safely, use the backup-first database command:
@@ -90,6 +86,31 @@ Or open the Web Dashboard:
 supertask ui          # Opens http://localhost:4680 in browser
 ```
 
+The Task Queue page groups work by project directory and can create ordinary queued tasks with a model, prompt, priority, batch, retries, and timeout. A task is accepted only when its project path is an existing absolute directory; a full worker pool does not reject it—it remains pending in SQLite.
+
+## SuperTask vs cron, PM2, and shell scripts
+
+SuperTask is not a replacement for every scheduler. If you only have a few fixed, independent `opencode run` commands, use `crontab`, a system timer (`launchd`/`systemd`), GitHub Actions, or PM2 `cron_restart`. They are simpler and do not require the SuperTask Gateway.
+
+| Requirement | Prefer |
+| --- | --- |
+| Run a few fixed, independent commands at fixed times | `crontab`, `launchd`, or a `systemd` timer |
+| Restart one long-running process on a schedule | PM2 `cron_restart` |
+| Run a fixed serial pipeline | A shell script |
+| Manage a changing set of Agent jobs with durable state | SuperTask |
+
+`crontab` can start `opencode run` without this plugin, but it does not natively provide:
+
+- a durable queue with per-task and per-run state after process or machine restarts;
+- dynamic creation and editing from OpenCode, CLI, and Web instead of editing an OS crontab;
+- shared concurrency limits, priority ordering, dependencies, and per-project/batch serialization;
+- retry budgets, exponential backoff, dead-letter handling, and manual recovery;
+- safe cancellation of a managed OpenCode process tree, session tracking, and searchable execution history.
+
+A loop such as `opencode run ... && opencode run ...` is also a valid solution for a fixed serial pipeline. It does not know how to accept new work, reorder it, resume an individual failed job, or expose reliable queue state unless those capabilities are built separately with a database, locks, logs, and process supervision—in effect, a task queue.
+
+SuperTask's scheduler creates ordinary durable queue tasks, so scheduled and manually submitted work share the same concurrency, retry, cancellation, and history rules. The trade-off is that the Gateway must be running to dispatch work. For 24/7 use, run it under the optional PM2 installation or another process supervisor; `crontab` remains the better choice when an OS-level fixed schedule is all you need.
+
 ## CLI Reference
 
 ```bash
@@ -100,10 +121,12 @@ supertask gateway                      # start Gateway in foreground
 supertask ui                           # open Web Dashboard in browser
 supertask config                       # show current config
 supertask doctor [--json]              # end-to-end runtime diagnostics
+supertask upgrade                      # pin latest plugin version and replace Gateway
 
 # Task management
 supertask add -n "Task" -a "agent" -p "prompt" --importance 5 \
   --max-retries 3 --retry-backoff "30s" --timeout "30min"
+supertask edit --id 1 --model "openai/gpt-5" --importance 5 --prompt "updated"
 supertask list [--status pending] [--limit 20]
 supertask get --id 1
 supertask status
@@ -192,11 +215,12 @@ Key mechanisms:
 - **Readiness check** — PM2 PID must match a fresh, ready Gateway lock; `/health` reports Worker, Scheduler, Watchdog and cleanup-loop failures
 - **Heartbeat** — Worker updates every 30s; new runs persist a per-run UUID in `locked_by` and launcher argv, and Watchdog signals a stale process group only when that identity and its OpenCode command match. Worker settles a normal exit only after the launcher returns a matching drain proof over private IPC; an unproved guardian exit remains quarantined until its process group is confirmed absent. Live legacy/v2 groups remain quarantined; an old run is recovered automatically only after both PID and PGID are confirmed absent.
 - **Graceful shutdown** — stop claiming work, drain active tasks for 30s, then requeue only runs whose complete process tree is confirmed stopped
+- **Bun IPC compatibility** — after sending a bound drain proof, the launcher waits for a matching Worker acknowledgment instead of relying on the unreliable `process.send` callback in older Bun versions
 - **Fail-closed process isolation** — Unix uses an independent process group; Windows Worker startup is blocked until Job Object containment is available
 - **External-only upgrades** — Gateway-managed OpenCode runs cannot invoke `supertask_upgrade`; upgrades must start from an external CLI or interactive session so they cannot terminate their own host Gateway
 - **Exponential backoff** — configurable base × 2^n, capped at 30min
 - **Dead letter queue** — `maxRetries` additional retries exhausted → `dead_letter`, manually recoverable
-- **Batch isolation** — Same `batchId` remains serial across Gateway restarts; different `batchId` can run in parallel
+- **Project and batch isolation** — `cwd` groups and isolates project queries; the same non-empty `batchId` is a global serialization key across projects and Gateway restarts, while different or omitted batches can run in parallel
 - **Priority** — `urgency DESC → importance DESC → createdAt ASC → id ASC`
 - **Local Dashboard boundary** — loopback-only listener, same-origin write checks, escaped database output
 - **Guarded deletion** — active runs and prerequisites of executable dependent tasks cannot be deleted
@@ -207,14 +231,14 @@ http://localhost:4680 — 4 pages:
 
 The responsive Dashboard supports Chinese and English plus system, light, and dark themes. Language is stored in a same-site cookie, while theme preference stays in browser local storage; both survive refreshes without changing Gateway configuration.
 
-Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` also checks OpenCode, SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump.
+Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` also checks OpenCode, SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump. It requires the effective OpenCode plugin configuration to use one exact version, verifies that exact cache package, and compares it with the actual PM2 Gateway entry and ready-lock version; floating `@latest`/`@next` Gateway paths fail diagnostics. A global CLI version mismatch is reported with the exact reinstall command but does not make a healthy Gateway unhealthy.
 
 | Page | Features |
 |------|----------|
-| Task Queue | Filter by status, retry, cancel, guarded delete |
-| Scheduled Tasks | Template CRUD, enable/disable, manual trigger |
+| Task Queue | Group/filter by project directory, see running/queued/error counts, create or edit ordinary prioritized tasks, retry, cancel, guarded delete, and copy a validated `opencode --session …` command |
+| Scheduled Tasks | Create and edit model, agent, prompt, project directory, schedule, retries, and timeout; the instance limit controls automatic scheduling, while Run now always queues a task |
 | Execution Logs | task_runs history with session tracking |
-| System Status | Config editor, concurrency monitor, backup-first transactional database clear |
+| System Status | Config editor with saved/active state, PM2-backed save-and-restart, concurrency monitor, and backup-first transactional database clear |
 
 ## Data
 
@@ -223,7 +247,7 @@ Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gatew
 
 ## Requirements
 
-- [Bun](https://bun.sh) >= 1.0
+- [Bun](https://bun.sh) >= 1.1.45 (CI verifies launcher IPC on both the minimum and current versions)
 - [OpenCode](https://opencode.ai)
 
 ## License
@@ -242,19 +266,15 @@ SuperTask 是一个基于 SQLite 的 AI Agent 任务调度系统，专为 [OpenC
 
 ### 安装
 
-先安装全局 CLI：
+先解析一次稳定版号，再用同一个精确版本安装全局 CLI 和 OpenCode 插件：
 
 ```bash
-npm install -g opencode-supertask
+VERSION="$(npm view opencode-supertask dist-tags.latest)"
+npm install -g "opencode-supertask@$VERSION"
+opencode plugin "opencode-supertask@$VERSION" --global --force
 ```
 
-然后在 `~/.config/opencode/opencode.json` 中添加：
-
-```json
-{
-  "plugin": ["opencode-supertask"]
-}
-```
+最终配置应是精确的 `opencode-supertask@<version>`，不要改成裸包名或 `@latest`；浮动缓存键可能在升级后仍命中旧文件。
 
 重启 OpenCode 后会注入 8 个队列管理 `supertask_*` 工具。执行状态只允许 Gateway 写入，插件不再暴露手动 `start/done/fail` 状态迁移。随后选择一种 Gateway 运行方式：
 
@@ -265,10 +285,12 @@ supertask gateway   # 前台运行：不需要 pm2
 
 插件不会自行安装全局依赖。Gateway 未运行时仍可管理队列，但不会执行排队/定时任务，也不会启动 Web 控制台。
 
+升级无需卸载，执行 `supertask upgrade`。它会精确安装最新插件并替换 Gateway；重启 OpenCode 后生效。全局 CLI 由 npm 或 Bun 安装，命令不会猜测并静默更换包管理器；若 doctor 提示版本落后，用原包管理器安装输出中的精确版本（`npm install -g` 或 `bun add -g`）。
+
 ### 卸载
 
 1. 运行 `supertask uninstall` 停止 Gateway
-2. 从 `~/.config/opencode/opencode.json` 中移除 `"opencode-supertask"`
+2. 从 `~/.config/opencode/opencode.json` 中移除 `"opencode-supertask@<version>"`
 3. 重启 OpenCode
 
 安全清理所有任务数据：
@@ -294,21 +316,44 @@ supertask template add --type recurring --interval "5min" ...
 supertask template add --type cron --cron "0 9 * * *" ...
 ```
 
+### 与 crontab、PM2、Shell 脚本的区别
+
+SuperTask 并不是所有定时场景的替代品。如果只是按固定时间运行少量、互不依赖的 `opencode run`，优先使用 `crontab`、`launchd` / `systemd` 定时器、GitHub Actions 或 PM2 `cron_restart`：它们更简单，也不依赖 SuperTask Gateway。
+
+| 需求 | 更合适的方案 |
+| --- | --- |
+| 固定时间运行少量、互不依赖的命令 | `crontab`、`launchd` 或 `systemd` 定时器 |
+| 定时重启一个长期运行的进程 | PM2 `cron_restart` |
+| 按固定顺序执行一串命令 | Shell 脚本 |
+| 管理会动态变化、需要持久状态的 Agent 任务 | SuperTask |
+
+`crontab` 完全可以直接启动 `opencode run`，但它默认不提供：
+
+- 进程或机器重启后仍可恢复的持久任务队列，以及逐任务、逐次执行状态；
+- 从 OpenCode、CLI 和 Web 动态创建、编辑任务，而不是修改操作系统的 crontab；
+- 全局并发限制、优先级、依赖关系，以及跨项目生效的全局同批次串行；
+- 重试次数、指数退避、失败任务隔离（死信）和人工恢复；
+- 对受管 OpenCode 进程树的安全取消、Session 追踪和可查询的执行历史。
+
+`opencode run ... && opencode run ...` 或循环脚本也适合固定的串行流水线；但它无法直接接收新任务、调整顺序、单独恢复某个失败任务或展示可靠的队列状态。若再自行补数据库、锁、日志解析和进程守护，本质上就是重新实现一套任务队列。
+
+SuperTask 的定时器会生成普通的持久队列任务，因此定时任务与手动任务共用并发、重试、取消和历史记录规则。代价是 Gateway 必须运行才能派发任务；需要 7×24 小时运行时，应使用可选的 PM2 安装或其他进程守护。若需求仅是操作系统按固定时间拉起一条命令，`crontab` 仍是更合适的选择。
+
 ### 核心功能
 
 当前 Gateway 任务执行支持 macOS 和 Linux。Windows 在具备 Job Object 级进程树隔离前会拒绝启动，避免取消或重试时遗留 OpenCode 后代进程。
 
-- **任务队列** — 优先级调度、批次隔离、依赖管理
+- **任务队列** — `cwd` 项目分组与查询隔离、优先级调度、全局同批次串行、依赖管理；工作目录必须是已存在的绝对目录
 - **安全停止** — 默认等待在途任务 30 秒；只有确认整棵进程树退出的任务才会被重新排队
 - **进程守护** — 可选 pm2 崩溃恢复；PM2 kill timeout 不低于 Worker drain 宽限期加 15 秒，`stop/delete` 至少再等待 5 秒并在返回前持续持有可崩溃释放的 SQLite 生命周期锁，macOS 监督器不会击穿 PM2 的 `errored` 熔断；显式 `supertask install` 同时安装/配置有限保留的日志轮转，插件加载不会安装全局依赖
 - **版本感知重启** — 已安装 pm2 时，插件加载会在包版本变化后安全替换 Gateway；旧环境无法执行 PM2 时会在删除前拒绝操作，否则保留原运行环境并在失败时回滚
 - **外部升级边界** — Gateway 管理的 OpenCode 任务不能调用 `supertask_upgrade`；升级必须从外部 CLI 或非队列交互会话发起，避免任务终止承载自己的 Gateway
-- **定时任务** — cron / delayed / recurring，支持友好时间格式
-- **Web 控制台** — 任务监控、执行日志、在线配置、自动备份后事务性清空数据库；支持中英文、跟随系统/浅色/深色主题和移动端布局
-- **Session 追踪** — 自动从 opencode run 输出中捕获 session ID
+- **定时任务** — cron / delayed / recurring，支持友好时间格式；`maxInstances` 限制自动调度，手动“立即运行一次”始终入队并在全局并发已满时等待
+- **Web 控制台** — 按项目目录显示运行/排队/异常数量，可创建和编辑带模型、提示词、优先级、批次、重试与超时的普通任务，也可创建和编辑定时任务；普通任务编辑保持 `cwd` 不变且拒绝运行中/终态任务；支持区分已保存/正在生效的配置、PM2 托管时保存并重启、自动备份后事务性清空数据库、中英文、跟随系统/浅色/深色主题和移动端布局
+- **Session 追踪** — 自动从 opencode run 输出中捕获 session ID；任务页和执行记录页可复制经过校验的 `opencode --session …` 命令继续会话
 - **安全删除** — 活跃执行必须先取消并收敛；仍被可执行任务依赖的前置任务也不会被误删
 - **安全重试** — 仅在依赖仍存在、同项目且可恢复时重置任务，历史清理并发时不会制造悬空 `pending`
-- **一键诊断** — `supertask doctor` 检查真实 OpenCode、SQLite、PM2 ready 锁、Dashboard、日志轮转和 macOS 重启恢复链路
+- **一键诊断** — `supertask doctor` 检查真实 OpenCode、精确锁定的插件配置/缓存、全局 CLI 提示、PM2 实际 Gateway 入口与 ready 锁版本、SQLite、Dashboard、日志轮转和 macOS 重启恢复链路；浮动 `@latest`/`@next` Gateway 路径会判异常
 
 ### 数据库维护
 
@@ -333,6 +378,8 @@ supertask db check | jq '.counts'
 旧版本若在记录 child PID 前崩溃，Watchdog 会安全隔离该 run，`supertask doctor` 与 Gateway 日志会给出任务/run ID。先在任务记录的 `cwd` 执行 `supertask cancel --id <taskId>`，独立确认没有遗留 OpenCode 进程，再执行 `supertask run abandon --id <runId> --confirm ABANDON`。该命令只关闭 owner 已退出、child PID 为空且任务已取消的旧版 run；当前 guardian run、存活 owner 或已记录 PID 的 run 一律拒绝。
 
 新 run 使用 `gated-v3-token-guardian`，每次执行的 UUID 同时写入 `task_runs.locked_by` 和 launcher argv；Watchdog 只有在 launcher、OpenCode 参数与 UUID 全部匹配时才会终止进程组。Worker 还要收到 launcher 在整组排空后通过独立 IPC 返回的同 UUID 证明，才结算正常退出；guardian 无证明退出会隔离到进程组明确消失。旧 v2/legacy 记录若 PID 或 PGID 仍存活或无法确认，只保持隔离且不自动发信号；PID 与进程组均明确消失后才安全恢复。
+
+排空证明采用双向确认：Worker 校验证明后回送同 UUID，launcher 收件后才退出；该握手不依赖旧 Bun 不可靠的 `process.send` 回调。最低支持 Bun 1.1.45，CI 同时验证最低版本和当前版本。
 
 ### 数据位置
 

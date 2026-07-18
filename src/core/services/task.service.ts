@@ -5,9 +5,38 @@ import { db, getSqlite, schema } from '@core/db';
 import { eq, and, desc, asc, sql, isNull, or } from 'drizzle-orm';
 import type { Task, NewTask, TaskStatus } from '@core/db/schema';
 import { computeBackoff } from '@core/backoff';
+import { validateTaskWorkingDirectory } from '@core/task-working-directory';
+import {
+    normalizeTaskBatchId,
+    TASK_BATCH_TRIM_CHARACTERS,
+} from '@core/task-batch';
 
 const { tasks, taskRuns } = schema;
 let cleanupInvocation = 0;
+
+export interface TaskProjectSummary {
+    cwd: string;
+    total: number;
+    pending: number;
+    running: number;
+    failed: number;
+    done: number;
+    lastCreatedAt: number | null;
+}
+
+export interface EditableTaskUpdate {
+    name?: string;
+    agent?: string;
+    model?: string;
+    prompt?: string;
+    category?: string;
+    importance?: number;
+    urgency?: number;
+    batchId?: string | null;
+    maxRetries?: number;
+    retryBackoffMs?: number;
+    timeoutMs?: number | null;
+}
 
 export class TaskDeletionConflictError extends Error {
     constructor(message: string) {
@@ -74,9 +103,13 @@ export class TaskService {
     }
 
     static async add(data: NewTask): Promise<Task> {
-        this.validateNewTask(data);
+        const normalizedData = {
+            ...data,
+            batchId: normalizeTaskBatchId(data.batchId),
+        };
+        this.validateNewTask(normalizedData);
         return db.transaction((tx) => {
-            if (data.dependsOn != null) {
+            if (normalizedData.dependsOn != null) {
                 const dependency = tx
                     .select({
                         id: tasks.id,
@@ -86,12 +119,12 @@ export class TaskService {
                         maxRetries: tasks.maxRetries,
                     })
                     .from(tasks)
-                    .where(eq(tasks.id, data.dependsOn))
+                    .where(eq(tasks.id, normalizedData.dependsOn))
                     .get();
                 if (!dependency) {
-                    throw new Error(`dependsOn 指向的任务 #${data.dependsOn} 不存在`);
+                    throw new Error(`dependsOn 指向的任务 #${normalizedData.dependsOn} 不存在`);
                 }
-                if ((dependency.cwd ?? null) !== (data.cwd ?? null)) {
+                if ((dependency.cwd ?? null) !== (normalizedData.cwd ?? null)) {
                     throw new Error('dependsOn 必须指向同一 cwd 的任务');
                 }
                 const dependencyIsRecoverable = dependency.status === 'pending'
@@ -102,10 +135,54 @@ export class TaskService {
                         && (dependency.retryCount ?? 0) <= (dependency.maxRetries ?? 3)
                     );
                 if (!dependencyIsRecoverable) {
-                    throw new Error(`dependsOn 指向的任务 #${data.dependsOn} 已进入不可恢复终态`);
+                    throw new Error(`dependsOn 指向的任务 #${normalizedData.dependsOn} 已进入不可恢复终态`);
                 }
             }
-            return tx.insert(tasks).values(data).returning().get();
+            return tx.insert(tasks).values(normalizedData).returning().get();
+        }, { behavior: 'immediate' });
+    }
+
+    static async update(
+        id: number,
+        data: EditableTaskUpdate,
+        scope: { cwd?: string } = {},
+    ): Promise<Task | null> {
+        if (Object.keys(data).length === 0) throw new Error('至少提供一个要修改的字段');
+        const normalizedData: EditableTaskUpdate = data.batchId === undefined
+            ? data
+            : { ...data, batchId: normalizeTaskBatchId(data.batchId) ?? null };
+        return db.transaction((tx) => {
+            const task = tx.select().from(tasks).where(and(
+                eq(tasks.id, id),
+                sql`${tasks.status} IN ('pending', 'failed', 'dead_letter')`,
+                ...this.buildScopeWhere(scope),
+            )).get();
+            if (!task) return null;
+
+            this.validateNewTask({
+                name: normalizedData.name ?? task.name,
+                agent: normalizedData.agent ?? task.agent,
+                model: normalizedData.model ?? task.model,
+                prompt: normalizedData.prompt ?? task.prompt,
+                cwd: task.cwd,
+                category: normalizedData.category ?? task.category,
+                importance: normalizedData.importance ?? task.importance,
+                urgency: normalizedData.urgency ?? task.urgency,
+                batchId: normalizedData.batchId === undefined ? task.batchId : normalizedData.batchId,
+                maxRetries: normalizedData.maxRetries ?? task.maxRetries,
+                retryBackoffMs: normalizedData.retryBackoffMs ?? task.retryBackoffMs,
+                timeoutMs: normalizedData.timeoutMs === undefined ? task.timeoutMs : normalizedData.timeoutMs,
+                dependsOn: task.dependsOn,
+            });
+            const maxRetries = normalizedData.maxRetries ?? task.maxRetries ?? 3;
+            const exhausted = task.status === 'failed' && (task.retryCount ?? 0) > maxRetries;
+            return tx.update(tasks).set({
+                ...normalizedData,
+                ...(exhausted ? {
+                    status: 'dead_letter',
+                    retryAfter: null,
+                } : {}),
+            }).where(eq(tasks.id, id)).returning().get() ?? null;
         }, { behavior: 'immediate' });
     }
 
@@ -113,6 +190,7 @@ export class TaskService {
         if (!data.name.trim()) throw new Error('name 不能为空');
         if (!data.agent.trim()) throw new Error('agent 不能为空');
         if (!data.prompt.trim()) throw new Error('prompt 不能为空');
+        validateTaskWorkingDirectory(data.cwd);
         this.validateInteger('importance', data.importance, 1, 5);
         this.validateInteger('urgency', data.urgency, 1, 5);
         this.validateInteger('maxRetries', data.maxRetries, 0, 1000);
@@ -143,12 +221,16 @@ export class TaskService {
             sql`${tasks.retryAfter} <= ${nowMs}`,
         );
 
-        const hasExcludedBatches = scope.excludedBatchIds && scope.excludedBatchIds.length > 0;
+        const excludedBatchIds = [...new Set((scope.excludedBatchIds ?? [])
+            .map((batchId) => normalizeTaskBatchId(batchId))
+            .filter((batchId): batchId is string => Boolean(batchId)))];
+        const hasExcludedBatches = excludedBatchIds.length > 0;
         let batchFilter: ReturnType<typeof sql> | undefined;
         if (hasExcludedBatches) {
             batchFilter = or(
                 isNull(tasks.batchId),
-                sql`${tasks.batchId} NOT IN ${scope.excludedBatchIds!}`,
+                sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ''`,
+                sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) NOT IN ${excludedBatchIds}`,
             );
         }
 
@@ -188,9 +270,11 @@ export class TaskService {
                 ),
                 or(
                     isNull(tasks.batchId),
+                    sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ''`,
                     sql`NOT EXISTS (
                         SELECT 1 FROM tasks AS running_batch_task
-                        WHERE running_batch_task.batch_id = ${tasks.batchId}
+                        WHERE trim(running_batch_task.batch_id, ${TASK_BATCH_TRIM_CHARACTERS})
+                            = trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS})
                           AND (
                               running_batch_task.status = 'running'
                               OR EXISTS (
@@ -218,12 +302,23 @@ export class TaskService {
         return result[0] ?? null;
     }
 
-    static async countRunning(): Promise<number> {
+    static async countRunning(
+        scope: { cwd?: string; legacyCwd?: boolean; batchId?: string } = {},
+    ): Promise<number> {
+        const scopeConditions = scope.legacyCwd
+            ? [sql`${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = ''`]
+            : this.buildScopeWhere(scope);
+        if (scope.batchId !== undefined) {
+            const batchId = normalizeTaskBatchId(scope.batchId);
+            scopeConditions.push(batchId
+                ? sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ${batchId}`
+                : sql`0`);
+        }
         return db.transaction((tx) => {
             const runningTasks = tx
                 .select({ count: sql<number>`count(*)` })
                 .from(tasks)
-                .where(eq(tasks.status, 'running'))
+                .where(and(eq(tasks.status, 'running'), ...scopeConditions))
                 .get();
             const runsWithoutRunningTask = tx
                 .select({ count: sql<number>`count(DISTINCT ${taskRuns.taskId})` })
@@ -232,6 +327,7 @@ export class TaskService {
                 .where(and(
                     eq(taskRuns.status, 'running'),
                     sql`${tasks.status} <> 'running'`,
+                    ...scopeConditions,
                 ))
                 .get();
             return Number(runningTasks?.count ?? 0) + Number(runsWithoutRunningTask?.count ?? 0);
@@ -747,16 +843,20 @@ export class TaskService {
     }
 
     static async retryBatch(batchId: string, scope: { cwd?: string } = {}): Promise<number> {
+        const normalizedBatchId = normalizeTaskBatchId(batchId);
+        if (!normalizedBatchId) return 0;
         const sqlite = getSqlite();
         const scopeFilter = scope.cwd === undefined ? '' : 'AND candidate.cwd = ?';
-        const parameters = scope.cwd === undefined ? [batchId] : [batchId, scope.cwd];
+        const parameters = scope.cwd === undefined
+            ? [TASK_BATCH_TRIM_CHARACTERS, normalizedBatchId]
+            : [TASK_BATCH_TRIM_CHARACTERS, normalizedBatchId, scope.cwd];
 
         return db.transaction(() => sqlite.query(`
             WITH RECURSIVE
             candidate(id, cwd, depends_on) AS MATERIALIZED (
                 SELECT candidate.id, candidate.cwd, candidate.depends_on
                 FROM tasks AS candidate
-                WHERE candidate.batch_id = ?
+                WHERE trim(candidate.batch_id, ?) = ?
                   AND candidate.status IN ('failed', 'dead_letter')
                   ${scopeFilter}
             ),
@@ -811,25 +911,41 @@ export class TaskService {
 
     static async list(options: {
         status?: TaskStatus;
+        activeExecution?: boolean;
         batchId?: string;
         category?: string;
         cwd?: string;
+        legacyCwd?: boolean;
         limit?: number;
         offset?: number;
     } = {}): Promise<Task[]> {
         let query = db.select().from(tasks).$dynamic();
 
         const conditions = [];
-        if (options.status) {
+        if (options.activeExecution) {
+            conditions.push(or(
+                eq(tasks.status, 'running'),
+                sql`EXISTS (
+                    SELECT 1 FROM task_runs AS active_list_run
+                    WHERE active_list_run.task_id = ${tasks.id}
+                      AND active_list_run.status = 'running'
+                )`,
+            ));
+        } else if (options.status) {
             conditions.push(eq(tasks.status, options.status));
         }
-        if (options.batchId) {
-            conditions.push(eq(tasks.batchId, options.batchId));
+        if (options.batchId !== undefined) {
+            const batchId = normalizeTaskBatchId(options.batchId);
+            conditions.push(batchId
+                ? sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ${batchId}`
+                : sql`0`);
         }
         if (options.category) {
             conditions.push(eq(tasks.category, options.category));
         }
-        if (options.cwd !== undefined) {
+        if (options.legacyCwd) {
+            conditions.push(sql`${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = ''`);
+        } else if (options.cwd !== undefined) {
             conditions.push(eq(tasks.cwd, options.cwd));
         }
 
@@ -849,12 +965,21 @@ export class TaskService {
         return await query;
     }
 
-    static async stats(options: { batchId?: string; cwd?: string } = {}): Promise<Record<string, number>> {
+    static async stats(options: {
+        batchId?: string;
+        cwd?: string;
+        legacyCwd?: boolean;
+    } = {}): Promise<Record<string, number>> {
         const conditions = [];
         if (options.batchId !== undefined) {
-            conditions.push(eq(tasks.batchId, options.batchId));
+            const batchId = normalizeTaskBatchId(options.batchId);
+            conditions.push(batchId
+                ? sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ${batchId}`
+                : sql`0`);
         }
-        if (options.cwd !== undefined) {
+        if (options.legacyCwd) {
+            conditions.push(sql`${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = ''`);
+        } else if (options.cwd !== undefined) {
             conditions.push(eq(tasks.cwd, options.cwd));
         }
         const whereCondition = conditions.length > 0 ? and(...conditions) : undefined;
@@ -886,6 +1011,41 @@ export class TaskService {
         }
 
         return stats;
+    }
+
+    static async projectSummaries(limit = 100): Promise<TaskProjectSummary[]> {
+        this.validateInteger('limit', limit, 1, 1000);
+        const lastCreatedAt = sql<number | null>`max(${tasks.createdAt})`;
+        const lastTaskId = sql<number>`max(${tasks.id})`;
+        const rows = await db
+            .select({
+                cwd: tasks.cwd,
+                total: sql<number>`count(*)`,
+                pending: sql<number>`sum(CASE WHEN ${tasks.status} = 'pending' THEN 1 ELSE 0 END)`,
+                running: sql<number>`sum(CASE WHEN ${tasks.status} = 'running' OR EXISTS (
+                    SELECT 1 FROM task_runs AS active_project_run
+                    WHERE active_project_run.task_id = ${tasks.id}
+                      AND active_project_run.status = 'running'
+                ) THEN 1 ELSE 0 END)`,
+                failed: sql<number>`sum(CASE WHEN ${tasks.status} IN ('failed', 'dead_letter') THEN 1 ELSE 0 END)`,
+                done: sql<number>`sum(CASE WHEN ${tasks.status} = 'done' THEN 1 ELSE 0 END)`,
+                lastCreatedAt,
+            })
+            .from(tasks)
+            .where(sql`${tasks.cwd} IS NOT NULL AND trim(${tasks.cwd}) <> ''`)
+            .groupBy(tasks.cwd)
+            .orderBy(desc(lastCreatedAt), desc(lastTaskId))
+            .limit(limit);
+
+        return rows.flatMap((row) => row.cwd === null ? [] : [{
+            cwd: row.cwd,
+            total: Number(row.total),
+            pending: Number(row.pending),
+            running: Number(row.running),
+            failed: Number(row.failed),
+            done: Number(row.done),
+            lastCreatedAt: row.lastCreatedAt === null ? null : Number(row.lastCreatedAt) * 1000,
+        }]);
     }
 
     static async delete(id: number, scope: { cwd?: string } = {}): Promise<boolean> {

@@ -1,4 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
+import { eq } from 'drizzle-orm';
 import { setupTestDb } from './helpers/mock-db';
 import {
     cloneTaskFromTemplate,
@@ -43,7 +44,7 @@ describe('job-templates', () => {
                 name: '项目内定时任务',
                 agent: 'reviewer',
                 prompt: '检查项目',
-                cwd: '/tmp/中文项目',
+                cwd: process.cwd(),
                 batchId: '每日检查',
                 scheduleType: 'recurring',
                 intervalMs: 60_000,
@@ -54,7 +55,7 @@ describe('job-templates', () => {
 
             const task = await cloneTaskFromTemplate(tmpl.id);
             expect(task).toMatchObject({
-                cwd: '/tmp/中文项目',
+                cwd: process.cwd(),
                 batchId: '每日检查',
                 maxRetries: 4,
                 retryBackoffMs: 12_345,
@@ -62,12 +63,26 @@ describe('job-templates', () => {
             });
         });
 
+        test('旧模板中的空白 batchId 克隆时按无批次处理', async () => {
+            const tmpl = await TaskTemplateService.create({
+                name: '旧空白批次模板',
+                agent: 'a',
+                prompt: 'p',
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+            });
+            testDb.sqlite.query('UPDATE task_templates SET batch_id = ? WHERE id = ?')
+                .run('   ', tmpl.id);
+
+            expect(await cloneTaskFromTemplate(tmpl.id)).toMatchObject({ batchId: null });
+        });
+
         test('不存在的模板返回 null', async () => {
             const result = await cloneTaskFromTemplate(99999);
             expect(result).toBeNull();
         });
 
-        test('maxInstances 限制并发实例数', async () => {
+        test('maxInstances 限制自动调度的活跃实例数', async () => {
             const tmpl = await TaskTemplateService.create({
                 name: '受限模板',
                 agent: 'a',
@@ -146,7 +161,36 @@ describe('job-templates', () => {
             await TaskService.cancel(first!.id);
 
             expect(await cloneTaskFromTemplate(tmpl.id)).toBeNull();
-            expect(await triggerTaskFromTemplate(tmpl.id)).toBeNull();
+        });
+
+        test('手动触发无视 maxInstances 持续入队，且不推进模板调度时间', async () => {
+            const tmpl = await TaskTemplateService.create({
+                name: '手动入队模板',
+                agent: 'a',
+                prompt: 'p',
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+                maxInstances: 1,
+            });
+            const before = await TaskTemplateService.getById(tmpl.id);
+
+            const first = await triggerTaskFromTemplate(tmpl.id);
+            const second = await triggerTaskFromTemplate(tmpl.id);
+
+            expect(first).toMatchObject({
+                name: '[手动触发] 手动入队模板',
+                status: 'pending',
+                templateId: tmpl.id,
+            });
+            expect(second).toMatchObject({
+                name: '[手动触发] 手动入队模板',
+                status: 'pending',
+                templateId: tmpl.id,
+            });
+            expect(second?.id).not.toBe(first?.id);
+            const after = await TaskTemplateService.getById(tmpl.id);
+            expect(after?.lastRunAt).toBe(before?.lastRunAt);
+            expect(after?.nextRunAt).toBe(before?.nextRunAt);
         });
 
         test('模板更新失败时回滚已插入任务', async () => {
@@ -184,26 +228,6 @@ describe('job-templates', () => {
 
             const task2 = await cloneTaskFromTemplate(tmpl.id);
             expect(task2).not.toBeNull();
-        });
-
-        test('手动触发服从 maxInstances 且不推进模板调度时间', async () => {
-            const template = await TaskTemplateService.create({
-                name: '手动触发模板',
-                agent: 'test-agent',
-                prompt: '执行',
-                scheduleType: 'recurring',
-                intervalMs: 60_000,
-                maxInstances: 1,
-            });
-            const before = await TaskTemplateService.getById(template.id);
-
-            const task = await triggerTaskFromTemplate(template.id);
-            expect(task?.name).toBe('[手动触发] 手动触发模板');
-            expect(await triggerTaskFromTemplate(template.id)).toBeNull();
-
-            const after = await TaskTemplateService.getById(template.id);
-            expect(after?.lastRunAt).toBe(before?.lastRunAt);
-            expect(after?.nextRunAt).toBe(before?.nextRunAt);
         });
 
         test('更新模板的 lastRunAt 和 nextRunAt', async () => {
@@ -391,6 +415,35 @@ describe('job-templates', () => {
             })).rejects.toThrow('retryBackoffMs');
         });
 
+        test('模板批次 ID 去除首尾空白，空白批次统一保存为无批次', async () => {
+            const grouped = await TaskTemplateService.create({
+                ...base,
+                batchId: '  nightly  ',
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+            });
+            const ungrouped = await TaskTemplateService.create({
+                ...base,
+                batchId: '   ',
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+            });
+
+            expect(grouped.batchId).toBe('nightly');
+            expect(ungrouped.batchId).toBeNull();
+        });
+
+        test('拒绝把不存在路径或文件保存为模板工作目录', async () => {
+            await expect(TaskTemplateService.create({
+                ...base,
+                cwd: `${process.cwd()}/不存在的-template-cwd`,
+            })).rejects.toThrow('不存在或无法访问');
+            await expect(TaskTemplateService.create({
+                ...base,
+                cwd: `${process.cwd()}/package.json`,
+            })).rejects.toThrow('不是目录');
+        });
+
         test('创建时原子写入 nextRunAt，不留下依赖二次更新的幽灵模板', async () => {
             testDb.sqlite.exec(`
                 CREATE TRIGGER reject_template_update
@@ -407,6 +460,77 @@ describe('job-templates', () => {
             });
             expect(template.nextRunAt).not.toBeNull();
             expect(await TaskTemplateService.list()).toHaveLength(1);
+        });
+
+        test('编辑会原子重算下次执行时间，并保留启用状态和历史时间', async () => {
+            const template = await TaskTemplateService.create({
+                ...base,
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+            });
+            const lastRunAt = Date.now() - 10_000;
+            await testDb.db.update(testDb.schema.taskTemplates)
+                .set({ enabled: false, lastRunAt })
+                .where(eq(testDb.schema.taskTemplates.id, template.id));
+
+            const before = Date.now();
+            const updated = await TaskTemplateService.update(template.id, {
+                name: '更新后的模板',
+                agent: 'build',
+                model: 'openai/gpt-5',
+                prompt: '使用新提示词',
+                cwd: process.cwd(),
+                category: 'maintenance',
+                importance: 4,
+                urgency: 2,
+                batchId: 'nightly',
+                scheduleType: 'recurring',
+                cronExpr: null,
+                intervalMs: 120_000,
+                runAt: null,
+                maxInstances: 2,
+                maxRetries: 5,
+                retryBackoffMs: 10_000,
+                timeoutMs: 300_000,
+            });
+
+            expect(updated?.model).toBe('openai/gpt-5');
+            expect(updated?.prompt).toBe('使用新提示词');
+            expect(updated?.enabled).toBe(false);
+            expect(updated?.lastRunAt).toBe(lastRunAt);
+            expect(updated?.nextRunAt).toBeGreaterThanOrEqual(before + 120_000);
+            expect(updated?.nextRunAt).toBeLessThanOrEqual(Date.now() + 120_000);
+        });
+
+        test('调度扫描后发生编辑时，不按扫描到的旧时间提前创建任务', async () => {
+            const template = await TaskTemplateService.create({
+                ...base,
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
+            });
+            const scannedNextRunAt = template.nextRunAt!;
+            await TaskTemplateService.update(template.id, {
+                name: template.name,
+                agent: template.agent,
+                model: template.model,
+                prompt: '编辑后的提示词',
+                cwd: template.cwd,
+                category: template.category,
+                importance: template.importance,
+                urgency: template.urgency,
+                batchId: template.batchId,
+                scheduleType: template.scheduleType,
+                cronExpr: template.cronExpr,
+                intervalMs: 120_000,
+                runAt: template.runAt,
+                maxInstances: template.maxInstances,
+                maxRetries: template.maxRetries,
+                retryBackoffMs: template.retryBackoffMs,
+                timeoutMs: template.timeoutMs,
+            });
+
+            expect(await cloneTaskFromTemplate(template.id, scannedNextRunAt)).toBeNull();
+            expect(await TaskService.list()).toHaveLength(0);
         });
     });
 

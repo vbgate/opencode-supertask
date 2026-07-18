@@ -67,6 +67,8 @@ export interface GatewayDiagnostic {
     pid: number | null;
     ready: boolean;
     runningVersion: string | null;
+    gatewayEntry: string | null;
+    gatewayPackageVersion: string | null;
     logRotationInstalled: boolean;
     startupConfigured: boolean | null;
     currentScope: RuntimeScope;
@@ -133,6 +135,29 @@ function getRunningVersion(env: NodeJS.ProcessEnv = process.env, cwd = process.c
     }
 }
 
+function packageVersionFromGatewayEntry(gatewayEntry: string | null): string | null {
+    if (gatewayEntry === null) return null;
+    let directory = dirname(gatewayEntry);
+    for (let depth = 0; depth < 6; depth += 1) {
+        const packagePath = join(directory, 'package.json');
+        if (existsSync(packagePath)) {
+            try {
+                const pkg = JSON.parse(readFileSync(packagePath, 'utf8')) as {
+                    name?: unknown;
+                    version?: unknown;
+                };
+                if (pkg.name === 'opencode-supertask' && typeof pkg.version === 'string') {
+                    return pkg.version;
+                }
+            } catch {}
+        }
+        const parent = dirname(directory);
+        if (parent === directory) break;
+        directory = parent;
+    }
+    return null;
+}
+
 function resolveRuntimeExecutable(command: string, env: NodeJS.ProcessEnv, cwd: string): string {
     if (isAbsolute(command) || command.includes("/")) return runtimePath(command, cwd);
     for (const entry of (env.PATH ?? "").split(delimiter)) {
@@ -189,6 +214,8 @@ export function getGatewayDiagnostic(): GatewayDiagnostic {
             pid: null,
             ready: false,
             runningVersion: getRunningVersion(),
+            gatewayEntry: null,
+            gatewayPackageVersion: null,
             logRotationInstalled: false,
             startupConfigured: process.platform === "darwin" || process.platform === "linux" ? false : null,
             currentScope: producerScope,
@@ -205,6 +232,7 @@ export function getGatewayDiagnostic(): GatewayDiagnostic {
     const pid = typeof gateway?.pid === "number" ? gateway.pid : null;
     const readyPath = managedScope?.databasePath ?? databasePath();
     const lockedVersion = pid == null ? undefined : gatewayVersionFromLock(pid, readyPath);
+    const gatewayEntry = runtime?.gatewayEntry ?? null;
     return {
         pm2Installed: true,
         processFound: gateway != null,
@@ -214,6 +242,8 @@ export function getGatewayDiagnostic(): GatewayDiagnostic {
         runningVersion: lockedVersion === undefined
             ? getRunningVersion(gatewayEnv, runtime?.cwd)
             : lockedVersion,
+        gatewayEntry,
+        gatewayPackageVersion: packageVersionFromGatewayEntry(gatewayEntry),
         logRotationInstalled: processes.some((item) => (
             item.name === "pm2-logrotate" && item.pm2_env?.status === "online"
         )),

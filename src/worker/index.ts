@@ -18,12 +18,15 @@ import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import {
+    drainProofAckForIdentity,
     isMatchingDrainProof,
     LAUNCH_IDENTITY_ARGUMENT,
     MANAGED_RUN_ENV,
     MANAGED_RUN_ENV_VALUE,
     TOKEN_GUARDIAN_LAUNCH_PROTOCOL,
 } from '@core/launch-protocol';
+import { validateTaskWorkingDirectory } from '@core/task-working-directory';
+import { normalizeTaskBatchId } from '@core/task-batch';
 
 const DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024;
 const FORBIDDEN_AGENT = 'supertask-runner';
@@ -193,7 +196,8 @@ export class WorkerEngine {
             if (this.stopped) break;
 
             if (!await TaskService.start(task.id)) continue;
-            if (task.batchId) this.activeBatchIds.add(task.batchId);
+            const batchId = normalizeTaskBatchId(task.batchId);
+            if (batchId) this.activeBatchIds.add(batchId);
 
             if (this.stopped) {
                 await TaskService.resetRunningToPending([task.id]);
@@ -224,6 +228,15 @@ export class WorkerEngine {
 
                 if (task.agent === FORBIDDEN_AGENT) {
                     const message = `禁止执行递归 Agent: ${FORBIDDEN_AGENT}`;
+                    await TaskService.failRun(task.id, run.id, message, { setDeadLetter: true });
+                    this.releaseBatch(task);
+                    continue;
+                }
+
+                try {
+                    validateTaskWorkingDirectory(task.cwd);
+                } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
                     await TaskService.failRun(task.id, run.id, message, { setDeadLetter: true });
                     this.releaseBatch(task);
                     continue;
@@ -318,6 +331,11 @@ export class WorkerEngine {
         child.on('message', (message: unknown) => {
             if (isMatchingDrainProof(message, entry.launchIdentity)) {
                 entry.guardianDrained = true;
+                try {
+                    child.send(drainProofAckForIdentity(entry.launchIdentity));
+                } catch (error) {
+                    this.logError('drain proof acknowledgment failed', error, task.id);
+                }
             }
         });
         let spawnError: Error | null = null;
@@ -668,7 +686,8 @@ export class WorkerEngine {
     }
 
     private releaseBatch(task: Task) {
-        if (task.batchId) this.activeBatchIds.delete(task.batchId);
+        const batchId = normalizeTaskBatchId(task.batchId);
+        if (batchId) this.activeBatchIds.delete(batchId);
     }
 
     private resolveModel(taskModel: string | null): string | null {

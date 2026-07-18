@@ -40,7 +40,7 @@ Dashboard ─────┘       ↑                 ↑
 | Worker | 抢占任务、启动目标 Agent、心跳、超时和结果落库 | [`src/worker/index.ts`](../src/worker/index.ts) |
 | Scheduler | 检查到期模板并克隆普通任务 | [`src/gateway/scheduler/`](../src/gateway/scheduler/) |
 | Watchdog | 恢复心跳过期任务、清理历史数据 | [`src/gateway/watchdog/`](../src/gateway/watchdog/) |
-| Dashboard | 本地 SSR 页面与管理 API；响应式中英文界面及浏览器本地主题偏好 | [`src/web/index.tsx`](../src/web/index.tsx)、[`src/web/ui.ts`](../src/web/ui.ts) |
+| Dashboard | 本地 SSR 页面与管理 API；按 `cwd` 汇总项目并创建普通任务，可创建和编辑定时任务、复制经校验的会话继续命令、区分保存/运行配置，并提供响应式中英文界面及浏览器本地主题偏好 | [`src/web/index.tsx`](../src/web/index.tsx)、[`src/web/ui.ts`](../src/web/ui.ts) |
 | PM2 适配 | 显式安装、启停、版本变化后的重启 | [`src/daemon/pm2.ts`](../src/daemon/pm2.ts) |
 
 ## Gateway 生命周期
@@ -51,6 +51,7 @@ Gateway 启动时按以下顺序工作：
 2. 用 `BEGIN IMMEDIATE` 更新 `gateway_lock`。锁每 10 秒心跳；活跃或身份无法确认的 Gateway PID 会阻止双主，身份识别覆盖直接 Gateway 入口和公开的 `supertask gateway`/CLI 前台入口；陈旧锁若已确认 PID 被无关进程复用才安全接管。旧 owner 更新不到自己的锁时会自停；此时 `ready_at` 仍为空。
 3. 加载并校验配置；非法配置直接失败，不静默回退。
 4. 先收敛孤儿运行态和不可恢复依赖，初始化 Scheduler，再绑定内嵌 Dashboard；所有可能阻止启动的初始化完成后才启动 Watchdog 与 Worker，并把当前包版本和 `ready_at` 一起写入锁。Dashboard 端口冲突等启动失败不会先执行队列任务。
+5. Gateway 把本次启动时的配置快照注入 Dashboard。网页保存配置只原子写文件，不伪装成已热加载；仅当 PM2 进程 PID、新鲜 ready 锁和运行作用域都匹配当前 Gateway 时，网页才允许在响应返回后发送 `SIGTERM`，复用既有优雅停机并由 PM2 自动拉起。前台 Gateway 不提供网页自动重启。
 5. 收到 `SIGINT` 或 `SIGTERM` 时先停止接单，等待 `worker.shutdownGracePeriodMs`；宽限期内完成的任务正常落库。剩余任务只有在整棵进程树确认退出后，才会原子关闭 run 并重置为 `pending`；无法确认退出的 run 保持隔离，交给 Watchdog 继续处理。
 
 单例锁防止两个 Gateway 同时调度，但不构成跨主机租约。SQLite 文件只适合由同一台机器上的进程共享。
@@ -76,9 +77,11 @@ opencode run --agent <task.agent> --format json [-m <model>] <task.prompt>
 
 Worker 通过无 LLM 的 launcher 直接执行目标 Agent，不再嵌套 `supertask-runner`。新 run 使用 `gated-v3-token-guardian`：每次执行生成独立 UUID，同时写入 `task_runs.locked_by` 和 launcher argv；Watchdog 只有在 launcher 路径、OpenCode 参数和该 UUID 全部匹配时才会向进程组发信号。launcher 在 PID 成功落库前不会启动 OpenCode；父进程提前退出会关闭握手管道，避免产生未登记的执行进程。OpenCode 及其后代全部退出后，launcher 还必须通过不传递给 OpenCode 的 IPC 返回绑定该 UUID 的排空证明；guardian 异常退出且无证明时，Worker 保持 run 与批次隔离，直到进程组明确消失。受管 OpenCode 进程带有 `SUPERTASK_MANAGED_RUN=1`，插件在该上下文拒绝执行升级，避免任务删除并等待承载自己的 Gateway；升级只能从外部 CLI 或非队列会话发起。`task.agent=supertask-runner` 会被明确拒绝并进入死信，`agents/supertask-runner.md` 仅是历史备份。
 
-`cwd` 是任务的项目隔离键，也是子进程工作目录。插件使用 OpenCode 工具上下文的 `directory`，不信任模型传入的 `cwd`；插件侧查询和状态变更按同一目录限定。
+排空证明使用双向确认：Worker 校验 launcher 发来的 UUID 后回送同 UUID，launcher 收件后才退出。该握手不依赖 Bun 旧版本不可靠的 `process.send` callback，同时保留“父进程确实收到证明”这一结算前提。
 
-`running`、任务终态和 `task_runs` 执行终态只由 Gateway 写入。CLI 和插件不暴露 `start/done/fail`，避免外部调用制造没有 owner/PID 的运行记录或让任务与 run 状态分裂。
+`cwd` 是任务的项目分组与隔离键，也是子进程工作目录。插件使用 OpenCode 工具上下文的 `directory`，不信任模型传入的 `cwd`；插件侧查询和状态变更按同一目录限定。Service 在普通任务和模板入库前要求非空 `cwd` 是已存在的绝对目录，Dashboard 复用该校验。为兼容旧数据，Schema 仍允许 NULL；Worker 若取到不存在、相对或文件型的遗留目录，会创建失败 run 并直接将任务收敛到 `dead_letter`，不启动 OpenCode、不给它自动重试刷日志。Dashboard 直接聚合现有 `tasks.cwd`，形成 `cwd → batchId → tasks` 的最小分组层次，没有额外的可漂移项目表。
+
+`running`、任务终态和 `task_runs` 执行终态只由 Gateway 写入。CLI 和插件不暴露 `start/done/fail`，避免外部调用制造没有 owner/PID 的运行记录或让任务与 run 状态分裂。普通任务的可编辑配置由 `TaskService.update` 统一处理，只接受 `pending`、`failed` 和 `dead_letter`；不允许迁移 `cwd` 或改依赖，运行中与完成/取消终态拒绝修改，避免已执行 run 与任务配置失真。Dashboard 与 `supertask edit` 共用该边界。
 
 ## 状态与重试语义
 
@@ -116,7 +119,8 @@ pending / running / failed ──cancel──> cancelled
 模板支持 `cron`、`recurring` 和一次性 `delayed`：
 
 - Scheduler 只克隆普通任务，实际执行仍遵循队列优先级、批次、重试和超时规则。
-- `maxInstances` 统计同模板下 `pending`、`running` 和仍有自动重试预算的 `failed`；自动调度和 Dashboard 手动触发都服从该上限。
+- Dashboard 创建和编辑都复用 `TaskTemplateService` 的校验；编辑在即时事务内重算 `nextRunAt`，保留启用状态和历史执行时间，并只影响之后生成的任务。Scheduler 克隆前会核对扫描到的触发时间，避免并发编辑后按旧时间提前执行。
+- `maxInstances` 只限制自动调度，统计同模板下 `pending`、`running` 和仍有自动重试预算的 `failed`。Dashboard 手动“立即运行一次”始终创建普通 `pending` 任务；该任务仍计入后续自动调度的活跃实例数，并在 Worker 全局并发已满时排队。
 - `cron`/`recurring` 到期但已达 `maxInstances` 时会原子推进到下一触发点，避免每个 tick 重复抢写同一模板；`delayed` 仍保持原触发点等待空位。
 - 到期扫描按 `(nextRunAt, id)` 使用每批 100 条的游标，单个 tick 不会把全部过期模板一次性装入内存。
 - `delayed` 成功克隆一次后自动禁用。
@@ -147,7 +151,7 @@ Dashboard 只绑定 `127.0.0.1`，浏览器写请求检查 `Sec-Fetch-Site` 和�
 
 以下是当前源码行为，不应由文档掩盖：
 
-- `/health` 检查 ready 锁、Worker/Scheduler/Watchdog/历史清理活跃时间和连续失败，并保留最近错误；`supertask doctor` 还验证 macOS LaunchAgent 的程序路径、加载状态和 PM2 dump 可恢复性。macOS supervisor 只恢复 dump 中明确存在但 `jlist` 确认缺失的 Gateway，不会把状态未知或 `errored` 当作恢复信号。显式 `supertask install` 会配置 `pm2-logrotate`，但仍没有指标导出和告警集成。
+- `/health` 检查 ready 锁、Worker/Scheduler/Watchdog/历史清理活跃时间和连续失败，并保留最近错误；`supertask doctor` 还解析 OpenCode 最终插件配置，要求精确版本并核对对应缓存、PM2 实际 Gateway 入口包和 ready 锁版本，同时验证 macOS LaunchAgent 的程序路径、加载状态和 PM2 dump 可恢复性。浮动 `@latest`/`@next` Gateway 入口失败关闭；全局 CLI 版本不同只给出原包管理器的更新提示。macOS supervisor 只恢复 dump 中明确存在但 `jlist` 确认缺失的 Gateway，不会把状态未知或 `errored` 当作恢复信号。显式 `supertask install` 会配置 `pm2-logrotate`，但仍没有指标导出和告警集成。
 - 单实例锁、任务抢占和状态更新足以覆盖当前单机模型，但不提供分布式租约和 exactly-once 保证。
 
 这些限制一旦成为真实故障来源，应先写复现测试，再调整实现与本文档。

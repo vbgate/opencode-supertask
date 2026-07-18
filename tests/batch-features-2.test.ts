@@ -159,7 +159,7 @@ describe('批次功能测试 #2', () => {
                 agent: 'a',
                 prompt: 'p',
                 batchId: 'batch-cwd',
-                cwd: '/project-a',
+                cwd: process.cwd(),
                 maxRetries: 3,
             });
             const t2 = await TaskService.add({
@@ -167,7 +167,7 @@ describe('批次功能测试 #2', () => {
                 agent: 'a',
                 prompt: 'p',
                 batchId: 'batch-cwd',
-                cwd: '/project-b',
+                cwd: '/tmp',
                 maxRetries: 3,
             });
 
@@ -176,7 +176,7 @@ describe('批次功能测试 #2', () => {
             await TaskService.start(t2.id);
             await TaskService.fail(t2.id, '失败');
 
-            const countA = await TaskService.retryBatch('batch-cwd', { cwd: '/project-a' });
+            const countA = await TaskService.retryBatch('batch-cwd', { cwd: process.cwd() });
             expect(countA).toBe(1);
 
             const r1 = await TaskService.getById(t1.id);
@@ -255,20 +255,20 @@ describe('批次功能测试 #2', () => {
                 agent: 'a',
                 prompt: 'p',
                 batchId: 'batch-x',
-                cwd: '/project-a',
+                cwd: process.cwd(),
             });
             const t2 = await TaskService.add({
                 name: '项目B批次X',
                 agent: 'a',
                 prompt: 'p',
                 batchId: 'batch-x',
-                cwd: '/project-b',
+                cwd: '/tmp',
             });
 
             await TaskService.start(t1.id);
             await TaskService.done(t1.id);
 
-            const stats = await TaskService.stats({ batchId: 'batch-x', cwd: '/project-a' });
+            const stats = await TaskService.stats({ batchId: 'batch-x', cwd: process.cwd() });
             expect(stats.total).toBe(1);
             expect(stats.done).toBe(1);
         });

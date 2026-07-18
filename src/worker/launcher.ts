@@ -2,6 +2,7 @@ import { spawn } from 'child_process';
 import {
     drainProofForIdentity,
     isLaunchIdentity,
+    isMatchingDrainProofAck,
     LAUNCH_IDENTITY_ARGUMENT,
 } from '@core/launch-protocol';
 
@@ -10,6 +11,7 @@ const INITIAL_GROUP_PROBE_DELAY_MS = 1_000;
 const MAX_GROUP_PROBE_DELAY_MS = 5_000;
 const GROUP_PROBE_TIMEOUT_MS = 2_000;
 const MAX_PS_OUTPUT_CHARS = 4 * 1024 * 1024;
+const DRAIN_PROOF_ACK_TIMEOUT_MS = 10_000;
 
 function waitForRelease(): Promise<boolean> {
     return new Promise((resolve) => {
@@ -103,6 +105,43 @@ export async function waitForProcessGroupDrain(
     }
 }
 
+async function sendDrainProof(launchIdentity: string): Promise<void> {
+    if (!process.send) throw new Error('supertask launcher: drain proof IPC unavailable');
+
+    await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (error?: Error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            process.off('message', onMessage);
+            process.off('disconnect', onDisconnect);
+            if (error) reject(error);
+            else resolve();
+        };
+        const onMessage = (message: unknown) => {
+            if (isMatchingDrainProofAck(message, launchIdentity)) finish();
+        };
+        const onDisconnect = () => finish(
+            new Error('supertask launcher: drain proof IPC disconnected before acknowledgment'),
+        );
+        const timeout = setTimeout(() => finish(
+            new Error('supertask launcher: drain proof acknowledgment timed out'),
+        ), DRAIN_PROOF_ACK_TIMEOUT_MS);
+
+        process.on('message', onMessage);
+        process.once('disconnect', onDisconnect);
+        try {
+            // Bun 1.1 can deliver IPC messages but does not reliably invoke
+            // the Node-compatible process.send callback. A bound acknowledgment
+            // proves delivery without depending on that callback.
+            process.send!(drainProofForIdentity(launchIdentity));
+        } catch (error) {
+            finish(error instanceof Error ? error : new Error(String(error)));
+        }
+    });
+}
+
 async function main(): Promise<void> {
     const launcherArgs = Bun.argv.slice(2);
     let launchIdentity: string | null = null;
@@ -153,13 +192,7 @@ async function main(): Promise<void> {
         if (launchIdentity) {
             // IPC 不传递给 OpenCode；只有持有该次随机身份的 guardian
             // 可在整个进程组排空后向 Worker 发出绑定证明。
-            if (!process.send) throw new Error('supertask launcher: drain proof IPC unavailable');
-            await new Promise<void>((resolve, reject) => {
-                process.send!(drainProofForIdentity(launchIdentity), (error) => {
-                    if (error) reject(error);
-                    else resolve();
-                });
-            });
+            await sendDrainProof(launchIdentity);
         }
     } finally {
         process.off('SIGTERM', preserveGroupLeader);

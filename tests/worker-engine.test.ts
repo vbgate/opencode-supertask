@@ -16,6 +16,8 @@ import {
     waitForSpawnedProcessTreeExit,
 } from '../src/core/process-control';
 import {
+    drainProofAckForIdentity,
+    isMatchingDrainProof,
     LAUNCH_IDENTITY_ARGUMENT,
     MANAGED_RUN_ENV,
     MANAGED_RUN_ENV_VALUE,
@@ -24,6 +26,7 @@ import {
 
 const tempDirs: string[] = [];
 const workers: WorkerEngine[] = [];
+let testDb: ReturnType<typeof setupTestDb>;
 
 function createFakeOpencode(options: {
     exitCode?: number;
@@ -147,7 +150,7 @@ describe('WorkerEngine', () => {
     });
 
     beforeEach(() => {
-        setupTestDb();
+        testDb = setupTestDb();
     });
 
     afterEach(async () => {
@@ -598,15 +601,15 @@ describe('WorkerEngine', () => {
         }
     });
 
-    test('spawn 同步失败会同时关闭任务和已创建的 run', async () => {
+    test('旧任务的 cwd 指向文件时不启动 OpenCode，并立即进入死信', async () => {
         const fake = createFakeOpencode({});
-        const task = await TaskService.add({
-            name: 'spawn 同步失败测试',
+        const task = testDb.db.insert(testDb.schema.tasks).values({
+            name: '旧版非法 cwd 测试',
             agent: 'test-agent',
-            prompt: '无效工作目录',
-            cwd: 'invalid\0cwd',
-            maxRetries: 0,
-        });
+            prompt: '不得启动',
+            cwd: fake.executable,
+            maxRetries: 3,
+        }).returning().get();
         const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
         workers.push(worker);
 
@@ -614,7 +617,8 @@ describe('WorkerEngine', () => {
         const failed = await waitForStatus(task.id, ['dead_letter']);
         const runs = await TaskRunService.listByTaskId(task.id);
 
-        expect(failed.resultLog).toContain('Worker 启动任务失败');
+        expect(failed.resultLog).toContain('任务工作目录不是目录');
+        expect(failed.retryCount).toBe(1);
         expect(runs).toHaveLength(1);
         expect(runs[0].status).toBe('failed');
         expect(worker.getRunningCount()).toBe(0);
@@ -671,6 +675,46 @@ describe('WorkerEngine', () => {
 
         expect(code).toBe(125);
         expect(existsSync(fake.argsFile)).toBe(false);
+    });
+
+    test('launcher 发送绑定 drain proof 后等待 Worker 确认再退出', async () => {
+        const launcher = join(process.cwd(), 'src/worker/launcher.ts');
+        const launchIdentity = `gateway-${process.pid}:launch:123e4567-e89b-42d3-a456-426614174000`;
+        const child = spawn(process.execPath, [
+            launcher,
+            LAUNCH_IDENTITY_ARGUMENT,
+            launchIdentity,
+            '/usr/bin/true',
+        ], {
+            detached: true,
+            stdio: ['pipe', 'ignore', 'pipe', 'ipc'],
+        });
+        if (!child.pid || !child.stdin) throw new Error('无法启动 launcher IPC 测试');
+
+        let stderr = '';
+        child.stderr?.on('data', (data: Buffer) => {
+            stderr += data.toString();
+        });
+        const proof = new Promise<unknown>((resolve) => child.once('message', resolve));
+        child.stdin.end('START\n');
+
+        const message = await proof;
+        expect(isMatchingDrainProof(message, launchIdentity)).toBe(true);
+        await Bun.sleep(50);
+        expect(isProcessAlive(child.pid)).toBe(true);
+
+        child.send(drainProofAckForIdentity(
+            `gateway-${process.pid}:launch:123e4567-e89b-42d3-a456-426614174001`,
+        ));
+        await Bun.sleep(50);
+        expect(isProcessAlive(child.pid)).toBe(true);
+
+        child.send(drainProofAckForIdentity(launchIdentity));
+        const result = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+            (resolve) => child.once('close', (code, signal) => resolve({ code, signal })),
+        );
+        expect(result).toEqual({ code: 0, signal: null });
+        expect(stderr).toBe('');
     });
 
     test('进程组收到 SIGTERM 时 guardian 保持组长，直到 SIGKILL 清空忽略信号的后代', async () => {

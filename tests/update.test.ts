@@ -2,7 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { installLatestPlugin, installPluginVersion, resolveInstalledPlugin } from '../src/daemon/update';
+import {
+    getOpenCodePluginDiagnostic,
+    installLatestPlugin,
+    installPluginVersion,
+    resolveConfiguredPluginSpec,
+    resolveInstalledPlugin,
+} from '../src/daemon/update';
 
 const dirs: string[] = [];
 const originalEnv = {
@@ -35,6 +41,66 @@ function writePlugin(packageDir: string, version: string): void {
 }
 
 describe('OpenCode 插件升级', () => {
+    test('最终配置必须只有一个精确版本的 SuperTask 声明', () => {
+        expect(resolveConfiguredPluginSpec({
+            plugin: ['other-plugin', 'opencode-supertask@0.1.31'],
+        })).toEqual({ spec: 'opencode-supertask@0.1.31', version: '0.1.31', exact: true });
+        expect(resolveConfiguredPluginSpec({ plugin: ['opencode-supertask@latest'] })).toEqual({
+            spec: 'opencode-supertask@latest', version: null, exact: false,
+        });
+        expect(() => resolveConfiguredPluginSpec({
+            plugin: ['opencode-supertask@0.1.30', 'opencode-supertask@0.1.31'],
+        })).toThrow('包含多个');
+    });
+
+    test('诊断最终配置的精确版本并核对对应缓存包', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-doctor-plugin-'));
+        dirs.push(dir);
+        const packageDir = join(dir, 'package');
+        const fakeOpencode = join(dir, 'opencode');
+        writePlugin(packageDir, '0.1.31');
+        writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+if (Bun.argv.slice(2).join(' ') === 'debug config --pure') {
+  console.log(JSON.stringify({ plugin: ['opencode-supertask@0.1.31'] }));
+  process.exit(0);
+}
+process.exit(1);
+`);
+        chmodSync(fakeOpencode, 0o755);
+        process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
+
+        expect(getOpenCodePluginDiagnostic()).toMatchObject({
+            ok: true,
+            spec: 'opencode-supertask@0.1.31',
+            version: '0.1.31',
+            cachedVersion: '0.1.31',
+            packageDir,
+            error: null,
+        });
+    });
+
+    test('诊断拒绝 latest，即使旧缓存目录仍可读取', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-doctor-latest-'));
+        dirs.push(dir);
+        const packageDir = join(dir, 'package');
+        const fakeOpencode = join(dir, 'opencode');
+        writePlugin(packageDir, '0.1.5');
+        writeFileSync(fakeOpencode, '#!/usr/bin/env bun\nconsole.log(JSON.stringify({ plugin: ["opencode-supertask@latest"] }));\n');
+        chmodSync(fakeOpencode, 0o755);
+        process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
+
+        expect(getOpenCodePluginDiagnostic()).toMatchObject({
+            ok: false,
+            spec: 'opencode-supertask@latest',
+            version: null,
+            exact: false,
+            cachedVersion: null,
+        });
+        expect(getOpenCodePluginDiagnostic().error).toContain('必须固定精确版本');
+    });
+
     test('从多个缓存键中选择版本最高且包含 Gateway 的安装包', () => {
         const root = mkdtempSync(join(tmpdir(), 'supertask-cache-'));
         dirs.push(root);

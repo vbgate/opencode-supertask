@@ -265,8 +265,9 @@ async function main() {
         if (shuttingDown) return;
 
         if (cfg.dashboard.enabled) {
-            const { dashboardApp } = await import('@web/index');
+            const { dashboardApp, setDashboardRuntimeConfig } = await import('@web/index');
             if (shuttingDown) return;
+            setDashboardRuntimeConfig(cfg);
             dashboardServer = Bun.serve({
                 hostname: '127.0.0.1',
                 port: cfg.dashboard.port,

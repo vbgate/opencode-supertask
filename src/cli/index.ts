@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { TaskService } from '@core/services/task.service';
+import { TaskService, type EditableTaskUpdate } from '@core/services/task.service';
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskTemplateService } from '@core/services/task-template.service';
 import { DatabaseMaintenanceService } from '@core/services/database-maintenance.service';
@@ -23,6 +23,7 @@ import {
     parsePositiveInteger,
     parseTaskStatus,
 } from './validation';
+import { getOpenCodePluginDiagnostic } from '../daemon/update';
 
 async function withDb<T>(
     fn: () => Promise<T>,
@@ -103,6 +104,62 @@ program
             timeoutMs,
         });
         console.log(JSON.stringify({ id: task.id, status: 'created' }, null, 2));
+    }));
+
+program
+    .command('edit')
+    .description('修改当前项目中尚未完成的任务')
+    .requiredOption('--id <id>', '任务 ID')
+    .option('-n, --name <name>', '任务名称')
+    .option('-a, --agent <agent>', 'Agent 名称')
+    .option('-m, --model <model>', '模型')
+    .option('-p, --prompt <prompt>', '提示词')
+    .option('-c, --category <category>', '分类')
+    .option('-i, --importance <number>', '重要程度 (1-5)')
+    .option('-u, --urgency <number>', '紧急程度 (1-5)')
+    .option('-b, --batch <batchId>', '批次 ID')
+    .option('--clear-batch', '清空批次 ID')
+    .option('--max-retries <number>', '首次执行之外允许的重试次数')
+    .option('--retry-backoff <duration>', '重试退避基础间隔，如 30s / 5min')
+    .option('--timeout <duration>', '任务硬超时，如 30min / 2h')
+    .option('--clear-timeout', '清空任务级超时，改用 Gateway 默认值')
+    .action(async (options) => withDb(async () => {
+        if (options.batch !== undefined && options.clearBatch) {
+            throw new Error('batch 和 clear-batch 不能同时使用');
+        }
+        if (options.timeout !== undefined && options.clearTimeout) {
+            throw new Error('timeout 和 clear-timeout 不能同时使用');
+        }
+        const update: EditableTaskUpdate = {};
+        for (const field of ['name', 'agent', 'model', 'prompt', 'category'] as const) {
+            if (options[field] !== undefined) update[field] = options[field];
+        }
+        if (options.importance !== undefined) {
+            update.importance = parseBoundedInteger(options.importance, 'importance', 1, 5);
+        }
+        if (options.urgency !== undefined) {
+            update.urgency = parseBoundedInteger(options.urgency, 'urgency', 1, 5);
+        }
+        if (options.maxRetries !== undefined) {
+            update.maxRetries = parseBoundedInteger(options.maxRetries, 'max-retries', 0, 1000);
+        }
+        if (options.batch !== undefined || options.clearBatch) {
+            update.batchId = options.clearBatch ? null : options.batch;
+        }
+        if (options.retryBackoff !== undefined) {
+            const retryBackoffMs = parseDuration(options.retryBackoff);
+            if (retryBackoffMs === null) throw new Error('retry-backoff 格式无效');
+            update.retryBackoffMs = retryBackoffMs;
+        }
+        if (options.timeout !== undefined || options.clearTimeout) {
+            const timeoutMs = options.clearTimeout ? null : parseDuration(options.timeout);
+            if (timeoutMs === null && !options.clearTimeout) throw new Error('timeout 格式无效');
+            update.timeoutMs = timeoutMs;
+        }
+        const id = parsePositiveInteger(options.id, 'id');
+        const task = await TaskService.update(id, update, { cwd: process.cwd() });
+        if (!task) throw new Error(`任务 #${id} 不存在于当前项目，或其状态不允许编辑`);
+        console.log(JSON.stringify({ id: task.id, status: task.status, updated: true }, null, 2));
     }));
 
 program
@@ -253,7 +310,7 @@ program
             .option('-i, --importance <number>', '重要程度 1-5', '3')
             .option('-u, --urgency <number>', '紧急程度 1-5', '3')
             .option('-b, --batch <batchId>', '模板生成任务的批次 ID')
-            .option('--max-instances <number>', '最大并发实例数', '1')
+            .option('--max-instances <number>', '自动调度活跃实例上限（手动触发不受限）', '1')
             .option('--max-retries <number>', '最大重试次数', '3')
             .option('--retry-backoff <duration>', '退避基础间隔，如 30s / 5min', '30s')
             .option('--timeout <duration>', '每次任务硬超时，如 30min / 2h')
@@ -491,6 +548,7 @@ program
             config.watchdog.heartbeatTimeoutMs,
         );
         const gateway = getGatewayDiagnostic();
+        const packageVersion = getPackageVersion();
         const opencodeBin = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
         const opencodeResult = spawnSync(opencodeBin, ['--version'], {
             encoding: 'utf8',
@@ -506,6 +564,7 @@ program
                 ? null
                 : (opencodeResult.error?.message || opencodeResult.stderr.trim() || `退出码 ${opencodeResult.status}`),
         };
+        const plugin = getOpenCodePluginDiagnostic();
 
         let dashboard: { enabled: boolean; ok: boolean; url: string; status: number | null; error: string | null } = {
             enabled: config.dashboard.enabled,
@@ -527,6 +586,30 @@ program
         }
 
         const warnings: string[] = [];
+        const gatewayEntryPinned = gateway.gatewayEntry === null
+            || !/[\\/]opencode-supertask@(latest|next)[\\/]/.test(gateway.gatewayEntry);
+        const gatewayVersionMatchesPackage = gateway.gatewayPackageVersion !== null
+            && gateway.runningVersion === gateway.gatewayPackageVersion;
+        const configuredVersionsMatch = plugin.ok
+            && plugin.version === gateway.gatewayPackageVersion;
+        if (!plugin.ok && plugin.error) {
+            warnings.push(plugin.error);
+        }
+        if (plugin.version !== null && plugin.version !== packageVersion) {
+            warnings.push(`当前 CLI v${packageVersion} 与 OpenCode 插件 v${plugin.version} 不一致；请用原包管理器全局安装 opencode-supertask@${plugin.version}（npm install -g 或 bun add -g）`);
+        }
+        if (!gatewayEntryPinned) {
+            warnings.push(`PM2 Gateway 仍从浮动缓存路径启动：${gateway.gatewayEntry}`);
+        }
+        if (gateway.processFound && gateway.gatewayPackageVersion === null) {
+            warnings.push(`无法从 PM2 Gateway 入口确认 opencode-supertask 包版本：${gateway.gatewayEntry ?? 'unknown'}`);
+        } else if (gateway.processFound && !gatewayVersionMatchesPackage) {
+            warnings.push(`Gateway ready 锁版本 ${gateway.runningVersion ?? 'unknown'} 与入口包版本 ${gateway.gatewayPackageVersion ?? 'unknown'} 不一致`);
+        }
+        if (plugin.version !== null && gateway.gatewayPackageVersion !== null
+            && plugin.version !== gateway.gatewayPackageVersion) {
+            warnings.push(`OpenCode 插件 v${plugin.version} 与 PM2 Gateway v${gateway.gatewayPackageVersion} 不一致；执行 supertask upgrade`);
+        }
         if (gateway.pm2Installed && !gateway.logRotationInstalled) {
             warnings.push('未检测到 pm2-logrotate；长期运行前建议安装并限制日志保留量');
         }
@@ -551,20 +634,25 @@ program
             );
         }
         const ok = opencode.ok
+            && plugin.ok
             && database.ok
             && legacyQuarantinedRuns.length === 0
             && gateway.pm2Installed
             && gateway.status === 'online'
             && gateway.ready
+            && gatewayEntryPinned
+            && gatewayVersionMatchesPackage
+            && configuredVersionsMatch
             && gateway.scopeMatches
             && gateway.logRotationInstalled
             && gateway.startupConfigured !== false
             && dashboard.ok;
         const report = {
             ok,
-            packageVersion: getPackageVersion(),
+            packageVersion,
             configPath: getConfigPath(),
             opencode,
+            plugin,
             database,
             legacyQuarantinedRuns,
             gateway,
@@ -579,8 +667,9 @@ program
             const mark = (value: boolean) => value ? '✓' : '✗';
             console.log(`SuperTask doctor: ${ok ? '正常' : '异常'}`);
             console.log(`${mark(opencode.ok)} OpenCode ${opencode.version ?? opencode.error ?? '不可用'}`);
+            console.log(`${mark(plugin.ok)} OpenCode 插件 ${plugin.spec || plugin.error || '未配置'}${plugin.cachedVersion ? `（缓存 v${plugin.cachedVersion}）` : ''}`);
             console.log(`${mark(database.ok)} 数据库 ${database.path}（任务 ${database.counts.tasks}，运行中 ${database.runningTasks}）`);
-            console.log(`${mark(gateway.status === 'online' && gateway.ready)} Gateway ${gateway.status ?? 'missing'}${gateway.pid ? `，PID ${gateway.pid}` : ''}${gateway.runningVersion ? `，v${gateway.runningVersion}` : ''}`);
+            console.log(`${mark(gateway.status === 'online' && gateway.ready && gatewayEntryPinned && gatewayVersionMatchesPackage)} Gateway ${gateway.status ?? 'missing'}${gateway.pid ? `，PID ${gateway.pid}` : ''}${gateway.runningVersion ? `，v${gateway.runningVersion}` : ''}${gateway.gatewayEntry ? `，${gateway.gatewayEntry}` : ''}`);
             console.log(`${mark(dashboard.ok)} Dashboard ${dashboard.enabled ? dashboard.url : '已禁用'}`);
             for (const warning of warnings) console.log(`! ${warning}`);
         }
@@ -648,6 +737,9 @@ program
             const result = pm2Upgrade(installed);
             console.log(`\nSuperTask upgraded: ${result.before ?? 'unknown'} → ${result.after}`);
             console.log('Gateway restarted. Please restart opencode to load the new plugin.');
+            if (getPackageVersion() !== installed.version) {
+                console.log(`Global CLI remains v${getPackageVersion()}. Update it with your original package manager to opencode-supertask@${installed.version} (npm install -g or bun add -g).`);
+            }
         } catch (err) {
             let detail = err instanceof Error ? err.message : String(err);
             try {

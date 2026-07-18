@@ -12,6 +12,19 @@ export interface InstalledPlugin {
     version: string;
 }
 
+export interface ConfiguredPluginSpec {
+    spec: string;
+    version: string | null;
+    exact: boolean;
+}
+
+export interface OpenCodePluginDiagnostic extends ConfiguredPluginSpec {
+    ok: boolean;
+    cachedVersion: string | null;
+    packageDir: string | null;
+    error: string | null;
+}
+
 function pluginAt(packageDir: string): InstalledPlugin | null {
     const packageJson = join(packageDir, 'package.json');
     const gatewayEntry = join(packageDir, 'dist/gateway/index.js');
@@ -109,7 +122,7 @@ function latestVersion(): string {
     return uniqueVersions[0];
 }
 
-function resolveInstalledVersion(expectedVersion: string): InstalledPlugin {
+export function resolveInstalledPluginVersion(expectedVersion: string): InstalledPlugin {
     const override = process.env.SUPERTASK_PLUGIN_PACKAGE_DIR;
     const installed = override
         ? [pluginAt(override)].filter((plugin): plugin is InstalledPlugin => plugin !== null)
@@ -121,6 +134,101 @@ function resolveInstalledVersion(expectedVersion: string): InstalledPlugin {
         ? installed.map((plugin) => plugin.version).join(', ')
         : '未找到可运行缓存';
     throw new Error(`[supertask] OpenCode 插件缓存版本不匹配：期望 ${expectedVersion}，实际 ${actual}`);
+}
+
+export function resolveConfiguredPluginSpec(value: unknown): ConfiguredPluginSpec {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('[supertask] OpenCode 最终配置不是对象');
+    }
+    const plugins = (value as Record<string, unknown>).plugin;
+    if (!Array.isArray(plugins)) {
+        throw new Error(`[supertask] OpenCode 最终配置未启用 ${PACKAGE_NAME}`);
+    }
+    const matches = plugins.flatMap((entry) => {
+        if (typeof entry === 'string') return [entry];
+        if (Array.isArray(entry) && typeof entry[0] === 'string') return [entry[0]];
+        return [];
+    }).filter((spec) => spec === PACKAGE_NAME || spec.startsWith(`${PACKAGE_NAME}@`));
+    if (matches.length === 0) {
+        throw new Error(`[supertask] OpenCode 最终配置未启用 ${PACKAGE_NAME}`);
+    }
+    if (matches.length !== 1) {
+        throw new Error(`[supertask] OpenCode 最终配置包含多个 ${PACKAGE_NAME} 声明: ${matches.join(', ')}`);
+    }
+    const spec = matches[0];
+    const version = spec.startsWith(`${PACKAGE_NAME}@`)
+        ? spec.slice(PACKAGE_NAME.length + 1)
+        : null;
+    return {
+        spec,
+        version: version !== null && isSemanticVersion(version) ? version : null,
+        exact: version !== null && isSemanticVersion(version),
+    };
+}
+
+export function getOpenCodePluginDiagnostic(): OpenCodePluginDiagnostic {
+    const result = spawnSync(opencodeBin(), ['debug', 'config', '--pure'], {
+        encoding: 'utf8',
+        env: process.env,
+        timeout: 30_000,
+    });
+    const failed = (message: string): OpenCodePluginDiagnostic => ({
+        ok: false,
+        spec: '',
+        version: null,
+        exact: false,
+        cachedVersion: null,
+        packageDir: null,
+        error: message,
+    });
+    if (result.error) {
+        return failed(`[supertask] 无法读取 OpenCode 最终配置: ${result.error.message}`);
+    }
+    if (result.status !== 0) {
+        const detail = `${result.stderr ?? ''}`.trim();
+        return failed(`[supertask] 无法读取 OpenCode 最终配置: ${detail || `退出码 ${result.status}`}`);
+    }
+
+    let config: unknown;
+    try {
+        config = JSON.parse(`${result.stdout ?? ''}`);
+    } catch {
+        return failed('[supertask] OpenCode 最终配置不是有效 JSON');
+    }
+
+    let configured: ConfiguredPluginSpec;
+    try {
+        configured = resolveConfiguredPluginSpec(config);
+    } catch (error) {
+        return failed(error instanceof Error ? error.message : String(error));
+    }
+    if (!configured.exact || configured.version === null) {
+        return {
+            ok: false,
+            ...configured,
+            cachedVersion: null,
+            packageDir: null,
+            error: `[supertask] OpenCode 插件必须固定精确版本，不能使用 ${configured.spec}`,
+        };
+    }
+    try {
+        const installed = resolveInstalledPluginVersion(configured.version);
+        return {
+            ok: true,
+            ...configured,
+            cachedVersion: installed.version,
+            packageDir: installed.packageDir,
+            error: null,
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            ...configured,
+            cachedVersion: null,
+            packageDir: null,
+            error: error instanceof Error ? error.message : String(error),
+        };
+    }
 }
 
 export function installPluginVersion(version: string): InstalledPlugin {
@@ -144,7 +252,7 @@ export function installPluginVersion(version: string): InstalledPlugin {
     if (result.status !== 0) {
         throw new Error(`[supertask] OpenCode 插件更新失败: ${output || `退出码 ${result.status}`}`);
     }
-    return resolveInstalledVersion(version);
+    return resolveInstalledPluginVersion(version);
 }
 
 export function installLatestPlugin(): InstalledPlugin {

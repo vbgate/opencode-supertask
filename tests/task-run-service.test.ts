@@ -213,7 +213,7 @@ describe('TaskRunService', () => {
         });
 
         test('旧版 startedAt/heartbeat 双 NULL 运行立即进入可诊断隔离', async () => {
-            const task = await createTask({ cwd: '/tmp/legacy-null-time' });
+            const task = await createTask({ cwd: process.cwd() });
             await TaskService.start(task.id);
             const run = await TaskRunService.create({
                 taskId: task.id,
@@ -231,7 +231,7 @@ describe('TaskRunService', () => {
                 runId: run.id,
                 taskId: task.id,
                 taskStatus: 'running',
-                taskCwd: '/tmp/legacy-null-time',
+                taskCwd: process.cwd(),
                 workerPid: null,
                 ownerAlive: false,
             }]);
@@ -328,7 +328,7 @@ describe('TaskRunService', () => {
 
     describe('abandonLegacyRun', () => {
         test('仅在任务已取消且旧版无 PID owner 已退出时关闭隔离 run', async () => {
-            const task = await createTask({ cwd: '/tmp/legacy-project' });
+            const task = await createTask({ cwd: process.cwd() });
             await TaskService.start(task.id);
             const run = await TaskRunService.create({
                 taskId: task.id,
@@ -344,7 +344,7 @@ describe('TaskRunService', () => {
                 runId: run.id,
                 taskId: task.id,
                 taskStatus: 'cancelled',
-                taskCwd: '/tmp/legacy-project',
+                taskCwd: process.cwd(),
                 workerPid: 2_147_483_647,
                 ownerAlive: false,
             }]);
