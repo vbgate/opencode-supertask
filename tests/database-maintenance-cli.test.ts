@@ -9,6 +9,7 @@ import {
     rmSync,
     statSync,
     symlinkSync,
+    watch,
     writeFileSync,
 } from 'fs';
 import { join } from 'path';
@@ -297,6 +298,13 @@ describe('数据库维护 CLI', () => {
             source.close();
         }
 
+        let stageCreatedResolve: (() => void) | undefined;
+        const stageCreated = new Promise<void>((resolve) => {
+            stageCreatedResolve = resolve;
+        });
+        const stageWatcher = watch(tempDir, (_event, filename) => {
+            if (filename?.toString().startsWith('tasks.db.restore-')) stageCreatedResolve?.();
+        });
         const restore = spawn(
             'bun',
             ['run', 'src/cli/index.ts', 'db', 'restore', '--from', sourcePath, '--confirm', 'RESTORE'],
@@ -316,9 +324,19 @@ describe('数据库维护 CLI', () => {
             restore.once('close', (code) => resolve(code));
         });
 
-        let exclusiveObserved = false;
-        const lockDeadline = Date.now() + 5_000;
-        while (!exclusiveObserved && Date.now() < lockDeadline && restore.exitCode == null) {
+        let restoreStopped = false;
+        try {
+            const stageObserved = await Promise.race([
+                stageCreated.then(() => true),
+                restoreCompleted.then(() => false),
+                Bun.sleep(5_000).then(() => false),
+            ]);
+            expect(stageObserved).toBe(true);
+            if (restore.pid == null) throw new Error('restore 子进程没有 PID');
+            process.kill(restore.pid, 'SIGSTOP');
+            restoreStopped = true;
+
+            let exclusiveObserved = false;
             const probe = new Database(testDbPath);
             try {
                 probe.exec('PRAGMA busy_timeout = 0;');
@@ -332,25 +350,53 @@ describe('数据库维护 CLI', () => {
             } finally {
                 probe.close();
             }
-            if (!exclusiveObserved) await Bun.sleep(1);
-        }
-        expect(exclusiveObserved).toBe(true);
+            expect(exclusiveObserved).toBe(true);
 
-        const concurrent = runJson<{ id: number }>([
-            'add', '--name', '恢复锁后的并发写入', '--agent', 'test-agent', '--prompt', '必须保留',
-        ]);
-        expect(await restoreCompleted).toBe(0);
-        expect(restoreStderr).toBe('');
-        expect(() => JSON.parse(restoreStdout)).not.toThrow();
+            const concurrentProcess = spawn(
+                'bun',
+                [
+                    'run', 'src/cli/index.ts', 'add', '--name', '恢复锁后的并发写入',
+                    '--agent', 'test-agent', '--prompt', '必须保留',
+                ],
+                {
+                    cwd: process.cwd(),
+                    env: { ...process.env, SUPERTASK_DB_PATH: testDbPath },
+                    stdio: ['ignore', 'pipe', 'pipe'],
+                },
+            );
+            let concurrentStdout = '';
+            let concurrentStderr = '';
+            concurrentProcess.stdout.setEncoding('utf8');
+            concurrentProcess.stderr.setEncoding('utf8');
+            concurrentProcess.stdout.on('data', (chunk: string) => { concurrentStdout += chunk; });
+            concurrentProcess.stderr.on('data', (chunk: string) => { concurrentStderr += chunk; });
+            const concurrentCompleted = new Promise<number | null>((resolve) => {
+                concurrentProcess.once('close', (code) => resolve(code));
+            });
+            await Bun.sleep(100);
+            expect(concurrentProcess.exitCode).toBeNull();
 
-        const verified = new Database(testDbPath, { readonly: true, strict: true });
-        try {
-            const row = verified.query(
-                'SELECT name FROM tasks WHERE id = ?',
-            ).get(concurrent.id) as { name: string } | null;
-            expect(row?.name).toBe('恢复锁后的并发写入');
+            process.kill(restore.pid, 'SIGCONT');
+            restoreStopped = false;
+            expect(await restoreCompleted).toBe(0);
+            expect(restoreStderr).toBe('');
+            expect(() => JSON.parse(restoreStdout)).not.toThrow();
+            expect(await concurrentCompleted).toBe(0);
+            expect(concurrentStderr).toBe('');
+            const concurrent = JSON.parse(concurrentStdout) as { id: number };
+
+            const verified = new Database(testDbPath, { readonly: true, strict: true });
+            try {
+                const row = verified.query(
+                    'SELECT name FROM tasks WHERE id = ?',
+                ).get(concurrent.id) as { name: string } | null;
+                expect(row?.name).toBe('恢复锁后的并发写入');
+            } finally {
+                verified.close();
+            }
         } finally {
-            verified.close();
+            stageWatcher.close();
+            if (restoreStopped && restore.pid != null) process.kill(restore.pid, 'SIGCONT');
         }
     }, 20_000);
 
