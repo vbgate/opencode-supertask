@@ -13,10 +13,13 @@ import { getDb, sqlite } from "@core/db";
 import { parseDuration } from "@core/duration";
 import { compareSemanticVersions } from "@core/semver";
 import { MANAGED_RUN_ENV, MANAGED_RUN_ENV_VALUE } from "@core/launch-protocol";
-import { ensureGateway, getPackageVersion, upgrade as pm2Upgrade } from "../src/daemon/pm2";
+import { ensureGateway, getGatewayDiagnostic, getPackageVersion, upgrade as pm2Upgrade } from "../src/daemon/pm2";
 import {
-    installLatestPlugin,
+    getGlobalCliDiagnostic,
+    getLatestVersion,
+    getOpenCodePluginDiagnostic,
     installPluginVersion,
+    isVersionConverged,
     updateGlobalCli,
 } from "../src/daemon/update";
 
@@ -469,11 +472,31 @@ export const SuperTaskPlugin: Plugin = async () => {
                         });
                     }
                     try {
-                        console.log("[supertask] Updating OpenCode plugin cache...");
                         const previousVersion = getPackageVersion();
+                        const targetVersion = getLatestVersion();
+                        const plugin = getOpenCodePluginDiagnostic();
+                        const cli = getGlobalCliDiagnostic();
+                        const gateway = getGatewayDiagnostic();
+                        if (isVersionConverged(targetVersion, {
+                            packageVersion: previousVersion,
+                            plugin,
+                            cli,
+                            gateway,
+                        })) {
+                            return JSON.stringify({
+                                success: true,
+                                upToDate: true,
+                                before: targetVersion,
+                                after: targetVersion,
+                                restarted: false,
+                                cli,
+                                message: `SuperTask 已是最新版本 ${targetVersion}，Gateway 未重启。`,
+                            });
+                        }
+                        console.log("[supertask] Updating OpenCode plugin cache...");
                         let installed: { gatewayEntry: string; version: string };
                         try {
-                            installed = installLatestPlugin();
+                            installed = installPluginVersion(targetVersion);
                         } catch (updateError) {
                             let detail = updateError instanceof Error ? updateError.message : String(updateError);
                             try {

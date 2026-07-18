@@ -17,6 +17,7 @@ import {
     getOpenCodePluginDiagnostic,
     installLatestPlugin,
     installPluginVersion,
+    isVersionConverged,
     resolveConfiguredPluginSpec,
     resolveInstalledPlugin,
     updateGlobalCli,
@@ -59,6 +60,37 @@ function writePlugin(packageDir: string, version: string): void {
 }
 
 describe('OpenCode 插件升级', () => {
+    test('只有插件、缓存、CLI 和 Gateway 全部匹配时才判定无需升级', () => {
+        const state = {
+            packageVersion: '0.1.38',
+            plugin: { ok: true, version: '0.1.38', cachedVersion: '0.1.38' },
+            cli: { installed: true, version: '0.1.38' },
+            gateway: {
+                pm2Installed: true,
+                processFound: true,
+                status: 'online',
+                ready: true,
+                runningVersion: '0.1.38',
+                gatewayPackageVersion: '0.1.38',
+                scopeMatches: true,
+            },
+        };
+
+        expect(isVersionConverged('0.1.38', state)).toBe(true);
+        expect(isVersionConverged('0.1.38', {
+            ...state,
+            gateway: { ...state.gateway, runningVersion: '0.1.37' },
+        })).toBe(false);
+        expect(isVersionConverged('0.1.38', {
+            ...state,
+            plugin: { ...state.plugin, cachedVersion: '0.1.37' },
+        })).toBe(false);
+        expect(isVersionConverged('0.1.38', {
+            ...state,
+            cli: { installed: true, version: '0.1.37' },
+        })).toBe(false);
+    });
+
     test('最终配置必须只有一个精确版本的 SuperTask 声明', () => {
         expect(resolveConfiguredPluginSpec({
             plugin: ['other-plugin', 'opencode-supertask@0.1.31'],

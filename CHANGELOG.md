@@ -2,6 +2,16 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.39] - 2026-07-18
+
+### Fixed
+
+- `supertask upgrade` now exits without reinstalling or restarting when the CLI, effective plugin configuration, plugin cache, and ready PM2 Gateway already match npm `latest`.
+- Added `supertask upgrade --force` for intentionally reinstalling the current version, refreshing the Gateway environment, and restarting PM2.
+- The OpenCode `supertask_upgrade` tool now reports an up-to-date no-op instead of restarting an already converged Gateway.
+
+[0.1.39]: https://github.com/vbgate/opencode-supertask/compare/v0.1.38...v0.1.39
+
 ## [0.1.38] - 2026-07-18
 
 ### Fixed

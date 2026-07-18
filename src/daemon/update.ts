@@ -49,6 +49,36 @@ export interface GlobalCliUpdateResult extends GlobalCliDiagnostic {
     action: 'not-installed' | 'already-current' | 'updated';
 }
 
+export interface UpgradeConvergenceState {
+    packageVersion: string;
+    plugin: Pick<OpenCodePluginDiagnostic, 'ok' | 'version' | 'cachedVersion'>;
+    cli: Pick<GlobalCliDiagnostic, 'installed' | 'version'>;
+    gateway: {
+        pm2Installed: boolean;
+        processFound: boolean;
+        status: string | null;
+        ready: boolean;
+        runningVersion: string | null;
+        gatewayPackageVersion: string | null;
+        scopeMatches: boolean;
+    };
+}
+
+export function isVersionConverged(version: string, state: UpgradeConvergenceState): boolean {
+    return state.packageVersion === version
+        && state.plugin.ok
+        && state.plugin.version === version
+        && state.plugin.cachedVersion === version
+        && (!state.cli.installed || state.cli.version === version)
+        && state.gateway.pm2Installed
+        && state.gateway.processFound
+        && state.gateway.status === 'online'
+        && state.gateway.ready
+        && state.gateway.runningVersion === version
+        && state.gateway.gatewayPackageVersion === version
+        && state.gateway.scopeMatches;
+}
+
 function pluginAt(packageDir: string): InstalledPlugin | null {
     const packageJson = join(packageDir, 'package.json');
     const gatewayEntry = join(packageDir, 'dist/gateway/index.js');
@@ -255,7 +285,7 @@ export function updateGlobalCli(version: string): GlobalCliUpdateResult {
     return { ...after, action: 'updated' };
 }
 
-function latestVersion(): string {
+export function getLatestVersion(): string {
     const result = spawnSync(npmBin(), [
         'view', PACKAGE_NAME, 'dist-tags.latest', '--json',
     ], {
@@ -447,5 +477,5 @@ export function installPluginVersion(version: string): InstalledPlugin {
 }
 
 export function installLatestPlugin(): InstalledPlugin {
-    return installPluginVersion(latestVersion());
+    return installPluginVersion(getLatestVersion());
 }

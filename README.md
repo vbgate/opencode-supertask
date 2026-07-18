@@ -32,11 +32,11 @@ supertask gateway   # foreground mode: no pm2 required
 
 The plugin never installs global dependencies by itself. Without a running Gateway, queue-management tools still work, but scheduled and queued tasks are not executed and the Dashboard is unavailable.
 
-Upgrades do not require uninstalling. Run `supertask upgrade`: it pins the exact latest plugin, replaces the Gateway, detects whether the global `supertask` came from npm or Bun, and synchronizes the CLI to that same version. `supertask doctor` fails if the CLI, plugin, Gateway package, or ready lock disagree. Versions through 0.1.33 cannot retroactively update their own old CLI, so upgrade from those releases by installing the new global CLI once with the original package manager, then run the new `supertask upgrade`.
+Upgrades do not require uninstalling. Run `supertask upgrade`: it pins the exact latest plugin, replaces the Gateway, detects whether the global `supertask` came from npm or Bun, and synchronizes the CLI to that same version. When the CLI, effective plugin, cache, and ready Gateway already match npm `latest`, the command exits without reinstalling or restarting; use `supertask upgrade --force` to intentionally refresh the environment and restart the current version. `supertask doctor` fails if the CLI, plugin, Gateway package, or ready lock disagree. Versions through 0.1.33 cannot retroactively update their own old CLI, so upgrade from those releases by installing the new global CLI once with the original package manager, then run the new `supertask upgrade`.
 
 Gateway task execution currently requires macOS or Linux. Windows is rejected at startup until the Worker can use an OS Job Object to guarantee that detached OpenCode descendants cannot survive cancellation or recovery.
 
-Run `supertask install` and `supertask upgrade` from the same terminal environment in which `opencode run --agent <name>` works. An explicit install or upgrade refreshes the Gateway's OpenCode/XDG/provider execution environment while keeping the proven Bun path, PM2 identity, database/config scope, and rollback runtime pinned. This matters when a custom primary agent selects a provider through environment variables or a non-default OpenCode config directory.
+Run `supertask install` and `supertask upgrade` from the same terminal environment in which `opencode run --agent <name>` works. An install or version-changing upgrade refreshes the Gateway's OpenCode/XDG/provider execution environment while keeping the proven Bun path, PM2 identity, database/config scope, and rollback runtime pinned. Use `supertask upgrade --force` when the version is already current but the saved environment needs refreshing.
 
 ### Uninstall
 
@@ -131,7 +131,7 @@ supertask config                       # show current config
 supertask doctor [--json]              # static end-to-end runtime diagnostics
 supertask doctor --smoke [--smoke-agent build] [--smoke-model provider/model]
                                         # queue one real Gateway/OpenCode verification task
-supertask upgrade                      # pin latest plugin version and replace Gateway
+supertask upgrade [--force]            # update if needed; force refreshes and restarts
 
 # Task management
 supertask add -n "Task" -a "agent" -p "prompt" --importance 5 \
@@ -295,9 +295,9 @@ supertask gateway   # 前台运行：不需要 pm2
 
 插件不会自行安装全局依赖。Gateway 未运行时仍可管理队列，但不会执行排队/定时任务，也不会启动 Web 控制台。
 
-升级无需卸载，执行 `supertask upgrade`。它会精确安装最新插件、替换 Gateway，并根据全局 `supertask` 的真实路径识别 npm 或 Bun 后同步 CLI；无法安全确认包管理器时会明确失败并给出精确命令。`doctor` 把 CLI、插件、Gateway 任一版本不一致视为异常。由于 0.1.33 及更早版本还不具备 CLI 自动同步能力，从这些版本升级时先用原包管理器安装一次新 CLI，再运行新版 `supertask upgrade`。
+升级无需卸载，执行 `supertask upgrade`。它会精确安装最新插件、替换 Gateway，并根据全局 `supertask` 的真实路径识别 npm 或 Bun 后同步 CLI；当 CLI、有效插件配置、缓存和就绪 Gateway 已全部匹配 npm `latest` 时直接返回，不重新安装或重启。需要在同版本下强制刷新环境时执行 `supertask upgrade --force`。无法安全确认包管理器时会明确失败并给出精确命令。`doctor` 把 CLI、插件、Gateway 任一版本不一致视为异常。由于 0.1.33 及更早版本还不具备 CLI 自动同步能力，从这些版本升级时先用原包管理器安装一次新 CLI，再运行新版 `supertask upgrade`。
 
-请在手动执行 `opencode run --agent <名称>` 能工作的同一个终端环境中运行 `supertask install` 或 `supertask upgrade`。显式安装/升级会刷新 Gateway 使用的 OpenCode、XDG 与模型 Provider 执行环境，同时固定已经验证的 Bun、PM2、数据库/配置作用域，并保留完整旧环境用于失败回滚。这能避免自定义主 Agent 在终端正常、但 Gateway 仍沿用旧 Provider 凭据或旧 OpenCode 配置目录。
+请在手动执行 `opencode run --agent <名称>` 能工作的同一个终端环境中运行 `supertask install` 或 `supertask upgrade`。安装或发生版本变化的升级会刷新 Gateway 使用的 OpenCode、XDG 与模型 Provider 执行环境，同时固定已经验证的 Bun、PM2、数据库/配置作用域，并保留完整旧环境用于失败回滚。同版本下需要刷新旧 Provider 凭据或 OpenCode 配置目录时使用 `supertask upgrade --force`。
 
 ### 快速开始
 

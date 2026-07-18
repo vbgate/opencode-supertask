@@ -48,11 +48,12 @@ Dashboard 会区分配置文件中的“已保存值”和当前 Gateway 的“�
 
 ```bash
 supertask upgrade
+supertask upgrade --force  # 同版本下仍重新安装、刷新环境并重启
 ```
 
-升级先查询 npm 的 `latest` 精确版本，再用 `opencode plugin opencode-supertask@<version> --global --force` 写入精确配置并确认对应缓存真实存在，最后用该缓存包的 Gateway 入口替换 PM2 进程；新 Gateway 未 ready 会回滚旧入口和旧插件版本。陈旧 `@latest` 目录可以保留，因为不会被当作目标版本；`supertask doctor` 会检查实际选中的配置和入口。OpenCode 进程仍需重启才能加载新插件。
+升级先查询 npm 的 `latest` 精确版本。若当前 CLI、有效插件配置、插件缓存和就绪 PM2 Gateway 已全部匹配该版本，命令直接返回且不修改配置、不重启。否则用 `opencode plugin opencode-supertask@<version> --global --force` 写入精确配置并确认对应缓存真实存在，最后用该缓存包的 Gateway 入口替换 PM2 进程；新 Gateway 未 ready 会回滚旧入口和旧插件版本。陈旧 `@latest` 目录可以保留，因为不会被当作目标版本；`supertask doctor` 会检查实际选中的配置和入口。OpenCode 进程仍需重启才能加载新插件。
 
-显式 `install` / `upgrade` 还会从当前终端刷新 Gateway 的 OpenCode、XDG 与 Provider 执行环境；`HOME`、`PATH`、`PM2_HOME` 和全部 `SUPERTASK_*` 运行作用域继续使用已经验证的旧值，Bun 路径与 cwd 也不变。删除旧 Gateway 前，目标环境必须先真实执行 `opencode --version`；预检失败不会中断当前 Gateway。新 Gateway 未 ready 时，回滚使用未修改的完整旧环境。因此，自定义 Agent 只有在终端手动执行时正常的情况，应从该终端运行 `supertask install` 或 `supertask upgrade` 后再重试。PM2 环境与 dump 会持久化运行所需环境变量；敏感 Provider 凭据应按本机敏感文件同等级别保护 `PM2_HOME`。
+显式 `install`、发生版本变化的 `upgrade`，以及 `upgrade --force` 会从当前终端刷新 Gateway 的 OpenCode、XDG 与 Provider 执行环境；普通 `upgrade` 在全部组件已是最新时不会重启。`HOME`、`PATH`、`PM2_HOME` 和全部 `SUPERTASK_*` 运行作用域继续使用已经验证的旧值，Bun 路径与 cwd 也不变。删除旧 Gateway 前，目标环境必须先真实执行 `opencode --version`；预检失败不会中断当前 Gateway。新 Gateway 未 ready 时，回滚使用未修改的完整旧环境。因此，自定义 Agent 只有在终端手动执行时正常、且当前版本已经最新的情况下，应从该终端运行 `supertask upgrade --force` 后再重试。PM2 环境与 dump 会持久化运行所需环境变量；敏感 Provider 凭据应按本机敏感文件同等级别保护 `PM2_HOME`。
 
 新版升级命令会从全局 `supertask` 的真实路径识别 npm 或 Bun，并在插件和 Gateway 成功替换后同步相同精确版本的 CLI；若找不到全局 CLI 则跳过，若 CLI 存在但无法确认包管理器则返回部分失败并给出人工命令。0.1.33 及更早版本没有这项能力，从旧版本升级时必须先人工更新一次 CLI，再运行新版升级流程：
 
@@ -227,7 +228,7 @@ cd <任务 cwd>
 opencode run --agent <agent> --format json [-m <model>] '<prompt>'
 ```
 
-若完全相同的命令在终端成功、Gateway 仍以 `Unexpected server error` 或 Provider 认证错误退出，通常说明 PM2 保存的 OpenCode/XDG/Provider 环境已落后。在这个手动命令可工作的终端执行 `supertask install`；版本升级场景执行 `supertask upgrade`。两者都会刷新执行环境并安全替换 Gateway，无需先卸载。若仍失败，保留任务/run 的完整输出和 `pm2 logs supertask-gateway`，不要只用 `general` 验证：OpenCode 可能把非主 Agent 名称降级到默认 Agent。
+若完全相同的命令在终端成功、Gateway 仍以 `Unexpected server error` 或 Provider 认证错误退出，通常说明 PM2 保存的 OpenCode/XDG/Provider 环境已落后。在这个手动命令可工作的终端执行 `supertask install`；有新版本时执行 `supertask upgrade`，已经最新时执行 `supertask upgrade --force`。这些命令会刷新执行环境并安全替换 Gateway，无需先卸载。若仍失败，保留任务/run 的完整输出和 `pm2 logs supertask-gateway`，不要只用 `general` 验证：OpenCode 可能把非主 Agent 名称降级到默认 Agent。
 
 ### Gateway 提示已有实例
 
@@ -311,11 +312,12 @@ cp ~/.config/opencode/supertask.json ~/supertask-backup/supertask.json
 ## 升级与卸载
 
 ```bash
-supertask upgrade     # 刷新 OpenCode 插件缓存并重启 PM2 Gateway
+supertask upgrade             # 有版本或组件漂移时更新，否则不重启
+supertask upgrade --force     # 同版本强制刷新环境并重启
 supertask uninstall   # 仅从 PM2 移除 Gateway，保留其他 PM2 项和数据
 ```
 
-`upgrade` 先从 npm `dist-tags.latest` 查询具体版本，再让 OpenCode 安装该精确版本；只有缓存包版本完全一致且包含 `dist/gateway/index.js` 时才切换 PM2。替换和回滚都复用原 PM2 保存的 Bun 路径与完整环境，ready 检查也针对原数据库，避免升级后静默切换数据域。该命令要求 npm、OpenCode CLI 和 PM2 已安装。数据库迁移会在新版本首次初始化时自动运行；升级前备份是低成本的安全措施。
+`upgrade` 先从 npm `dist-tags.latest` 查询具体版本，并检查 CLI、有效插件、缓存、Gateway 入口包、ready 版本和运行作用域；全部一致时直接退出。需要更新时才让 OpenCode 安装精确版本并切换 PM2，`--force` 则跳过 no-op 短路。替换和回滚都复用原 PM2 保存的 Bun 路径与完整环境，ready 检查也针对原数据库，避免升级后静默切换数据域。该命令要求 npm、OpenCode CLI 和 PM2 已安装。数据库迁移会在新版本首次初始化时自动运行；升级前备份是低成本的安全措施。
 
 升级必须从 Gateway 外部发起。Worker 管理的队列任务会被标记为受管执行上下文，插件在其中拒绝 `supertask_upgrade`；不要把“升级 SuperTask”作为队列任务提交，否则升级会返回安全拒绝提示。
 

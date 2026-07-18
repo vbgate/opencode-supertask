@@ -797,27 +797,46 @@ program
 
 program
     .command('upgrade')
-    .description(t('更新 OpenCode 插件缓存并重启 Gateway', 'update the OpenCode plugin cache and restart the Gateway'))
-    .action(async () => {
-        console.log(t('正在更新 opencode-supertask...', 'Updating opencode-supertask...'));
+    .description(t('更新 OpenCode 插件、CLI 和 Gateway；已是最新版本时不重启', 'update the OpenCode plugin, CLI, and Gateway without restarting when already current'))
+    .option('--force', t('即使已是最新版本也重新安装并重启 Gateway', 'reinstall and restart the Gateway even when already current'))
+    .action(async (options: { force?: boolean }) => {
+        console.log(t('正在检查 opencode-supertask 更新...', 'Checking for opencode-supertask updates...'));
         let installed: { gatewayEntry: string; version: string };
         let previousVersion: string;
+        let targetVersion: string;
+        let updater: typeof import('../daemon/update');
         try {
-            const { resolveInstalledPlugin } = await import('../daemon/update');
-            previousVersion = resolveInstalledPlugin().version;
+            updater = await import('../daemon/update');
+            const { getGatewayDiagnostic } = await import('../daemon/pm2');
+            targetVersion = updater.getLatestVersion();
+            const plugin = updater.getOpenCodePluginDiagnostic();
+            const cli = updater.getGlobalCliDiagnostic();
+            const gateway = getGatewayDiagnostic();
+            if (!options.force && updater.isVersionConverged(targetVersion, {
+                packageVersion: getPackageVersion(),
+                plugin,
+                cli,
+                gateway,
+            })) {
+                console.log(t(
+                    `SuperTask 已是最新版本 v${targetVersion}，无需升级；Gateway 未重启。`,
+                    `SuperTask is already up to date at v${targetVersion}; the Gateway was not restarted.`,
+                ));
+                return;
+            }
+            previousVersion = plugin.version ?? updater.resolveInstalledPlugin().version;
         } catch (error) {
-            console.error(t('无法确认当前 OpenCode 插件版本，已取消升级：', 'Could not determine the current OpenCode plugin version; upgrade cancelled: ')
+            console.error(t('无法检查当前版本，已取消升级：', 'Could not check the current version; upgrade cancelled: ')
                 + (error instanceof Error ? error.message : String(error)));
             process.exit(1);
         }
+        console.log(t('正在更新 opencode-supertask...', 'Updating opencode-supertask...'));
         try {
-            const { installLatestPlugin } = await import('../daemon/update');
-            installed = installLatestPlugin();
+            installed = updater.installPluginVersion(targetVersion);
         } catch (err) {
             let detail = err instanceof Error ? err.message : String(err);
             try {
-                const { installPluginVersion } = await import('../daemon/update');
-                installPluginVersion(previousVersion);
+                updater.installPluginVersion(previousVersion);
             } catch (rollbackError) {
                 detail += `; OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
             }
@@ -861,8 +880,7 @@ program
             let detail = err instanceof Error ? err.message : String(err);
             try {
                 if (previousVersion !== installed.version) {
-                    const { installPluginVersion } = await import('../daemon/update');
-                    installPluginVersion(previousVersion);
+                    updater.installPluginVersion(previousVersion);
                 }
             } catch (rollbackError) {
                 detail += `; Gateway 已回滚，但 OpenCode 插件回滚失败: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`;
