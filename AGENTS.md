@@ -55,10 +55,10 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - 从 `0005` 起 migration 必须遵循 expand/contract 并保持 N-1 二进制兼容：只允许新增表、非唯一索引，以及可空或带默认值的新增列。删除、重命名、收紧约束和数据改写必须延后到旧版本不再是自动回滚目标后执行；测试会拒绝破坏该约束的 SQL。
 - Gateway 用 SQLite `BEGIN IMMEDIATE` + `gateway_lock` 保证单实例；进程身份必须同时识别直接 Gateway 入口与公开的 `supertask gateway`/CLI 入口。Dashboard 默认只监听 `127.0.0.1:4680`。
 - Gateway 必须先完成恢复收敛、Scheduler 初始化和 Dashboard 绑定，最后才启动 Worker，并把包版本与 `gateway_lock.ready_at` 一起写入；PM2 `online` 不能单独作为就绪依据，进程 PID、版本和运行作用域必须匹配新鲜 ready 锁。
-- PM2 替换已有 Gateway 前必须先用保存的运行环境验证管理命令可执行；若新旧进程无法共用同一可回滚的 PM2 管理路径，必须在删除旧进程前失败关闭。
+- PM2 替换已有 Gateway 前必须先用保存的运行环境验证管理命令可执行，并用目标 Gateway 环境真实执行 `opencode --version`；若 OpenCode 不可执行，或新旧进程无法共用同一可回滚的 PM2 管理路径，必须在删除旧进程前失败关闭。
 - PM2 替换、数据库维护、卸载与 macOS supervisor 检查必须先共用 `PM2_HOME/supertask-gateway.manage.sqlite` canonical SQLite 事务锁；兼容旧 custom lock 时还必须从 PM2 dump/运行环境和 LaunchAgent 恢复全部旧路径，并按固定顺序同时持有，不能因后续 CLI 缺少旧环境变量而绕过旧 supervisor。已安装 LaunchAgent 的 `PM2_HOME` 与当前 CLI 不同必须在任何修改前失败关闭，避免两个 PM2 daemon 争用同一 Gateway。不得恢复 PID/stale 文件锁。PM2 kill timeout 不得低于 Worker shutdown grace 加 15 秒，`stop/delete` 命令 timeout 不得低于实际 kill timeout 加 5 秒，管理锁必须持有到命令返回；显式低值必须在删除旧进程前失败关闭。
 - macOS supervisor 只有在 `jlist` 成功且确认 Gateway 缺失、同时 `dump.pm2` 明确包含 Gateway 时才可 `resurrect`；状态未知、`errored`、`stopped` 和卸载后的空 dump 都不得触发重启。卸载必须停止并移除项目 LaunchAgent。
-- `/health` 必须分别反映 Worker、Scheduler、Watchdog 和历史清理的活跃度与连续失败；`supertask doctor` 还要解析 OpenCode 最终配置，要求唯一的精确插件版本，核对对应缓存、全局 CLI、PM2 实际 Gateway 入口包和 ready 锁版本，并验证 macOS LaunchAgent 与 PM2 dump 可恢复性。浮动 `@latest`/`@next` 入口或任一组件版本不一致必须失败。升级成功替换插件和 Gateway 后必须检测全局 CLI 的 npm/Bun 安装来源并同步精确版本；无法确认时返回明确的部分失败和人工命令。PM2 自动替换/恢复必须保留既有 Bun 路径、完整运行环境和数据库作用域。用户显式执行 `install` / `upgrade` 时，目标 Gateway 可从当前终端刷新 OpenCode、XDG 与 Provider 执行环境，但必须固定旧 `HOME`、`PATH`、`PM2_HOME`、全部 `SUPERTASK_*`、Bun 路径、cwd 和数据库/配置作用域；失败回滚必须使用未修改的完整旧环境。
+- `/health` 必须分别反映 Worker、Scheduler、Watchdog 和历史清理的活跃度与连续失败；`supertask doctor` 要分别验证当前终端和 PM2 保存的 Gateway 环境中的 OpenCode，再解析最终配置，要求唯一的精确插件版本，核对对应缓存、全局 CLI、PM2 实际 Gateway 入口包和 ready 锁版本，并验证 macOS LaunchAgent 与 PM2 dump 可恢复性。`doctor --smoke` 必须经真实数据库队列和 Gateway 执行 OpenCode、验证输出标记，普通 `doctor` 不得调用模型。浮动 `@latest`/`@next` 入口或任一组件版本不一致必须失败。升级成功替换插件和 Gateway 后必须检测全局 CLI 的 npm/Bun 安装来源并同步精确版本；无法确认时返回明确的部分失败和人工命令。PM2 自动替换/恢复必须保留既有 Bun 路径、完整运行环境和数据库作用域。用户显式执行 `install` / `upgrade` 时，目标 Gateway 可从当前终端刷新 OpenCode、XDG 与 Provider 执行环境，但必须固定旧 `HOME`、`PATH`、`PM2_HOME`、全部 `SUPERTASK_*`、Bun 路径、cwd 和数据库/配置作用域；失败回滚必须使用未修改的完整旧环境。
 - 数据库检查、备份、清空和恢复统一经过 `DatabaseMaintenanceService`；CLI 清空/恢复必须显式确认并拒绝运行中任务，且只可自动停启 PID 与当前数据库新鲜 ready 锁一致的 PM2 Gateway；前台或无法确认归属的进程必须拒绝误杀。清空/恢复前必须自动创建校验通过的安全备份；清空必须动态删除全部业务表数据（包括 N+1 expand-only 表），通过延迟外键检查支持循环依赖，并保留 `gateway_lock` 与 migration 元数据。恢复来源必须从已打开的 SQLite 连接生成包含已提交 WAL 页的一致快照，并拒绝当前数据库的符号链接/硬链接别名。恢复必须动态校验 source/live 业务表和可写列：source-only 未知表/列在删除前失败关闭，共有未来列完整复制，live-only 列只允许可空/默认值且 live-only 新表必须清空，避免 N/N-1 形成混合时间点；随后在当前连接的排他事务内原位替换，不得关闭连接后 rename 换库。默认在操作失败时也恢复原 Gateway 状态，`--keep-stopped` 除外。
 - Dashboard 清空只能豁免当前 Gateway PID，仍必须服务端确认、拒绝运行中任务并在同一事务内先备份后动态删除全部业务表；不得恢复为路由内直接 `DELETE` 的实现。
 - Dashboard 的浏览器写请求必须通过同源检查，数据库字符串进入 HTML 前必须调用 `esc`；API 的 ID、状态和配置不得直接断言类型。
@@ -88,6 +88,7 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - Dashboard 项目目录必须可从本机文件夹浏览器选择；选定后必须以该 `cwd` 执行配置的 OpenCode `agent list` 和 `models`。新任务只显示 primary/all Agent，不得把 subagent 或旧 `supertask-runner` 作为可直接运行选项；编辑时允许保留不在当前列表中的历史值。时长控件必须先提供常用预设，数字+单位只作为自定义退路。
 - 普通任务编辑必须经 `TaskService` 同时服务 Dashboard 与 CLI，只允许 `pending/failed/dead_letter`，且不得修改 `cwd/dependsOn`；运行中和完成/取消终态拒绝修改。降低失败任务重试预算导致现有次数超限时必须立即收敛到 `dead_letter`。
 - Dashboard 继续会话命令必须按 run ID 从服务端读取并校验 Session ID 后生成，不得把完整 Session ID 直接写入 HTML 或未经校验拼接成终端命令。
+- Dashboard 的任务、定时任务和执行详情必须默认使用人类可读标签和格式；原始 JSON/JSONL 只作为折叠的二级排障入口。执行日志必须在所点击的 run 附近展开，不得统一堆到页面末尾。
 - Worker 必须在新 run 日志中保存真实 executable、参数数组和 `cwd` 的结构化元数据；Dashboard 只能从该元数据生成可复制命令，不得根据任务当前值猜测历史执行命令。
 - `cron/recurring` 达到 `maxInstances` 时必须推进下一触发点，`delayed` 保持等待；到期模板扫描必须有界。不可恢复依赖应在状态事件中递归收敛，下游链不得在每个 Worker poll 全局扫描。
 

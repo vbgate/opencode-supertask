@@ -64,6 +64,10 @@ beforeAll(() => {
     writeFileSync(fakeOpencode, `#!/usr/bin/env bun
 import { appendFileSync, existsSync, writeFileSync } from 'fs';
 const args = Bun.argv.slice(2);
+if (args[0] === '--version') {
+    console.log('test-opencode 1.0.0');
+    process.exit(0);
+}
 appendFileSync(${JSON.stringify(invocationLog)}, JSON.stringify(args) + '\\n');
 const prompt = args.at(-1) ?? '';
 if (prompt.includes('失败后自动重试') && !existsSync(${JSON.stringify(retryMarker)})) {

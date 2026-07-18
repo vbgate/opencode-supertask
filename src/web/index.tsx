@@ -466,7 +466,7 @@ function renderRunLog(runId: number, taskName: string, log: string, locale: Loca
         ? `<div class="run-tools"><strong>${t(locale, 'logs.tools')}</strong><div class="actions">${presentation.tools.map((tool) => `<span class="tag">${esc(tool)}</span>`).join('')}</div></div>`
         : '';
     const output = `<div class="run-output"><strong>${t(locale, 'logs.output')}</strong><pre>${esc(presentation.text || t(locale, 'logs.noText'))}</pre></div>`;
-    return `<section id="log-${runId}" class="panel log-panel" hidden><div class="panel-head"><h3>Run #${runId} · ${esc(taskName)}</h3></div><div class="log-content">${command}${errors}${output}${tools}<details class="raw-log"><summary>${t(locale, 'logs.raw')}</summary><div class="log-box">${esc(log)}</div></details></div></section>`;
+    return `<section class="panel log-panel"><div class="panel-head"><h3>Run #${runId} · ${esc(taskName)}</h3></div><div class="log-content">${command}${errors}${output}${tools}<details class="raw-log"><summary>${t(locale, 'logs.raw')}</summary><div class="log-box">${esc(log)}</div></details></div></section>`;
 }
 
 function esc(value: string | null | undefined): string {
@@ -867,14 +867,11 @@ app.get('/runs', async (c) => {
     const totalPages = Math.max(1, Math.ceil(total / limit));
     if (page > totalPages) return c.redirect(`/runs?page=${totalPages}`);
 
-    const logs: string[] = [];
     const rows = runs.map((run) => {
         const status = safeStatus(run.status);
         const resumable = isValidSessionId(run.sessionId);
-        if (run.log) {
-            logs.push(renderRunLog(run.id, run.taskName, run.log, locale));
-        }
-        return `<tr>
+        const log = run.log ? renderRunLog(run.id, run.taskName, run.log, locale) : '';
+        return `<tr class="run-summary-row">
           <td class="faint" data-label="${t(locale, 'table.run')}">#${run.id}</td>
           <td data-primary data-label="${t(locale, 'table.task')}"><div class="task-name">${esc(run.taskName)} <span class="faint">#${run.taskId}</span></div>${run.model ? `<div style="margin-top:4px"><span class="tag">${esc(run.model)}</span></div>` : ''}</td>
           <td data-label="${t(locale, 'table.agent')}"><span class="tag">${esc(run.taskAgent)}</span></td>
@@ -885,7 +882,7 @@ app.get('/runs', async (c) => {
           <td data-label="${t(locale, 'table.actions')}"><div class="actions"><button type="button" class="btn" onclick="showRunDetail(${run.id})">${t(locale, 'action.details')}</button>
             ${resumable ? `<button type="button" class="btn" onclick="copySessionCommand(${run.id})">${icon('copy')}${t(locale, 'action.continueSession')}</button>` : ''}
             ${run.log ? `<button type="button" class="btn" aria-expanded="false" onclick="toggleLog(${run.id},this)">${t(locale, 'action.logs')}</button>` : ''}</div></td>
-        </tr>`;
+        </tr>${log ? `<tr id="log-${run.id}" class="run-log-row" hidden><td class="run-log-cell" colspan="8">${log}</td></tr>` : ''}`;
     }).join('');
 
     const body = `
@@ -898,7 +895,7 @@ app.get('/runs', async (c) => {
       <section class="panel reveal reveal-delay-2">${runs.length === 0
           ? emptyState(t(locale, 'empty.runs'), '')
           : `<div class="table-wrap"><table class="responsive-table"><thead><tr><th>${t(locale, 'table.run')}</th><th>${t(locale, 'table.task')}</th><th>${t(locale, 'table.agent')}</th><th>${t(locale, 'table.session')}</th><th>${t(locale, 'table.status')}</th><th>${t(locale, 'table.duration')}</th><th>${t(locale, 'table.heartbeat')}</th><th>${t(locale, 'table.actions')}</th></tr></thead><tbody>${rows}</tbody></table></div>`}</section>
-      ${logs.join('')}${pagination(locale, '/runs', page, totalPages, total)}`;
+      ${pagination(locale, '/runs', page, totalPages, total)}`;
 
     return c.html(renderLayout({ locale, activeTab: 'runs', body }));
 });
@@ -1013,7 +1010,11 @@ app.get('/api/tasks/:id', async (c) => {
     const task = await TaskService.getById(id);
     if (!task) return c.json({ error: 'not found' }, 404);
     const runs = await TaskRunService.listByTaskId(id);
-    return c.json({ ...task, _runs: runs });
+    return c.json({
+        ...task,
+        _resultPresentation: task.resultLog ? presentRunLog(task.resultLog) : null,
+        _runs: runs,
+    });
 });
 
 app.get('/api/runs/:id', async (c) => {

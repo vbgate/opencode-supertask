@@ -20,6 +20,8 @@ PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler�
 
 插件加载时会检查 `gateway_lock`：已有新鲜心跳就不处理；没有运行实例且机器已安装 PM2 时，会启动或按包版本重启 Gateway；没有 PM2 时只提示用户，不会静默安装全局依赖。
 
+项目不生成 `ecosystem.config.js`。`supertask install` / `upgrade` 根据当前精确 npm 包入口和已保存的用户运行作用域动态执行 `pm2 start`，明确传入 Bun、Gateway 入口、cwd、重启延迟、最大重启次数、内存上限与优雅退出超时；PM2 的默认 `autorestart` 负责崩溃拉起，`pm2-logrotate` 控制日志保留。对路径会随 npm 缓存版本变化的本地 CLI，这比让用户长期维护一份容易漂移的静态配置文件更可靠。
+
 常用检查：
 
 ```bash
@@ -30,7 +32,7 @@ pm2 status
 pm2 logs supertask-gateway
 ```
 
-`supertask doctor` 会读取 `opencode debug config --pure` 的最终配置，要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、全局 CLI、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或任一组件版本不一致都会返回非零退出码。
+`supertask doctor` 会分别用当前终端环境和 PM2 保存的 Gateway 环境执行 `opencode --version`，再读取 `opencode debug config --pure` 的最终配置，要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、全局 CLI、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。终端可执行但 Gateway 环境不可执行、Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或任一组件版本不一致都会返回非零退出码。
 
 修改配置后必须重启 Gateway 才生效：
 
@@ -50,7 +52,7 @@ supertask upgrade
 
 升级先查询 npm 的 `latest` 精确版本，再用 `opencode plugin opencode-supertask@<version> --global --force` 写入精确配置并确认对应缓存真实存在，最后用该缓存包的 Gateway 入口替换 PM2 进程；新 Gateway 未 ready 会回滚旧入口和旧插件版本。陈旧 `@latest` 目录可以保留，因为不会被当作目标版本；`supertask doctor` 会检查实际选中的配置和入口。OpenCode 进程仍需重启才能加载新插件。
 
-显式 `install` / `upgrade` 还会从当前终端刷新 Gateway 的 OpenCode、XDG 与 Provider 执行环境；`HOME`、`PATH`、`PM2_HOME` 和全部 `SUPERTASK_*` 运行作用域继续使用已经验证的旧值，Bun 路径与 cwd 也不变。新 Gateway 未 ready 时，回滚使用未修改的完整旧环境。因此，自定义 Agent 只有在终端手动执行时正常的情况，应从该终端运行 `supertask install` 或 `supertask upgrade` 后再重试。PM2 环境与 dump 会持久化运行所需环境变量；敏感 Provider 凭据应按本机敏感文件同等级别保护 `PM2_HOME`。
+显式 `install` / `upgrade` 还会从当前终端刷新 Gateway 的 OpenCode、XDG 与 Provider 执行环境；`HOME`、`PATH`、`PM2_HOME` 和全部 `SUPERTASK_*` 运行作用域继续使用已经验证的旧值，Bun 路径与 cwd 也不变。删除旧 Gateway 前，目标环境必须先真实执行 `opencode --version`；预检失败不会中断当前 Gateway。新 Gateway 未 ready 时，回滚使用未修改的完整旧环境。因此，自定义 Agent 只有在终端手动执行时正常的情况，应从该终端运行 `supertask install` 或 `supertask upgrade` 后再重试。PM2 环境与 dump 会持久化运行所需环境变量；敏感 Provider 凭据应按本机敏感文件同等级别保护 `PM2_HOME`。
 
 新版升级命令会从全局 `supertask` 的真实路径识别 npm 或 Bun，并在插件和 Gateway 成功替换后同步相同精确版本的 CLI；若找不到全局 CLI 则跳过，若 CLI 存在但无法确认包管理器则返回部分失败并给出人工命令。0.1.33 及更早版本没有这项能力，从旧版本升级时必须先人工更新一次 CLI，再运行新版升级流程：
 
@@ -187,15 +189,18 @@ Gateway 提供 `/health`，只有 PM2 PID 匹配新鲜 `gateway_lock.ready_at`�
 pm2 status
 supertask doctor
 supertask doctor --json
+supertask doctor --smoke --smoke-agent build
+supertask doctor --smoke --smoke-agent javazys --smoke-model provider/model --smoke-timeout 5min
 supertask status
 curl -fsS http://127.0.0.1:4680/ >/dev/null
 curl -fsS http://127.0.0.1:4680/health
 ```
 
 - PM2 `online` 只说明包装进程存在；SuperTask 自身还要求 PM2 PID 与 ready 锁 PID 一致。
+- 普通 `doctor` 不调用模型；`--smoke` 才会以当前目录（或 `--smoke-cwd`）创建一个 `maxRetries=0` 的真实高优先级任务，通过 Gateway、Worker、launcher 和 OpenCode 完整链路执行，并检查返回标记。它会在数据库中保留任务/run 作为审计证据。
 - `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
 - Dashboard 顶栏可切换中文/English 和跟随系统/浅色/深色主题。语言写入当前站点 Cookie，主题写入浏览器本地存储；它们只影响当前浏览器显示，不修改 Gateway 配置。
-- 新 run 的日志首行保存 Worker 真正执行的 executable、args 和 `cwd`。执行记录页将其展示为可复制的 `cd <cwd> && opencode run ...`，并分层展示 Agent 文本、错误、工具和原始 JSONL。旧 run 不会补造命令，仍可查看原始日志。
+- 新 run 的日志首行保存 Worker 真正执行的 executable、args 和 `cwd`。执行记录页在被点击的 run 下方展开可复制的 `cd <cwd> && opencode run ...`，并分层展示 Agent 文本、错误和工具；原始 JSONL 收在二级折叠入口。任务、定时任务和执行详情默认展示人类可读字段，原始 JSON 只在折叠区保留。旧 run 不会补造命令，仍可查看原始日志。
 - 新 run 使用 `gated-v3-token-guardian`，每 run UUID 会同时写入 `task_runs.locked_by` 和 launcher argv。Watchdog 只有在 launcher、OpenCode 参数与 UUID 全部匹配时才终止进程组；Worker 仅在收到 launcher 通过独立 IPC 返回的同 UUID 排空证明后才结算正常退出。guardian 无证明退出会保持 run 和批次隔离，进程组明确消失后才作失败收敛。旧 v2/legacy 记录的 PID 或 PGID 仍存活、被复用或无法确认时只隔离且不发信号，只有二者都明确消失才恢复。无法确认子进程退出时 `/health` 会降级；旧版 `started_at`/`heartbeat_at` 同时缺失的运行记录也会立即进入诊断隔离。
 - drain proof 使用双向确认：Worker 校验同 UUID 证明后回送确认，launcher 收件后才退出，不再依赖旧 Bun 不可靠的 `process.send` callback。
 - 旧版 `launch_protocol IS NULL` 且没有 child PID 的 run 无法自动证明进程退出。`doctor` 和 Watchdog 日志会给出任务/run ID：先在任务 `cwd` 执行 `supertask cancel --id <taskId>`，人工确认没有遗留 OpenCode，再执行 `supertask run abandon --id <runId> --confirm ABANDON`。未知非空协议、当前 guardian、存活 owner 或已记录 child PID 都会失败关闭，不能用该命令绕过。

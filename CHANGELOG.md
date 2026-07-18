@@ -2,6 +2,21 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.36] - 2026-07-18
+
+### Added
+
+- `supertask doctor --smoke` now queues a real Gateway-managed OpenCode task and verifies its exact response. Agent, model, project directory, and timeout are selectable; ordinary `doctor` remains free of model calls.
+- Task, scheduled-task, and run details now open as labeled, human-readable summaries. Raw JSON remains available in a collapsed troubleshooting section and can still be copied.
+
+### Fixed
+
+- PM2 install, upgrade, and stale-Gateway replacement now execute `opencode --version` using the exact target Gateway environment before stopping the old process. A broken saved `PATH`, executable, or cwd fails closed without disrupting the working Gateway.
+- `supertask doctor` now diagnoses terminal OpenCode and PM2/Gateway OpenCode separately, preventing a successful interactive shell check from hiding a broken daemon environment.
+- Execution logs now expand directly beneath the run that was clicked instead of appearing at the bottom of the page.
+
+[0.1.36]: https://github.com/vbgate/opencode-supertask/compare/v0.1.35...v0.1.36
+
 ## [0.1.35] - 2026-07-18
 
 ### Added

@@ -425,6 +425,8 @@ describe('Dashboard 安全边界', () => {
         expect(runsHtml).toContain('abc***XYZ');
         expect(tasksHtml).not.toContain('ses_abc123XYZ');
         expect(runsHtml).not.toContain('ses_abc123XYZ');
+        expect(runsHtml).toContain(`id="log-${run.id}" class="run-log-row" hidden`);
+        expect(runsHtml.indexOf(`id="log-${run.id}"`)).toBeLessThan(runsHtml.indexOf('</tbody>'));
 
         const commandResponse = await dashboardApp.request(
             `http://localhost/api/runs/${run.id}/session-command`,
@@ -433,6 +435,28 @@ describe('Dashboard 安全边界', () => {
         expect(await commandResponse.json()).toEqual({
             command: 'opencode --session ses_abc123XYZ',
         });
+    });
+
+    test('详情默认展示语义化字段，原始 JSON 收进二级入口', async () => {
+        const task = await TaskService.add({ name: '人类详情', agent: 'build', prompt: '测试详情' });
+        await TaskService.start(task.id);
+        const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+        await TaskService.completeRun(task.id, run.id, JSON.stringify({
+            type: 'text', part: { type: 'text', text: '人类可读结果' },
+        }));
+        const detail = await (await dashboardApp.request(`http://localhost/api/tasks/${task.id}`)).json() as {
+            _resultPresentation: { text: string };
+        };
+        const html = await (await dashboardApp.request('http://localhost/')).text();
+        const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+        expect(detail._resultPresentation.text).toBe('人类可读结果');
+        expect(() => new Function(scripts.at(-1)?.[1] ?? '')).not.toThrow();
+        expect(html).toContain('id="detail-content" class="detail-view"');
+        expect(html).toContain('class="detail-raw"');
+        expect(html).toContain('id="detail-raw" class="json-view"');
+        expect(html).toContain("detailFields(type,data)");
+        expect(html).not.toContain('<pre id="detail-content"');
+        expect(html).toContain('重点信息已整理；原始数据仅用于排障。');
     });
 
     test('执行日志提取模型文本、失败原因和实际命令，同时保留原始日志', () => {

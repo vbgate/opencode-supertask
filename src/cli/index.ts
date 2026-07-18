@@ -7,12 +7,12 @@ import { closeDb } from '@core/db';
 import { parseDuration } from '@core/duration';
 import type { ScheduleType } from '@core/db/schema';
 import {
+    diagnoseOpenCodeRuntime,
     getGatewayDiagnostic,
     getPackageVersion,
     withGatewayMaintenance,
 } from '../daemon/pm2';
 import { getConfigPath, loadConfig } from '@gateway/config';
-import { spawnSync } from 'child_process';
 import {
     renderDatabaseError,
     renderDatabaseResult,
@@ -25,6 +25,7 @@ import {
 } from './validation';
 import { getOpenCodePluginDiagnostic } from '../daemon/update';
 import { cliText, resolveCliLocale } from './i18n';
+import { runDoctorSmoke, type DoctorSmokeResult } from './doctor-smoke';
 
 const cliLocale = resolveCliLocale();
 const t = (zh: string, en: string): string => cliText(cliLocale, zh, en);
@@ -560,29 +561,27 @@ program
     .command('doctor')
     .description(t('检查 OpenCode、数据库、Gateway、Web 界面和日志轮转', 'diagnose OpenCode, database, Gateway, Dashboard, and log rotation'))
     .option('--json', t('强制输出 JSON', 'force JSON output'))
-    .action(async (options: { json?: boolean }) => withDb(async () => {
+    .option('--smoke', t('通过 Gateway 提交一个真实 OpenCode 任务并验证输出', 'queue a real OpenCode task through Gateway and verify its output'))
+    .option('--smoke-agent <agent>', t('真实冒烟任务使用的 Agent', 'Agent used by the real smoke task'), 'build')
+    .option('--smoke-model <model>', t('真实冒烟任务使用的模型；默认跟随 Agent 配置', 'model used by the real smoke task; defaults to the Agent configuration'))
+    .option('--smoke-cwd <path>', t('真实冒烟任务的项目目录；默认为当前目录', 'project directory for the real smoke task; defaults to the current directory'))
+    .option('--smoke-timeout <duration>', t('真实冒烟任务等待上限，如 2min / 5min', 'real smoke task timeout, e.g. 2min / 5min'), '3min')
+    .action(async (options: {
+        json?: boolean;
+        smoke?: boolean;
+        smokeAgent: string;
+        smokeModel?: string;
+        smokeCwd?: string;
+        smokeTimeout: string;
+    }) => withDb(async () => {
         const config = loadConfig();
         const database = DatabaseMaintenanceService.check();
         const legacyQuarantinedRuns = await TaskRunService.listLegacyQuarantinedRuns(
             config.watchdog.heartbeatTimeoutMs,
         );
-        const gateway = getGatewayDiagnostic();
+        const gateway = getGatewayDiagnostic({ probeOpenCode: true });
         const packageVersion = getPackageVersion();
-        const opencodeBin = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
-        const opencodeResult = spawnSync(opencodeBin, ['--version'], {
-            encoding: 'utf8',
-            env: process.env,
-        });
-        const opencode = {
-            ok: opencodeResult.status === 0,
-            executable: opencodeBin,
-            version: opencodeResult.status === 0
-                ? opencodeResult.stdout.trim()
-                : null,
-            error: opencodeResult.status === 0
-                ? null
-                : (opencodeResult.error?.message || opencodeResult.stderr.trim() || t(`退出码 ${opencodeResult.status}`, `exit code ${opencodeResult.status}`)),
-        };
+        const opencode = diagnoseOpenCodeRuntime();
         const plugin = getOpenCodePluginDiagnostic();
 
         let dashboard: { enabled: boolean; ok: boolean; url: string; status: number | null; error: string | null } = {
@@ -663,6 +662,12 @@ program
                 'The current CLI/OpenCode database, config, or OpenCode executable scope does not match the PM2 Gateway',
             ));
         }
+        if (gateway.processFound && gateway.gatewayOpenCode?.ok !== true) {
+            warnings.push(t(
+                `PM2 保存的 Gateway 环境无法执行 OpenCode：${gateway.gatewayOpenCode?.error ?? '无法读取运行环境'}`,
+                `The Gateway environment saved by PM2 cannot execute OpenCode: ${gateway.gatewayOpenCode?.error ?? 'runtime unavailable'}`,
+            ));
+        }
         for (const run of legacyQuarantinedRuns) {
             const cwdHint = run.taskCwd == null
                 ? t('（旧任务没有 cwd，请先在 Dashboard 取消）', ' (the legacy task has no cwd; cancel it in the Dashboard first)')
@@ -678,6 +683,37 @@ program
                 `Legacy quarantined run #${run.runId}: ${owner}${cancel}after confirming no OpenCode process remains, run supertask run abandon --id ${run.runId} --confirm ABANDON`,
             ));
         }
+        let smoke: DoctorSmokeResult | {
+            ok: false;
+            skipped: true;
+            error: string;
+        } | null = null;
+        if (options.smoke) {
+            const gatewayCanExecute = gateway.status === 'online'
+                && gateway.ready
+                && gateway.scopeMatches
+                && gateway.gatewayOpenCode?.ok === true;
+            if (!gatewayCanExecute) {
+                smoke = {
+                    ok: false,
+                    skipped: true,
+                    error: t(
+                        'Gateway 尚未就绪，或其 PM2 环境无法执行 OpenCode；已跳过真实任务',
+                        'Gateway is not ready or its PM2 environment cannot execute OpenCode; the real task was skipped',
+                    ),
+                };
+            } else {
+                const smokeTimeoutMs = parseDuration(options.smokeTimeout);
+                if (smokeTimeoutMs === null) throw new Error('smoke-timeout 格式无效');
+                smoke = await runDoctorSmoke({
+                    agent: options.smokeAgent,
+                    model: options.smokeModel,
+                    cwd: options.smokeCwd ?? process.cwd(),
+                    timeoutMs: smokeTimeoutMs,
+                });
+            }
+            if (!smoke.ok) warnings.push(smoke.error ?? t('真实冒烟任务失败', 'Real smoke task failed'));
+        }
         const ok = opencode.ok
             && plugin.ok
             && database.ok
@@ -690,9 +726,11 @@ program
             && configuredVersionsMatch
             && cliVersionMatchesPlugin
             && gateway.scopeMatches
+            && gateway.gatewayOpenCode?.ok === true
             && gateway.logRotationInstalled
             && gateway.startupConfigured !== false
-            && dashboard.ok;
+            && dashboard.ok
+            && (!options.smoke || smoke?.ok === true);
         const report = {
             ok,
             packageVersion,
@@ -704,6 +742,7 @@ program
             legacyQuarantinedRuns,
             gateway,
             dashboard,
+            smoke,
             warnings,
         };
 
@@ -714,10 +753,17 @@ program
             const mark = (value: boolean) => value ? '✓' : '✗';
             console.log(`SuperTask doctor: ${ok ? t('正常', 'healthy') : t('异常', 'unhealthy')}`);
             console.log(`${mark(opencode.ok)} OpenCode ${opencode.version ?? opencode.error ?? t('不可用', 'unavailable')}`);
+            console.log(`${mark(gateway.gatewayOpenCode?.ok === true)} ${t('Gateway 环境中的 OpenCode', 'OpenCode in Gateway environment')} ${gateway.gatewayOpenCode?.version ?? gateway.gatewayOpenCode?.error ?? t('不可用', 'unavailable')}${gateway.gatewayOpenCode?.executable ? `，${gateway.gatewayOpenCode.executable}` : ''}`);
             console.log(`${mark(plugin.ok)} ${t('OpenCode 插件', 'OpenCode plugin')} ${plugin.spec || plugin.error || t('未配置', 'not configured')}${plugin.cachedVersion ? t(`（缓存 v${plugin.cachedVersion}）`, ` (cached v${plugin.cachedVersion})`) : ''}`);
             console.log(`${mark(database.ok)} ${t('数据库', 'Database')} ${database.path}${t(`（任务 ${database.counts.tasks}，运行中 ${database.runningTasks}）`, ` (tasks ${database.counts.tasks}, running ${database.runningTasks})`)}`);
             console.log(`${mark(gateway.status === 'online' && gateway.ready && gatewayEntryPinned && gatewayVersionMatchesPackage)} Gateway ${gateway.status ?? 'missing'}${gateway.pid ? `，PID ${gateway.pid}` : ''}${gateway.runningVersion ? `，v${gateway.runningVersion}` : ''}${gateway.gatewayEntry ? `，${gateway.gatewayEntry}` : ''}`);
             console.log(`${mark(dashboard.ok)} Dashboard ${dashboard.enabled ? dashboard.url : t('已禁用', 'disabled')}`);
+            if (options.smoke) {
+                const smokeSummary = smoke && 'taskId' in smoke
+                    ? `task #${smoke.taskId}${smoke.runId ? ` / run #${smoke.runId}` : ''}，${smoke.durationMs}ms`
+                    : smoke?.error ?? t('未执行', 'not run');
+                console.log(`${mark(smoke?.ok === true)} ${t('真实 Gateway 冒烟任务', 'Real Gateway smoke task')} ${smokeSummary}`);
+            }
             for (const warning of warnings) console.log(`! ${warning}`);
         }
         if (!ok) process.exitCode = 1;

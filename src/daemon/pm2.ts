@@ -74,6 +74,14 @@ export interface GatewayDiagnostic {
     currentScope: RuntimeScope;
     gatewayScope: RuntimeScope | null;
     scopeMatches: boolean;
+    gatewayOpenCode: OpenCodeRuntimeDiagnostic | null;
+}
+
+export interface OpenCodeRuntimeDiagnostic {
+    ok: boolean;
+    executable: string;
+    version: string | null;
+    error: string | null;
 }
 
 const GATEWAY_LOCK_STALE_MS = 30_000;
@@ -204,7 +212,44 @@ function currentScope(): RuntimeScope {
     return runtimeScope({ cwd: process.cwd(), env: process.env });
 }
 
-export function getGatewayDiagnostic(): GatewayDiagnostic {
+export function diagnoseOpenCodeRuntime(
+    runtime: Pick<GatewayRuntime, "cwd" | "env"> = {
+        cwd: process.cwd(),
+        env: process.env,
+    },
+): OpenCodeRuntimeDiagnostic {
+    const executable = runtimeScope(runtime).opencodePath;
+    const result = spawnSync(executable, ["--version"], {
+        cwd: runtime.cwd,
+        env: runtime.env,
+        encoding: "utf8",
+        timeout: 10_000,
+        killSignal: "SIGKILL",
+    });
+    const ok = result.status === 0 && result.error === undefined;
+    return {
+        ok,
+        executable,
+        version: ok ? result.stdout.trim() || result.stderr.trim() || null : null,
+        error: ok
+            ? null
+            : result.error?.message
+                || result.stderr.trim()
+                || result.stdout.trim()
+                || `exit code ${result.status}`,
+    };
+}
+
+function assertOpenCodeRuntime(runtime: GatewayRuntime): void {
+    const diagnostic = diagnoseOpenCodeRuntime(runtime);
+    if (!diagnostic.ok) {
+        throw new Error(
+            `[supertask] 目标 Gateway 环境无法执行 OpenCode (${diagnostic.executable}): ${diagnostic.error}`,
+        );
+    }
+}
+
+export function getGatewayDiagnostic(options: { probeOpenCode?: boolean } = {}): GatewayDiagnostic {
     const producerScope = currentScope();
     if (!isPm2Installed()) {
         return {
@@ -221,6 +266,7 @@ export function getGatewayDiagnostic(): GatewayDiagnostic {
             currentScope: producerScope,
             gatewayScope: null,
             scopeMatches: false,
+            gatewayOpenCode: null,
         };
     }
 
@@ -258,6 +304,9 @@ export function getGatewayDiagnostic(): GatewayDiagnostic {
         currentScope: producerScope,
         gatewayScope: managedScope,
         scopeMatches: managedScope != null && scopesMatch(producerScope, managedScope),
+        gatewayOpenCode: runtime === null || !options.probeOpenCode
+            ? null
+            : diagnoseOpenCodeRuntime(runtime),
     };
 }
 
@@ -1260,6 +1309,7 @@ function installUnlocked(): void {
     assertRuntimeCanControlPm2(oldRuntime, existing);
     gatewayKillTimeoutMs(targetRuntime);
     gatewayTerminationCommandTimeoutMs(targetRuntime);
+    assertOpenCodeRuntime(targetRuntime);
     if (existing) requirePm2Termination("delete", "pm2 delete existing Gateway", oldRuntime!);
 
     const version = getPackageVersion();
@@ -1390,6 +1440,7 @@ function upgradeUnlocked(target?: {
     assertRuntimeCanControlPm2(oldRuntime, existing);
     gatewayKillTimeoutMs(targetRuntime);
     gatewayTerminationCommandTimeoutMs(targetRuntime);
+    assertOpenCodeRuntime(targetRuntime);
     if (existing) requirePm2Termination("delete", "pm2 delete old Gateway", oldRuntime!);
 
     try {
@@ -1464,6 +1515,7 @@ function ensureGatewayUnlocked(): EnsureGatewayResult {
 
     gatewayKillTimeoutMs(targetRuntime);
     gatewayTerminationCommandTimeoutMs(targetRuntime);
+    assertOpenCodeRuntime(targetRuntime);
     if (existing) requirePm2Termination("delete", "pm2 delete stale Gateway", oldRuntime!);
     try {
         pm2StartGateway(targetRuntime);

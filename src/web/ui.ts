@@ -33,7 +33,7 @@ const ZH = {
     'action.hideLogs': '收起日志',
     'action.save': '保存设置',
     'action.saveAndRestart': '保存并重启',
-    'action.copy': '复制 JSON',
+    'action.copy': '复制原始数据',
     'action.close': '关闭',
     'action.confirm': '确认',
     'action.clearDatabase': '清空数据库',
@@ -225,9 +225,46 @@ const ZH = {
     'theme.light': '浅色',
     'theme.dark': '深色',
     'language.label': '语言',
-    'details.title': '数据详情',
-    'details.subtitle': '原始记录（JSON）',
-    'details.copySuccess': 'JSON 已复制',
+    'details.title': '详情',
+    'details.subtitle': '重点信息已整理；原始数据仅用于排障。',
+    'details.taskTitle': '任务详情',
+    'details.runTitle': '执行详情',
+    'details.templateTitle': '定时任务详情',
+    'details.raw': '查看原始数据（JSON）',
+    'details.copySuccess': '原始数据已复制',
+    'details.id': '编号',
+    'details.project': '项目目录',
+    'details.prompt': '提示词',
+    'details.result': '执行结果 / 失败原因',
+    'details.category': '分类',
+    'details.batch': '批次',
+    'details.dependency': '依赖任务',
+    'details.importance': '重要程度',
+    'details.urgency': '紧急程度',
+    'details.retryCount': '已重试 / 最多重试',
+    'details.retryBackoff': '重试等待',
+    'details.timeout': '执行超时',
+    'details.createdAt': '创建时间',
+    'details.updatedAt': '更新时间',
+    'details.startedAt': '开始时间',
+    'details.finishedAt': '结束时间',
+    'details.scheduledAt': '计划时间',
+    'details.enabled': '自动运行',
+    'details.scheduleRule': '运行规则',
+    'details.maxInstances': '自动调度上限',
+    'details.maxRetries': '失败重试次数',
+    'details.lastRun': '上次运行',
+    'details.nextRun': '下次运行',
+    'details.taskId': '所属任务',
+    'details.session': 'OpenCode 会话',
+    'details.heartbeat': '最近心跳',
+    'details.process': '进程',
+    'details.history': '执行历史',
+    'details.noHistory': '还没有执行记录',
+    'details.none': '无',
+    'details.default': '跟随系统默认',
+    'details.enabledYes': '已启用',
+    'details.enabledNo': '已停用',
     'dialog.cancelTask': '取消任务 #{id}？',
     'dialog.cancelTaskBody': '运行中的任务会在下一个轮询周期终止对应进程树。',
     'dialog.retryTask': '重试任务 #{id}？',
@@ -300,7 +337,7 @@ const EN: Record<MessageKey, string> = {
     'action.hideLogs': 'Hide log',
     'action.save': 'Save settings',
     'action.saveAndRestart': 'Save and restart',
-    'action.copy': 'Copy JSON',
+    'action.copy': 'Copy raw data',
     'action.close': 'Close',
     'action.confirm': 'Confirm',
     'action.clearDatabase': 'Clear database',
@@ -492,9 +529,46 @@ const EN: Record<MessageKey, string> = {
     'theme.light': 'Light',
     'theme.dark': 'Dark',
     'language.label': 'Language',
-    'details.title': 'Data details',
-    'details.subtitle': 'Raw record (JSON)',
-    'details.copySuccess': 'JSON copied',
+    'details.title': 'Details',
+    'details.subtitle': 'Key information is organized below; raw data is only for troubleshooting.',
+    'details.taskTitle': 'Task details',
+    'details.runTitle': 'Run details',
+    'details.templateTitle': 'Scheduled task details',
+    'details.raw': 'View raw data (JSON)',
+    'details.copySuccess': 'Raw data copied',
+    'details.id': 'ID',
+    'details.project': 'Project directory',
+    'details.prompt': 'Prompt',
+    'details.result': 'Result / failure reason',
+    'details.category': 'Category',
+    'details.batch': 'Batch',
+    'details.dependency': 'Dependency',
+    'details.importance': 'Importance',
+    'details.urgency': 'Urgency',
+    'details.retryCount': 'Retries used / allowed',
+    'details.retryBackoff': 'Retry delay',
+    'details.timeout': 'Run timeout',
+    'details.createdAt': 'Created',
+    'details.updatedAt': 'Updated',
+    'details.startedAt': 'Started',
+    'details.finishedAt': 'Finished',
+    'details.scheduledAt': 'Scheduled for',
+    'details.enabled': 'Automatic runs',
+    'details.scheduleRule': 'Schedule rule',
+    'details.maxInstances': 'Automatic scheduling limit',
+    'details.maxRetries': 'Failure retries',
+    'details.lastRun': 'Last run',
+    'details.nextRun': 'Next run',
+    'details.taskId': 'Task',
+    'details.session': 'OpenCode session',
+    'details.heartbeat': 'Latest heartbeat',
+    'details.process': 'Processes',
+    'details.history': 'Run history',
+    'details.noHistory': 'No runs yet',
+    'details.none': 'None',
+    'details.default': 'Use system default',
+    'details.enabledYes': 'Enabled',
+    'details.enabledNo': 'Disabled',
     'dialog.cancelTask': 'Cancel task #{id}?',
     'dialog.cancelTaskBody': 'A running task will terminate its process tree on the next worker poll.',
     'dialog.retryTask': 'Retry task #{id}?',
@@ -823,6 +897,8 @@ const STYLES = `
   .danger-card h2 .icon { width:17px; height:17px; }
   .danger-card p { max-width:800px; margin:0 0 14px; color:var(--text-2); font-size:12px; }
   .log-panel { margin:12px 0; animation:reveal .18s ease both; }
+  .run-log-row td { padding:0 16px 16px; background:color-mix(in srgb,var(--surface-2) 64%,var(--surface)); }
+  .run-log-row .log-panel { margin:0; box-shadow:none; }
   .log-content { display:grid; gap:14px; padding:16px; }
   .log-section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:7px; }
   .run-command,.run-output,.run-error,.run-tools { min-width:0; }
@@ -880,8 +956,21 @@ const STYLES = `
   .directory-item:active { transform:scale(.99); }
   .directory-item .icon { width:17px; height:17px; color:var(--primary); flex:0 0 auto; }
   .directory-empty { min-height:220px; display:grid; place-items:center; color:var(--text-3); }
-  .json-view { min-height:160px; margin:0; padding:15px; overflow:auto; border:1px solid var(--border); border-radius:10px; color:var(--text-2);
-    background:var(--surface-2); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .detail-view { display:grid; gap:16px; }
+  .detail-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .detail-item { min-width:0; padding:12px 13px; border:1px solid var(--border); border-radius:10px; background:var(--surface-2); }
+  .detail-item.wide { grid-column:1 / -1; }
+  .detail-label { margin-bottom:5px; color:var(--text-3); font-size:10px; font-weight:750; letter-spacing:.045em; text-transform:uppercase; }
+  .detail-value { color:var(--text); font-size:13px; line-height:1.55; overflow-wrap:anywhere; }
+  .detail-value.mono { font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; }
+  .detail-value.long { max-height:240px; margin:0; overflow:auto; white-space:pre-wrap; }
+  .detail-history h3 { margin:0 0 8px; font-size:13px; }
+  .detail-history-list { display:grid; gap:7px; }
+  .detail-history-item { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 11px; border:1px solid var(--border); border-radius:9px; background:var(--surface-2); font-size:11px; }
+  .detail-raw { padding-top:12px; border-top:1px solid var(--border); }
+  .detail-raw summary { color:var(--text-2); cursor:pointer; font-size:12px; font-weight:650; }
+  .json-view { max-height:320px; margin:10px 0 0; padding:15px; overflow:auto; border:1px solid var(--border); border-radius:10px; color:var(--text-2);
+    background:var(--surface-2); font-family:"SFMono-Regular",Consolas,monospace; font-size:11px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .confirm-copy { color:var(--text-2); margin:0; }
   .confirm-copy strong { display:block; margin-bottom:5px; color:var(--text); font-size:15px; }
   .danger-input { width:100%; height:40px; margin-top:14px; padding:0 12px; border:1px solid var(--border); border-radius:9px; outline:none;
@@ -945,8 +1034,13 @@ const STYLES = `
     .responsive-table td[data-primary]::before { display:none; }
     .responsive-table .task-prompt { max-width:100%; }
     .responsive-table .actions { justify-content:flex-start; }
+    .responsive-table .run-log-row { padding:0; overflow:hidden; }
+    .responsive-table .run-log-cell { display:block; padding:0; }
+    .responsive-table .run-log-cell::before { display:none; }
     .project-grid { grid-template-columns:1fr; }
     .template-form-grid { grid-template-columns:1fr; }
+    .detail-grid { grid-template-columns:1fr; }
+    .detail-item.wide { grid-column:auto; }
     .form-field-wide { grid-column:auto; }
     .field-action { align-items:stretch; flex-direction:column; }
     .field-action .btn { width:100%; }
@@ -976,7 +1070,24 @@ const PAGE_KEYS: Record<ActiveTab, { title: MessageKey; description: MessageKey 
 function clientMessages(locale: Locale) {
     const keys = [
         'action.cancel', 'action.confirm', 'action.copy', 'action.delete', 'action.refresh',
-        'action.logs', 'action.hideLogs', 'details.copySuccess', 'feedback.copyFailed',
+        'action.logs', 'action.hideLogs', 'details.title', 'details.subtitle',
+        'details.taskTitle', 'details.runTitle', 'details.templateTitle', 'details.raw',
+        'details.copySuccess', 'details.id', 'details.project', 'details.prompt', 'details.result',
+        'details.category', 'details.batch', 'details.dependency', 'details.importance',
+        'details.urgency', 'details.retryCount', 'details.retryBackoff', 'details.timeout',
+        'details.createdAt', 'details.updatedAt', 'details.startedAt', 'details.finishedAt',
+        'details.scheduledAt', 'details.enabled', 'details.scheduleRule', 'details.maxInstances',
+        'details.maxRetries',
+        'details.lastRun', 'details.nextRun', 'details.taskId', 'details.session',
+        'details.heartbeat', 'details.process', 'details.history', 'details.noHistory',
+        'details.none', 'details.default', 'details.enabledYes', 'details.enabledNo',
+        'table.name', 'table.agent', 'table.model', 'table.status', 'table.duration',
+        'template.scheduleType', 'status.pending', 'status.running', 'status.done',
+        'status.failed', 'status.dead_letter', 'status.cancelled', 'status.unknown',
+        'runStatus.running', 'runStatus.done', 'runStatus.failed',
+        'schedule.cron', 'schedule.recurring', 'schedule.delayed', 'schedule.unknown',
+        'duration.seconds', 'duration.minutes', 'duration.hours', 'duration.days',
+        'feedback.copyFailed',
         'dialog.cancelTask', 'dialog.cancelTaskBody', 'dialog.retryTask', 'dialog.retryTaskBody',
         'dialog.deleteTask', 'dialog.deleteTaskBody', 'dialog.disableTemplate', 'dialog.disableTemplateBody',
         'dialog.deleteTemplate', 'dialog.deleteTemplateBody', 'dialog.triggerTemplate', 'dialog.triggerTemplateBody',
@@ -1069,8 +1180,8 @@ export function renderLayout(options: {
     <div class="dialog-actions"><button type="button" class="btn" onclick="document.getElementById('directory-dialog').close()">${t(locale, 'action.cancel')}</button><button id="directory-choose" type="button" class="btn btn-primary">${icon('folder')}${t(locale, 'action.chooseThisFolder')}</button></div>
   </dialog>
   <dialog id="detail-dialog">
-    <div class="dialog-head"><div><h2>${t(locale, 'details.title')}</h2><p>${t(locale, 'details.subtitle')}</p></div><button class="icon-button" onclick="document.getElementById('detail-dialog').close()" aria-label="${t(locale, 'action.close')}">${icon('close')}</button></div>
-    <div class="dialog-body"><pre id="detail-content" class="json-view"></pre></div>
+    <div class="dialog-head"><div><h2 id="detail-title">${t(locale, 'details.title')}</h2><p>${t(locale, 'details.subtitle')}</p></div><button class="icon-button" onclick="document.getElementById('detail-dialog').close()" aria-label="${t(locale, 'action.close')}">${icon('close')}</button></div>
+    <div class="dialog-body"><div id="detail-content" class="detail-view"></div><details class="detail-raw"><summary>${t(locale, 'details.raw')}</summary><pre id="detail-raw" class="json-view"></pre></details></div>
     <div class="dialog-actions"><button class="btn" onclick="copyDetails()">${icon('copy')}${t(locale, 'action.copy')}</button><button class="btn btn-primary" onclick="document.getElementById('detail-dialog').close()">${t(locale, 'action.close')}</button></div>
   </dialog>
   <dialog id="confirm-dialog">
@@ -1102,9 +1213,39 @@ export function renderLayout(options: {
     async function retryTask(id){if(!await ask(text('dialog.retryTask',{id}),text('dialog.retryTaskBody')))return;try{await readJson(await fetch('/api/tasks/'+id+'/retry',{method:'POST'}));location.reload()}catch(error){showToast(text('feedback.retryFailed')+': '+error.message,'error')}}
     async function cancelTask(id){if(!await ask(text('dialog.cancelTask',{id}),text('dialog.cancelTaskBody'),true))return;try{await readJson(await fetch('/api/tasks/'+id+'/cancel',{method:'POST'}));location.reload()}catch(error){showToast(text('feedback.cancelFailed')+': '+error.message,'error')}}
     async function deleteTask(id){if(!await ask(text('dialog.deleteTask',{id}),text('dialog.deleteTaskBody'),true))return;try{await readJson(await fetch('/api/tasks/'+id,{method:'DELETE'}));location.reload()}catch(error){showToast(text('feedback.deleteFailed')+': '+error.message,'error')}}
-    async function showRecord(url){try{const data=await readJson(await fetch(url));document.getElementById('detail-content').textContent=JSON.stringify(data,null,2);document.getElementById('detail-dialog').showModal()}catch(error){showToast(error.message,'error')}}
-    const showDetail=id=>showRecord('/api/tasks/'+id);const showRunDetail=id=>showRecord('/api/runs/'+id);const showTemplateDetail=id=>showRecord('/api/templates/'+id);
-    async function copyDetails(){try{await navigator.clipboard.writeText(document.getElementById('detail-content').textContent);showToast(text('details.copySuccess'))}catch{showToast(text('feedback.copyFailed'),'error')}}
+    function detailDate(value){if(value===null||value===undefined||value==='')return text('details.none');const epoch=typeof value==='number'&&value<100000000000?value*1000:value;const date=new Date(epoch);return Number.isNaN(date.getTime())?String(value):date.toLocaleString(document.documentElement.lang)}
+    function detailDuration(value){if(value===null||value===undefined)return text('details.default');const milliseconds=Number(value);if(!Number.isFinite(milliseconds))return String(value);if(milliseconds===0)return '0 ms';const units=[[86400000,text('duration.days')],[3600000,text('duration.hours')],[60000,text('duration.minutes')],[1000,text('duration.seconds')]];for(const [size,label] of units){if(milliseconds>=size&&milliseconds%size===0)return String(milliseconds/size)+' '+label}return String(milliseconds)+' ms'}
+    function detailStatus(type,value){const prefix=type==='run'?'runStatus.':'status.';const key=prefix+String(value||'unknown');return Object.prototype.hasOwnProperty.call(UI,key)?text(key):text('status.unknown')}
+    function detailScheduleType(value){const key='schedule.'+String(value||'unknown');return Object.prototype.hasOwnProperty.call(UI,key)?text(key):text('schedule.unknown')}
+    function detailModel(value){return !value||value==='default'?text('details.default'):String(value)}
+    function detailSession(value){if(!value)return text('details.none');const session=String(value);return session.length<=10?session:session.slice(0,6)+'***'+session.slice(-4)}
+    function detailTaskResult(data){const presentation=data._resultPresentation;if(!presentation)return text('details.none');const parts=[];if(Array.isArray(presentation.errors)&&presentation.errors.length)parts.push(presentation.errors.join('\\n'));if(presentation.text)parts.push(presentation.text);return parts.join('\\n\\n')||text('details.none')}
+    function detailField(label,value,options={}){const item=document.createElement('div');item.className='detail-item'+(options.wide?' wide':'');const name=document.createElement('div');name.className='detail-label';name.textContent=label;const content=options.long?document.createElement('pre'):document.createElement('div');content.className='detail-value'+(options.mono?' mono':'')+(options.long?' long':'');content.textContent=value===null||value===undefined||value===''?text('details.none'):String(value);item.append(name,content);return item}
+    function renderDetailHistory(runs){const section=document.createElement('section');section.className='detail-history';const title=document.createElement('h3');title.textContent=text('details.history');section.appendChild(title);if(!Array.isArray(runs)||runs.length===0){const empty=document.createElement('div');empty.className='muted small';empty.textContent=text('details.noHistory');section.appendChild(empty);return section}const list=document.createElement('div');list.className='detail-history-list';for(const run of runs){const item=document.createElement('div');item.className='detail-history-item';const primary=document.createElement('strong');primary.textContent='Run #'+run.id+' · '+detailStatus('run',run.status);const secondary=document.createElement('span');secondary.className='muted';secondary.textContent=detailDate(run.startedAt)+(run.model?' · '+detailModel(run.model):'');item.append(primary,secondary);list.appendChild(item)}section.appendChild(list);return section}
+    function detailFields(type,data){if(type==='task')return [
+        [text('details.id'),'#'+data.id],[text('table.name'),data.name],[text('table.status'),detailStatus('task',data.status)],[text('details.project'),data.cwd,{wide:true,mono:true}],
+        [text('table.agent'),data.agent],[text('table.model'),detailModel(data.model)],[text('details.prompt'),data.prompt,{wide:true,long:true}],
+        [text('details.category'),data.category],[text('details.batch'),data.batchId],[text('details.dependency'),data.dependsOn?'#'+data.dependsOn:text('details.none')],
+        [text('details.importance'),data.importance],[text('details.urgency'),data.urgency],[text('details.retryCount'),String(data.retryCount??0)+' / '+String(data.maxRetries??0)],
+        [text('details.retryBackoff'),detailDuration(data.retryBackoffMs)],[text('details.timeout'),detailDuration(data.timeoutMs)],[text('details.scheduledAt'),detailDate(data.scheduledAt)],
+        [text('details.createdAt'),detailDate(data.createdAt)],[text('details.startedAt'),detailDate(data.startedAt)],[text('details.finishedAt'),detailDate(data.finishedAt)],
+        [text('details.result'),detailTaskResult(data),{wide:true,long:true}]
+    ];if(type==='run'){const started=data.startedAt?new Date(data.startedAt).getTime():null;const finished=data.finishedAt?new Date(data.finishedAt).getTime():null;return [
+        [text('details.id'),'Run #'+data.id],[text('details.taskId'),'#'+data.taskId],[text('table.status'),detailStatus('run',data.status)],[text('table.model'),detailModel(data.model)],
+        [text('details.session'),detailSession(data.sessionId)],[text('details.startedAt'),detailDate(data.startedAt)],[text('details.finishedAt'),detailDate(data.finishedAt)],
+        [text('table.duration'),started!==null?detailDuration((finished??Date.now())-started):text('details.none')],[text('details.heartbeat'),detailDate(data.heartbeatAt)],
+        [text('details.process'),'Worker PID '+String(data.workerPid??'—')+' · OpenCode PID '+String(data.childPid??'—'),{wide:true,mono:true}]
+    ];}const scheduleRule=data.scheduleType==='cron'?data.cronExpr:data.scheduleType==='recurring'?detailDuration(data.intervalMs):detailDate(data.runAt);return [
+        [text('details.id'),'#'+data.id],[text('table.name'),data.name],[text('details.enabled'),data.enabled?text('details.enabledYes'):text('details.enabledNo')],[text('details.project'),data.cwd,{wide:true,mono:true}],
+        [text('table.agent'),data.agent],[text('table.model'),detailModel(data.model)],[text('details.prompt'),data.prompt,{wide:true,long:true}],
+        [text('template.scheduleType'),detailScheduleType(data.scheduleType)],[text('details.scheduleRule'),scheduleRule],[text('details.category'),data.category],[text('details.batch'),data.batchId],
+        [text('details.importance'),data.importance],[text('details.urgency'),data.urgency],[text('details.maxInstances'),data.maxInstances],[text('details.maxRetries'),data.maxRetries??0],
+        [text('details.retryBackoff'),detailDuration(data.retryBackoffMs)],[text('details.timeout'),detailDuration(data.timeoutMs)],[text('details.lastRun'),detailDate(data.lastRunAt)],[text('details.nextRun'),detailDate(data.nextRunAt)],
+        [text('details.createdAt'),detailDate(data.createdAt)],[text('details.updatedAt'),detailDate(data.updatedAt)]
+    ]}
+    async function showRecord(url,type){try{const data=await readJson(await fetch(url));const content=document.getElementById('detail-content');content.replaceChildren();const grid=document.createElement('div');grid.className='detail-grid';for(const [label,value,options] of detailFields(type,data))grid.appendChild(detailField(label,value,options));content.appendChild(grid);if(type==='task')content.appendChild(renderDetailHistory(data._runs));document.getElementById('detail-title').textContent=text(type==='task'?'details.taskTitle':type==='run'?'details.runTitle':'details.templateTitle');document.getElementById('detail-raw').textContent=JSON.stringify(data,null,2);document.querySelector('#detail-dialog .detail-raw').open=false;document.getElementById('detail-dialog').showModal()}catch(error){showToast(error.message,'error')}}
+    const showDetail=id=>showRecord('/api/tasks/'+id,'task');const showRunDetail=id=>showRecord('/api/runs/'+id,'run');const showTemplateDetail=id=>showRecord('/api/templates/'+id,'template');
+    async function copyDetails(){try{await navigator.clipboard.writeText(document.getElementById('detail-raw').textContent);showToast(text('details.copySuccess'))}catch{showToast(text('feedback.copyFailed'),'error')}}
     async function copySessionCommand(id){try{const data=await readJson(await fetch('/api/runs/'+id+'/session-command'));await navigator.clipboard.writeText(data.command);showToast(text('feedback.sessionCommandCopied'))}catch(error){showToast(error.message||text('feedback.copyFailed'),'error')}}
     async function copyRunCommand(id){try{await navigator.clipboard.writeText(document.getElementById('command-'+id).textContent);showToast(text('feedback.commandCopied'))}catch{showToast(text('feedback.copyFailed'),'error')}}
     function taskField(name){return document.getElementById('task-'+name)}
@@ -1142,7 +1283,7 @@ export function renderLayout(options: {
     async function disableTmpl(id){if(!await ask(text('dialog.disableTemplate'),text('dialog.disableTemplateBody')))return;try{await readJson(await fetch('/api/templates/'+id+'/disable',{method:'POST'}));location.reload()}catch(error){showToast(error.message,'error')}}
     async function deleteTmpl(id){if(!await ask(text('dialog.deleteTemplate'),text('dialog.deleteTemplateBody'),true))return;try{await readJson(await fetch('/api/templates/'+id,{method:'DELETE'}));location.reload()}catch(error){showToast(error.message,'error')}}
     async function triggerTmpl(id){if(!await ask(text('dialog.triggerTemplate'),text('dialog.triggerTemplateBody')))return;try{const data=await readJson(await fetch('/api/templates/'+id+'/trigger',{method:'POST'}));showToast(text('feedback.triggered',{id:data.taskId}));setTimeout(()=>location.reload(),550)}catch(error){showToast(error.message,'error')}}
-    function toggleLog(id,button){const panel=document.getElementById('log-'+id);const hidden=!panel.hidden;panel.hidden=hidden;button.setAttribute('aria-expanded',String(!hidden));button.textContent=text(hidden?'action.logs':'action.hideLogs');}
+    function toggleLog(id,button){const panel=document.getElementById('log-'+id);const hidden=!panel.hidden;panel.hidden=hidden;button.setAttribute('aria-expanded',String(!hidden));button.textContent=text(hidden?'action.logs':'action.hideLogs');if(!hidden)requestAnimationFrame(()=>panel.scrollIntoView({block:'nearest',behavior:'smooth'}));}
     function filterTasks(value){const query=value.trim().toLocaleLowerCase();let visible=0;document.querySelectorAll('[data-task-row]').forEach(row=>{const match=!query||row.dataset.search.toLocaleLowerCase().includes(query);row.hidden=!match;if(match)visible++});const empty=document.getElementById('search-empty');if(empty)empty.hidden=visible!==0;}
     async function clearDatabase(){if(!await askDanger())return;try{const data=await readJson(await fetch('/api/database/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmation:'CLEAR'})}));showToast(text('feedback.databaseCleared',{path:data.backupPath}));setTimeout(()=>location.reload(),1000)}catch(error){showToast(error.message,'error')}}
     async function confirmGatewayRestart(runningCount=0){const body=runningCount>0?text('dialog.restartGatewayRunningBody',{count:runningCount}):text('dialog.restartGatewayBody');return await ask(text('dialog.restartGateway'),body)}

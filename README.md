@@ -128,7 +128,9 @@ supertask uninstall                    # stop and remove from pm2
 supertask gateway                      # start Gateway in foreground
 supertask ui                           # open Web Dashboard in browser
 supertask config                       # show current config
-supertask doctor [--json]              # end-to-end runtime diagnostics
+supertask doctor [--json]              # static end-to-end runtime diagnostics
+supertask doctor --smoke [--smoke-agent build] [--smoke-model provider/model]
+                                        # queue one real Gateway/OpenCode verification task
 supertask upgrade                      # pin latest plugin version and replace Gateway
 
 # Task management
@@ -239,13 +241,13 @@ http://localhost:4680 — 4 pages:
 
 The responsive Dashboard supports Chinese and English plus system, light, and dark themes. Language is stored in a same-site cookie, while theme preference stays in browser local storage; both survive refreshes without changing Gateway configuration.
 
-Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` also checks OpenCode, SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump. It requires the effective OpenCode plugin configuration to use one exact version, verifies that exact cache package, and compares it with the global CLI, actual PM2 Gateway entry, and ready-lock version; floating `@latest`/`@next` paths or any component version mismatch fail diagnostics.
+Health endpoint: `GET http://localhost:4680/health` returns 200 only after Gateway startup completes and its internal loops remain active without an unrecovered loop failure. `supertask doctor` checks OpenCode separately in the invoking terminal and in PM2's saved Gateway environment, then checks SQLite, PM2 readiness, Dashboard health, log rotation, and on macOS the loaded LaunchAgent plus its recoverable PM2 dump. It requires the effective OpenCode plugin configuration to use one exact version, verifies that exact cache package, and compares it with the global CLI, actual PM2 Gateway entry, and ready-lock version; floating `@latest`/`@next` paths or any component version mismatch fail diagnostics. Add `--smoke` only when a real model call is desired; it queues a normal high-priority task and verifies the exact marker returned by OpenCode.
 
 | Page | Features |
 |------|----------|
-| Task Queue | Browse a project folder, load its runnable Agents/models, see running/queued/error counts, create or edit prioritized tasks, retry, cancel, guarded delete, and copy a validated `opencode --session …` command |
+| Task Queue | Browse a project folder, load its runnable Agents/models, see running/queued/error counts, create or edit prioritized tasks, open human-readable details, retry, cancel, guarded delete, and copy a validated `opencode --session …` command |
 | Scheduled Tasks | Create and edit model, Agent, prompt, project directory, schedule, retries, and timeout with common duration presets; Run now always queues a task |
-| Execution Logs | Structured Agent output, errors, tools, exact reproducible command, raw OpenCode JSONL, and session tracking |
+| Execution Logs | Structured Agent output, errors, tools, and exact reproducible command expanded directly beneath the selected run; raw OpenCode JSONL remains a secondary troubleshooting view |
 | System Status | Config editor with saved/active state, PM2-backed save-and-restart, concurrency monitor, and backup-first transactional database clear |
 
 ## Data
@@ -324,6 +326,7 @@ SUPERTASK_LANG=zh-CN supertask doctor
 ```bash
 # Gateway 与诊断
 supertask install | uninstall | gateway | ui | doctor
+supertask doctor --smoke --smoke-agent build --smoke-model openai/gpt-5
 
 # 普通任务
 supertask add | edit | list | get | status | retry | cancel | delete

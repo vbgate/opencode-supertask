@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { delimiter, join } from 'path';
 import { Database } from 'bun:sqlite';
 import {
     ensurePm2LogRotation,
@@ -43,12 +43,17 @@ const originalEnv = {
     launchVerifyTimeout: process.env.SUPERTASK_LAUNCH_AGENT_VERIFY_TIMEOUT_MS,
     customProviderToken: process.env.CUSTOM_PROVIDER_TOKEN,
     opencodeConfigDir: process.env.OPENCODE_CONFIG_DIR,
+    opencodeBin: process.env.SUPERTASK_OPENCODE_BIN,
 };
 
 beforeEach(() => {
     const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-test-launch-agent-'));
     dirs.push(dir);
     process.env.SUPERTASK_LAUNCH_AGENT_PATH = join(dir, 'missing.plist');
+    const fakeOpencode = join(dir, 'opencode');
+    writeFileSync(fakeOpencode, '#!/bin/sh\nprintf "test-opencode 1.0.0\\n"\n');
+    chmodSync(fakeOpencode, 0o755);
+    process.env.PATH = `${dir}${delimiter}${originalEnv.path ?? ''}`;
 });
 
 afterEach(() => {
@@ -74,6 +79,7 @@ afterEach(() => {
     restoreEnv('SUPERTASK_LAUNCH_AGENT_VERIFY_TIMEOUT_MS', originalEnv.launchVerifyTimeout);
     restoreEnv('CUSTOM_PROVIDER_TOKEN', originalEnv.customProviderToken);
     restoreEnv('OPENCODE_CONFIG_DIR', originalEnv.opencodeConfigDir);
+    restoreEnv('SUPERTASK_OPENCODE_BIN', originalEnv.opencodeBin);
 });
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -82,6 +88,37 @@ function restoreEnv(name: string, value: string | undefined): void {
 }
 
 describe('PM2 Gateway 管理', () => {
+    test('目标 PM2 环境无法执行 OpenCode 时不会启动或替换 Gateway', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-opencode-preflight-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const fakeBun = join(dir, 'bun');
+        const gateway = join(dir, 'gateway.js');
+        const log = join(dir, 'calls.jsonl');
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+import { appendFileSync } from 'fs';
+const args = Bun.argv.slice(2);
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === '--version') { console.log('6.0.0'); process.exit(0); }
+if (args[0] === 'jlist') { console.log('[]'); process.exit(0); }
+process.exit(0);
+`);
+        writeFileSync(fakeBun, '#!/bin/sh\nexit 0\n');
+        writeFileSync(gateway, '');
+        chmodSync(fakePm2, 0o755);
+        chmodSync(fakeBun, 0o755);
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = fakeBun;
+        process.env.SUPERTASK_GATEWAY_ENTRY = gateway;
+        process.env.SUPERTASK_OPENCODE_BIN = join(dir, 'missing-opencode');
+
+        expect(() => ensureGateway()).toThrow('目标 Gateway 环境无法执行 OpenCode');
+        const calls = readFileSync(log, 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line) as string[]);
+        expect(calls.some((args) => args[0] === 'start')).toBe(false);
+        expect(calls.some((args) => args[0] === 'delete')).toBe(false);
+    });
+
     test('显式安装流程会配置有限保留的 PM2 日志轮转', () => {
         const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-logrotate-'));
         dirs.push(dir);
