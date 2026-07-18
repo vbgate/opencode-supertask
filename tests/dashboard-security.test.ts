@@ -480,6 +480,24 @@ describe('Dashboard 安全边界', () => {
         expect(presented.errors).toEqual(['opencode 退出码 1']);
     });
 
+    test('成功执行的截断 JSONL 片段不显示为失败原因', () => {
+        const command = JSON.stringify({
+            type: 'supertask_command',
+            executable: 'opencode',
+            cwd: '/tmp/project',
+            args: ['run', '--agent', 'build', '--format', 'json', 'test'],
+        });
+        const output = JSON.stringify({
+            type: 'text',
+            part: { type: 'text', text: '任务完成' },
+        });
+
+        const presented = presentRunLog(`${command}\n截断的 JSON 字符串尾部"}}\n${output}`, false);
+
+        expect(presented.text).toBe('任务完成');
+        expect(presented.errors).toEqual([]);
+    });
+
     test('异常 Session ID 不生成终端命令', async () => {
         const task = await TaskService.add({ name: '异常会话', agent: 'a', prompt: 'p' });
         const run = await TaskRunService.create({ taskId: task.id, status: 'running' });

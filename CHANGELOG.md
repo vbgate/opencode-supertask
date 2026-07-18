@@ -2,6 +2,15 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.38] - 2026-07-18
+
+### Fixed
+
+- `supertask doctor` now reads large resolved OpenCode configurations through a private temporary file, avoiding truncated JSON when OpenCode exits before a captured stdout pipe is fully drained.
+- Successful runs no longer label truncated or unstructured JSONL fragments as failure reasons in task details and execution logs.
+
+[0.1.38]: https://github.com/vbgate/opencode-supertask/compare/v0.1.37...v0.1.38
+
 ## [0.1.37] - 2026-07-18
 
 ### Fixed

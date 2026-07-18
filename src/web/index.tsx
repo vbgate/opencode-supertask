@@ -394,7 +394,7 @@ function shellQuote(value: string): string {
     return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-export function presentRunLog(log: string): RunLogPresentation {
+export function presentRunLog(log: string, includeErrors = true): RunLogPresentation {
     let command: RunCommandPresentation | null = null;
     const textParts: string[] = [];
     const errors: string[] = [];
@@ -407,7 +407,7 @@ export function presentRunLog(log: string): RunLogPresentation {
         try {
             parsed = recordValue(JSON.parse(trimmed) as unknown);
         } catch {
-            errors.push(line);
+            if (includeErrors) errors.push(line);
             continue;
         }
         if (!parsed) continue;
@@ -443,7 +443,7 @@ export function presentRunLog(log: string): RunLogPresentation {
         const error = typeof parsed.error === 'string'
             ? parsed.error
             : typeof part?.error === 'string' ? part.error : null;
-        if (error) errors.push(error);
+        if (error && includeErrors) errors.push(error);
     }
 
     return {
@@ -454,8 +454,8 @@ export function presentRunLog(log: string): RunLogPresentation {
     };
 }
 
-function renderRunLog(runId: number, taskName: string, log: string, locale: Locale): string {
-    const presentation = presentRunLog(log);
+function renderRunLog(runId: number, taskName: string, log: string, locale: Locale, includeErrors: boolean): string {
+    const presentation = presentRunLog(log, includeErrors);
     const command = presentation.command
         ? `<div class="run-command"><div class="log-section-head"><strong>${t(locale, 'logs.command')}</strong><button type="button" class="btn" onclick="copyRunCommand(${runId})">${icon('copy')}${t(locale, 'action.copyCommand')}</button></div><div class="command-cwd">${esc(presentation.command.cwd)}</div><pre id="command-${runId}">${esc(presentation.command.command)}</pre></div>`
         : '';
@@ -870,7 +870,7 @@ app.get('/runs', async (c) => {
     const rows = runs.map((run) => {
         const status = safeStatus(run.status);
         const resumable = isValidSessionId(run.sessionId);
-        const log = run.log ? renderRunLog(run.id, run.taskName, run.log, locale) : '';
+        const log = run.log ? renderRunLog(run.id, run.taskName, run.log, locale, run.status !== 'done') : '';
         return `<tr class="run-summary-row">
           <td class="faint" data-label="${t(locale, 'table.run')}">#${run.id}</td>
           <td data-primary data-label="${t(locale, 'table.task')}"><div class="task-name">${esc(run.taskName)} <span class="faint">#${run.taskId}</span></div>${run.model ? `<div style="margin-top:4px"><span class="tag">${esc(run.model)}</span></div>` : ''}</td>
@@ -1012,7 +1012,7 @@ app.get('/api/tasks/:id', async (c) => {
     const runs = await TaskRunService.listByTaskId(id);
     return c.json({
         ...task,
-        _resultPresentation: task.resultLog ? presentRunLog(task.resultLog) : null,
+        _resultPresentation: task.resultLog ? presentRunLog(task.resultLog, task.status !== 'done') : null,
         _runs: runs,
     });
 });

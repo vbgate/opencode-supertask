@@ -1,6 +1,16 @@
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, readdirSync, realpathSync } from 'fs';
-import { homedir } from 'os';
+import {
+    chmodSync,
+    closeSync,
+    existsSync,
+    mkdtempSync,
+    openSync,
+    readFileSync,
+    readdirSync,
+    realpathSync,
+    rmSync,
+} from 'fs';
+import { homedir, tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { compareSemanticVersions, isSemanticVersion } from '@core/semver';
 
@@ -325,11 +335,6 @@ export function resolveConfiguredPluginSpec(value: unknown): ConfiguredPluginSpe
 }
 
 export function getOpenCodePluginDiagnostic(): OpenCodePluginDiagnostic {
-    const result = spawnSync(opencodeBin(), ['debug', 'config', '--pure'], {
-        encoding: 'utf8',
-        env: process.env,
-        timeout: 30_000,
-    });
     const failed = (message: string): OpenCodePluginDiagnostic => ({
         ok: false,
         spec: '',
@@ -339,53 +344,81 @@ export function getOpenCodePluginDiagnostic(): OpenCodePluginDiagnostic {
         packageDir: null,
         error: message,
     });
-    if (result.error) {
-        return failed(`[supertask] 无法读取 OpenCode 最终配置: ${result.error.message}`);
-    }
-    if (result.status !== 0) {
-        const detail = `${result.stderr ?? ''}`.trim();
-        return failed(`[supertask] 无法读取 OpenCode 最终配置: ${detail || `退出码 ${result.status}`}`);
-    }
+    let outputDirectory: string | null = null;
+    let outputFd: number | null = null;
 
-    let config: unknown;
     try {
-        config = JSON.parse(`${result.stdout ?? ''}`);
-    } catch {
-        return failed('[supertask] OpenCode 最终配置不是有效 JSON');
-    }
+        outputDirectory = mkdtempSync(join(tmpdir(), 'opencode-supertask-config-'));
+        chmodSync(outputDirectory, 0o700);
+        const outputPath = join(outputDirectory, 'resolved-config.json');
+        outputFd = openSync(outputPath, 'w', 0o600);
+        const result = spawnSync(opencodeBin(), ['debug', 'config', '--pure'], {
+            encoding: 'utf8',
+            env: process.env,
+            timeout: 30_000,
+            stdio: ['ignore', outputFd, 'pipe'],
+        });
+        closeSync(outputFd);
+        outputFd = null;
+        if (result.error) {
+            return failed(`[supertask] 无法读取 OpenCode 最终配置: ${result.error.message}`);
+        }
+        if (result.status !== 0) {
+            const detail = `${result.stderr ?? ''}`.trim();
+            return failed(`[supertask] 无法读取 OpenCode 最终配置: ${detail || `退出码 ${result.status}`}`);
+        }
 
-    let configured: ConfiguredPluginSpec;
-    try {
-        configured = resolveConfiguredPluginSpec(config);
+        let config: unknown;
+        try {
+            config = JSON.parse(readFileSync(outputPath, 'utf8'));
+        } catch {
+            return failed('[supertask] OpenCode 最终配置不是有效 JSON');
+        }
+
+        let configured: ConfiguredPluginSpec;
+        try {
+            configured = resolveConfiguredPluginSpec(config);
+        } catch (error) {
+            return failed(error instanceof Error ? error.message : String(error));
+        }
+        if (!configured.exact || configured.version === null) {
+            return {
+                ok: false,
+                ...configured,
+                cachedVersion: null,
+                packageDir: null,
+                error: `[supertask] OpenCode 插件必须固定精确版本，不能使用 ${configured.spec}`,
+            };
+        }
+        try {
+            const installed = resolveInstalledPluginVersion(configured.version);
+            return {
+                ok: true,
+                ...configured,
+                cachedVersion: installed.version,
+                packageDir: installed.packageDir,
+                error: null,
+            };
+        } catch (error) {
+            return {
+                ok: false,
+                ...configured,
+                cachedVersion: null,
+                packageDir: null,
+                error: error instanceof Error ? error.message : String(error),
+            };
+        }
     } catch (error) {
-        return failed(error instanceof Error ? error.message : String(error));
-    }
-    if (!configured.exact || configured.version === null) {
-        return {
-            ok: false,
-            ...configured,
-            cachedVersion: null,
-            packageDir: null,
-            error: `[supertask] OpenCode 插件必须固定精确版本，不能使用 ${configured.spec}`,
-        };
-    }
-    try {
-        const installed = resolveInstalledPluginVersion(configured.version);
-        return {
-            ok: true,
-            ...configured,
-            cachedVersion: installed.version,
-            packageDir: installed.packageDir,
-            error: null,
-        };
-    } catch (error) {
-        return {
-            ok: false,
-            ...configured,
-            cachedVersion: null,
-            packageDir: null,
-            error: error instanceof Error ? error.message : String(error),
-        };
+        return failed(`[supertask] 无法读取 OpenCode 最终配置: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+        if (outputFd !== null) {
+            try {
+                closeSync(outputFd);
+            } catch {
+                // The descriptor may already be closed after a spawn failure.
+            }
+        }
+        if (outputDirectory !== null) rmSync(outputDirectory, { recursive: true, force: true });
     }
 }
 

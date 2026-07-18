@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -20,6 +30,7 @@ const originalEnv = {
     npmBin: process.env.SUPERTASK_NPM_BIN,
     cache: process.env.SUPERTASK_OPENCODE_CACHE_DIR,
     packageDir: process.env.SUPERTASK_PLUGIN_PACKAGE_DIR,
+    tmpDir: process.env.TMPDIR,
 };
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -35,6 +46,7 @@ afterEach(() => {
     restoreEnv('SUPERTASK_NPM_BIN', originalEnv.npmBin);
     restoreEnv('SUPERTASK_OPENCODE_CACHE_DIR', originalEnv.cache);
     restoreEnv('SUPERTASK_PLUGIN_PACKAGE_DIR', originalEnv.packageDir);
+    restoreEnv('TMPDIR', originalEnv.tmpDir);
 });
 
 function writePlugin(packageDir: string, version: string): void {
@@ -84,6 +96,45 @@ process.exit(1);
             packageDir,
             error: null,
         });
+    });
+
+    test('通过私有临时文件读取超过管道缓冲区的最终配置并在完成后清理', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-doctor-large-config-'));
+        dirs.push(dir);
+        const packageDir = join(dir, 'package');
+        const temporaryRoot = join(dir, 'tmp');
+        const fakeOpencode = join(dir, 'opencode');
+        const stdoutStatFile = join(dir, 'stdout-stat.json');
+        writePlugin(packageDir, '0.1.31');
+        mkdirSync(temporaryRoot);
+        writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+import { fstatSync, writeFileSync } from 'fs';
+const config = JSON.stringify({
+  plugin: ['opencode-supertask@0.1.31'],
+  agent: { large: { prompt: 'x'.repeat(128 * 1024) } },
+});
+const stdout = fstatSync(1);
+writeFileSync(${JSON.stringify(stdoutStatFile)}, JSON.stringify({
+  isFile: stdout.isFile(),
+  mode: stdout.mode & 0o777,
+}));
+process.stdout.write(stdout.isFile() ? config : config.slice(0, 64 * 1024));
+`);
+        chmodSync(fakeOpencode, 0o755);
+        process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
+        process.env.TMPDIR = temporaryRoot;
+
+        expect(getOpenCodePluginDiagnostic()).toMatchObject({
+            ok: true,
+            spec: 'opencode-supertask@0.1.31',
+            version: '0.1.31',
+        });
+        expect(JSON.parse(readFileSync(stdoutStatFile, 'utf8'))).toEqual({
+            isFile: true,
+            mode: 0o600,
+        });
+        expect(readdirSync(temporaryRoot)).toEqual([]);
     });
 
     test('诊断拒绝 latest，即使旧缓存目录仍可读取', () => {
