@@ -2,6 +2,14 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.37] - 2026-07-18
+
+### Fixed
+
+- Gateway-managed OpenCode runs now set `PWD` to the task working directory, preventing OpenCode server errors when PM2's saved `PWD` differs from the task's `cwd`.
+
+[0.1.37]: https://github.com/vbgate/opencode-supertask/compare/v0.1.36...v0.1.37
+
 ## [0.1.36] - 2026-07-18
 
 ### Added

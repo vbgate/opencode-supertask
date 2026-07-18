@@ -41,7 +41,11 @@ function createFakeOpencode(options: {
     const source = `#!/usr/bin/env bun
 const args = Bun.argv.slice(2);
 await Bun.write(${JSON.stringify(argsFile)}, JSON.stringify(args));
-await Bun.write(${JSON.stringify(envFile)}, JSON.stringify({ managedRun: process.env[${JSON.stringify(MANAGED_RUN_ENV)}] }));
+await Bun.write(${JSON.stringify(envFile)}, JSON.stringify({
+    managedRun: process.env[${JSON.stringify(MANAGED_RUN_ENV)}],
+    pwd: process.env.PWD,
+    cwd: process.cwd(),
+}));
 console.log(JSON.stringify({ sessionID: "ses_worker_test", message: "任务执行完成" }));
 ${options.ignoreSigterm ? "process.on('SIGTERM', () => {});" : ''}
 await Bun.sleep(${options.delayMs ?? 0});
@@ -170,6 +174,7 @@ describe('WorkerEngine', () => {
             model: 'test-model',
             prompt,
             maxRetries: 0,
+            cwd: fake.dir,
         });
         const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
         workers.push(worker);
@@ -177,7 +182,11 @@ describe('WorkerEngine', () => {
         worker.start();
         const completed = await waitForStatus(task.id, ['done']);
         const args = JSON.parse(readFileSync(fake.argsFile, 'utf-8')) as string[];
-        const childEnv = JSON.parse(readFileSync(fake.envFile, 'utf-8')) as { managedRun?: string };
+        const childEnv = JSON.parse(readFileSync(fake.envFile, 'utf-8')) as {
+            managedRun?: string;
+            pwd?: string;
+            cwd: string;
+        };
         const runs = await TaskRunService.listByTaskId(task.id);
 
         expect(args).toEqual([
@@ -185,6 +194,8 @@ describe('WorkerEngine', () => {
             '-m', 'test-model', prompt,
         ]);
         expect(childEnv.managedRun).toBe(MANAGED_RUN_ENV_VALUE);
+        expect(childEnv.cwd).toBe(fake.dir);
+        expect(childEnv.pwd).toBe(fake.dir);
         expect(existsSync(marker)).toBe(false);
         expect(completed.resultLog).toContain('任务执行完成');
         expect(runs).toHaveLength(1);

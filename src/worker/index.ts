@@ -291,6 +291,7 @@ export class WorkerEngine {
         const args = ['run', '--agent', task.agent, '--format', 'json'];
         if (model) args.push('-m', model);
         args.push(task.prompt);
+        const cwd = task.cwd || process.cwd();
 
         const child = spawn(process.execPath, [
             this.launcherEntry(),
@@ -299,9 +300,10 @@ export class WorkerEngine {
             this.opencodeBin,
             ...args,
         ], {
-            cwd: task.cwd || process.cwd(),
+            cwd,
             env: {
                 ...process.env,
+                PWD: cwd,
                 [MANAGED_RUN_ENV]: MANAGED_RUN_ENV_VALUE,
             },
             stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
@@ -312,7 +314,7 @@ export class WorkerEngine {
             runId,
             launchIdentity,
             child,
-            commandContext: runCommandContext(this.opencodeBin, args, task.cwd || process.cwd()),
+            commandContext: runCommandContext(this.opencodeBin, args, cwd),
             output: '',
             sessionId: null,
             timeoutTimer: null,
