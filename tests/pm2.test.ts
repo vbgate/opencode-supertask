@@ -112,7 +112,7 @@ if (args[0] === 'install') writeFileSync(${JSON.stringify(moduleState)}, 'instal
         ]);
     });
 
-    test('macOS 用户级 LaunchAgent 长期监督 PM2 且无需 sudo', () => {
+    test('macOS 用户级 LaunchAgent 在 bootout 竞态后重试并长期监督 PM2', () => {
         const dir = mkdtempSync(join(tmpdir(), 'supertask-launch-agent-'));
         dirs.push(dir);
         const fakePm2 = join(dir, 'pm2 & tool');
@@ -132,9 +132,17 @@ if (args[0] === 'install') writeFileSync(${JSON.stringify(moduleState)}, 'instal
             pm2_env: { args: [gateway], pm_exec_path: process.execPath, pm_cwd: process.cwd(), env: expectedEnv },
         }]));
         writeFileSync(fakeLaunchctl, `#!/usr/bin/env bun
-import { appendFileSync } from 'fs';
+import { appendFileSync, readFileSync } from 'fs';
 const args = Bun.argv.slice(2);
 appendFileSync(${JSON.stringify(launchctlLog)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'bootstrap') {
+    const calls = readFileSync(${JSON.stringify(launchctlLog)}, 'utf8').trim().split('\\n')
+        .map((line) => JSON.parse(line));
+    if (calls.filter((call) => call[0] === 'bootstrap').length === 1) {
+        console.error('Bootstrap failed: 5: Input/output error');
+        process.exit(5);
+    }
+}
 if (args[0] === 'print') {
     console.log('path = ${plist}');
     console.log('program = ${process.execPath}');
@@ -163,6 +171,7 @@ if (args[0] === 'print') {
             .map((line) => JSON.parse(line) as string[]);
         expect(calls).toEqual([
             ['bootout', `gui/${process.getuid()}/com.supertask.pm2-resurrect`],
+            ['bootstrap', `gui/${process.getuid()}`, plist],
             ['bootstrap', `gui/${process.getuid()}`, plist],
             ['print', `gui/${process.getuid()}/com.supertask.pm2-resurrect`],
         ]);

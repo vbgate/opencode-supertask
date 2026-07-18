@@ -417,6 +417,29 @@ export function isMacLaunchAgentConfigured(
     }
 }
 
+function bootstrapMacLaunchAgent(domain: string, path: string) {
+    const retryDeadline = Date.now() + 2_000;
+    const sleeper = new Int32Array(new SharedArrayBuffer(4));
+    let result = spawnSync(launchctlBin(), ["bootstrap", domain, path], {
+        encoding: "utf8",
+        timeout: pm2CommandTimeoutMs(),
+        killSignal: "SIGKILL",
+    });
+
+    while (result.status !== 0 && Date.now() < retryDeadline) {
+        const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+        if (result.status !== 5 && !output.includes("Bootstrap failed: 5:")) break;
+        Atomics.wait(sleeper, 0, 0, 100);
+        result = spawnSync(launchctlBin(), ["bootstrap", domain, path], {
+            encoding: "utf8",
+            timeout: pm2CommandTimeoutMs(),
+            killSignal: "SIGKILL",
+        });
+    }
+
+    return result;
+}
+
 export function installMacLaunchAgent(expectedRuntime = currentGatewayRuntime()): string {
     if (typeof process.getuid !== "function") {
         throw new Error("[supertask] 当前运行时无法获取 macOS 用户 ID");
@@ -488,11 +511,7 @@ export function installMacLaunchAgent(expectedRuntime = currentGatewayRuntime())
         timeout: pm2CommandTimeoutMs(),
         killSignal: "SIGKILL",
     });
-    const loaded = spawnSync(launchctlBin(), ["bootstrap", domain, path], {
-        encoding: "utf8",
-        timeout: pm2CommandTimeoutMs(),
-        killSignal: "SIGKILL",
-    });
+    const loaded = bootstrapMacLaunchAgent(domain, path);
     const configuredVerifyTimeout = Number(process.env.SUPERTASK_LAUNCH_AGENT_VERIFY_TIMEOUT_MS ?? 2_000);
     const verifyTimeoutMs = Number.isFinite(configuredVerifyTimeout) && configuredVerifyTimeout > 0
         ? configuredVerifyTimeout
@@ -523,11 +542,7 @@ export function installMacLaunchAgent(expectedRuntime = currentGatewayRuntime())
 
         let rollbackFailure = "";
         if (wasLoaded && previousPlist != null) {
-            const restored = spawnSync(launchctlBin(), ["bootstrap", domain, path], {
-                encoding: "utf8",
-                timeout: pm2CommandTimeoutMs(),
-                killSignal: "SIGKILL",
-            });
+            const restored = bootstrapMacLaunchAgent(domain, path);
             if (restored.status !== 0) {
                 rollbackFailure = `；旧 LaunchAgent 恢复失败: ${`${restored.stdout ?? ""}${restored.stderr ?? ""}`.trim() || `退出码 ${restored.status}`}`;
             }
