@@ -67,8 +67,8 @@ describe('Watchdog lifecycle', () => {
             launchProtocol: 'gated-v2-guardian',
         });
         const originalGetStaleRuns = TaskRunService.getStaleRuns;
-        let releaseQuery: (() => void) | null = null;
-        let queryStarted: (() => void) | null = null;
+        let releaseQuery = () => {};
+        let queryStarted: () => void;
         const queryStartedPromise = new Promise<void>((resolve) => {
             queryStarted = resolve;
         });
@@ -76,7 +76,7 @@ describe('Watchdog lifecycle', () => {
             releaseQuery = resolve;
         });
         TaskRunService.getStaleRuns = async (...args) => {
-            queryStarted?.();
+            queryStarted();
             await releaseQueryPromise;
             return originalGetStaleRuns.apply(TaskRunService, args);
         };
@@ -96,7 +96,7 @@ describe('Watchdog lifecycle', () => {
             await Bun.sleep(10);
             expect(stopped).toBe(false);
 
-            releaseQuery?.();
+            releaseQuery();
             await stopping;
             workerOwnsRun = false;
 
@@ -104,7 +104,7 @@ describe('Watchdog lifecycle', () => {
             expect((await TaskService.getById(task.id))?.retryCount).toBe(0);
             expect((await TaskRunService.getById(run.id))?.status).toBe('running');
         } finally {
-            releaseQuery?.();
+            releaseQuery();
             await watchdog.stop();
             TaskRunService.getStaleRuns = originalGetStaleRuns;
         }
@@ -123,8 +123,8 @@ describe('Watchdog lifecycle', () => {
             runs.push({ taskId: task.id, runId: run.id });
         }
         const originalRecoverRun = TaskService.recoverRun;
-        let recoverStarted: (() => void) | null = null;
-        let releaseRecovery: (() => void) | null = null;
+        let recoverStarted: () => void;
+        let releaseRecovery = () => {};
         const recoverStartedPromise = new Promise<void>((resolve) => {
             recoverStarted = resolve;
         });
@@ -135,7 +135,7 @@ describe('Watchdog lifecycle', () => {
         TaskService.recoverRun = async (...args) => {
             recoverCalls += 1;
             if (recoverCalls === 1) {
-                recoverStarted?.();
+                recoverStarted();
                 await releaseRecoveryPromise;
             }
             return originalRecoverRun.apply(TaskService, args);
@@ -146,7 +146,7 @@ describe('Watchdog lifecycle', () => {
             watchdog.start();
             await recoverStartedPromise;
             const stopping = watchdog.stop();
-            releaseRecovery?.();
+            releaseRecovery();
             await stopping;
 
             expect(recoverCalls).toBe(1);
@@ -157,7 +157,7 @@ describe('Watchdog lifecycle', () => {
                 expect((await TaskRunService.getById(run.runId))?.status).toBe('running');
             }
         } finally {
-            releaseRecovery?.();
+            releaseRecovery();
             await watchdog.stop();
             TaskService.recoverRun = originalRecoverRun;
         }

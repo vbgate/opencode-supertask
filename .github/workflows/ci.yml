@@ -11,6 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -18,17 +19,38 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Test
-        run: bun test
+      - name: Test with coverage
+        run: bun run test:coverage
 
-      - name: Typecheck
+      - name: Typecheck source
         run: bun run typecheck
+
+      - name: Typecheck tests
+        run: bun run typecheck:tests
+
+      - name: Lint
+        run: bun run lint
 
       - name: Build
         run: bun run build
+
+      - name: Verify installed package
+        run: bun run package:smoke
+
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: bun run test:browser
 
       - name: Setup minimum supported Bun
         uses: oven-sh/setup-bun@v2
@@ -37,3 +59,40 @@ jobs:
 
       - name: Verify launcher IPC on minimum Bun
         run: bun scripts/launcher-ipc-smoke.ts dist/worker/launcher.js
+
+      - name: Representative tests on minimum Bun
+        run: bun test tests/reliability-regressions.test.ts tests/process-control.test.ts tests/package-e2e.test.ts
+
+  macos-verify:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Typecheck source and tests
+        run: bun run typecheck && bun run typecheck:tests
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Build
+        run: bun run build
+
+      - name: Verify installed package
+        run: bun run package:smoke

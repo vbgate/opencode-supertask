@@ -247,7 +247,7 @@ export class TaskRunService {
             }
             if (current.childPid != null) {
                 throw new LegacyRunAbandonConflictError(
-                    `run #${runId} 已记录 child PID ${current.childPid}，必须由 Worker/Watchdog 确认进程树退出`,
+                    `run #${runId} 已记录 child PID ${current.childPid}，必须由 Worker/Watchdog 确认受管进程组排空`,
                 );
             }
             if (current.workerPid != null && isProcessAlive(current.workerPid)) {

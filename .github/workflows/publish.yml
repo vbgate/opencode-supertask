@@ -14,8 +14,38 @@ permissions:
   id-token: write
 
 jobs:
+  macos-verify:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Test
+        run: bun test
+
+      - name: Typecheck and lint
+        run: bun run typecheck && bun run typecheck:tests && bun run lint
+
+      - name: Build and verify installed package
+        run: bun run build && bun run package:smoke
+
   publish:
+    needs: macos-verify
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -38,14 +68,29 @@ jobs:
           RELEASE_TAG: ${{ github.event.release.tag_name || inputs.version }}
         run: node -e "const actual=require('./package.json').version; const expected=process.env.RELEASE_TAG.replace(/^v/, ''); if(actual!==expected){throw new Error('package '+actual+' != release '+expected)}"
 
-      - name: Test
-        run: bun test
+      - name: Test with coverage
+        run: bun run test:coverage
 
-      - name: Typecheck
+      - name: Typecheck source
         run: bun run typecheck
+
+      - name: Typecheck tests
+        run: bun run typecheck:tests
+
+      - name: Lint
+        run: bun run lint
 
       - name: Build
         run: bun run build
+
+      - name: Verify installed package
+        run: bun run package:smoke
+
+      - name: Install Chromium
+        run: bunx playwright install --with-deps chromium
+
+      - name: Browser smoke test
+        run: bun run test:browser
 
       - name: Setup minimum supported Bun
         uses: oven-sh/setup-bun@v2
@@ -55,12 +100,28 @@ jobs:
       - name: Verify launcher IPC on minimum Bun
         run: bun scripts/launcher-ipc-smoke.ts dist/worker/launcher.js
 
+      - name: Representative tests on minimum Bun
+        run: bun test tests/reliability-regressions.test.ts tests/process-control.test.ts tests/package-e2e.test.ts
+
+      - name: Restore current Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Rebuild and verify publish artifact
+        run: |
+          bun run build
+          artifact_dir="$RUNNER_TEMP/supertask-publish"
+          mkdir -p "$artifact_dir"
+          archive_name="$(npm pack --silent --pack-destination "$artifact_dir")"
+          archive_path="$artifact_dir/$archive_name"
+          bun scripts/package-install-smoke.ts "$archive_path"
+          echo "PACKAGE_ARCHIVE=$archive_path" >> "$GITHUB_ENV"
+
       - name: Publish to npm
         env:
           PACKAGE_VERSION: ${{ github.event.release.tag_name || inputs.version }}
         run: |
           if [[ "${PACKAGE_VERSION#v}" == *-* ]]; then
-            npm publish --access public --tag next
+            npm publish --access public --tag next "$PACKAGE_ARCHIVE"
           else
-            npm publish --access public --tag latest
+            npm publish --access public --tag latest "$PACKAGE_ARCHIVE"
           fi

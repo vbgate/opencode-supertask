@@ -2,6 +2,23 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.41] - 2026-07-19
+
+### Added
+
+- Release gates now cover source and test typechecking, lint, coverage, Chromium interaction smoke, native macOS verification, minimum-Bun representative tests, and isolated installation of the packed npm artifact; the MIT license text is included in the package.
+
+### Fixed
+
+- Worker task selection and the `running` transition are now one immediate transaction, preventing concurrent edits from changing a claimed task or bypassing batch serialization.
+- Lowering an exhausted retry budget now recursively closes blocked dependents in the same transaction.
+- Dashboard requests now require a loopback Host, and PM2/systemd diagnostics run asynchronously in a bounded helper process instead of blocking the Gateway event loop.
+- Transient run-settlement failures retain ownership and the known exit outcome, retry quickly and then at a low frequency while the Gateway remains alive, and hand the run to Watchdog only during shutdown.
+- OS process inspection remains bounded on Bun 1.1.45, fails closed on timeout or output overflow, and cleans up its managed Unix process group without leaking descendants or risking reused process-group IDs.
+- npm releases now install-test and publish the exact same retained tarball instead of repacking after verification.
+
+[0.1.41]: https://github.com/vbgate/opencode-supertask/compare/v0.1.40...v0.1.41
+
 ## [0.1.40] - 2026-07-19
 
 ### Added
@@ -94,7 +111,7 @@ This release contains the full 0.1.32 change set plus a deterministic database-r
 
 - Pinned plugin installation and Gateway launch to one exact npm version, rejecting stale floating `@latest` / `@next` cache entries and invalid file-as-directory working paths.
 - Recorded and validated task working directories before queueing so Gateway-launched OpenCode runs execute in the submitting project.
-- Hardened launcher/Worker IPC with a per-run guardian token and bidirectional drain proof; unknown or still-live process trees remain quarantined instead of being settled or retried unsafely.
+- Hardened launcher/Worker IPC with a per-run guardian token and bidirectional drain proof; unknown or still-live managed process groups remain quarantined instead of being settled or retried unsafely.
 - Made database clear/restore backup-first, transactional, WAL-consistent, schema-compatible across expand-only N/N-1 releases, and safe against concurrent successful writes.
 - Hardened PM2 replacement, rollback, lifecycle locking, kill timeouts, macOS restart supervision, and Bun 1.1.45 IPC compatibility.
 

@@ -207,9 +207,68 @@ describe('TaskService', () => {
                 status: 'dead_letter', maxRetries: 0, retryAfter: null,
             });
         });
+
+        test('降低重试预算进入 dead_letter 时递归收敛依赖链', async () => {
+            const prerequisite = await TaskService.add({
+                name: '前置任务', agent: 'a', prompt: 'p', maxRetries: 3,
+            });
+            const dependent = await TaskService.add({
+                name: '直接依赖', agent: 'a', prompt: 'p', dependsOn: prerequisite.id,
+            });
+            const descendant = await TaskService.add({
+                name: '间接依赖', agent: 'a', prompt: 'p', dependsOn: dependent.id,
+            });
+            await TaskService.start(prerequisite.id);
+            await TaskService.fail(prerequisite.id, '失败');
+
+            await TaskService.update(prerequisite.id, { maxRetries: 0 });
+
+            expect(await TaskService.getById(dependent.id)).toMatchObject({
+                status: 'dead_letter',
+                resultLog: `依赖任务 #${prerequisite.id} 已进入不可恢复终态`,
+            });
+            expect(await TaskService.getById(descendant.id)).toMatchObject({
+                status: 'dead_letter',
+                resultLog: `依赖任务 #${prerequisite.id} 已进入不可恢复终态`,
+            });
+        });
     });
 
     describe('next', () => {
+        test('claimNext 原子选择任务并返回已抢占的最新记录', async () => {
+            const task = await TaskService.add({
+                name: '原子抢占', agent: 'a', prompt: '最新提示词', batchId: 'claim-batch',
+            });
+
+            const claimed = await TaskService.claimNext();
+
+            expect(claimed).toMatchObject({
+                id: task.id,
+                prompt: '最新提示词',
+                batchId: 'claim-batch',
+                status: 'running',
+            });
+            expect(claimed?.startedAt).toBeInstanceOf(Date);
+            expect(await TaskService.claimNext()).toBeNull();
+        });
+
+        test('并发 claimNext 不会同时抢占同一批次', async () => {
+            await TaskService.add({
+                name: '批次一', agent: 'a', prompt: 'p', batchId: 'serial-claim',
+            });
+            await TaskService.add({
+                name: '批次二', agent: 'a', prompt: 'p', batchId: 'serial-claim',
+            });
+
+            const claimed = await Promise.all([
+                TaskService.claimNext(),
+                TaskService.claimNext(),
+            ]);
+
+            expect(claimed.filter(Boolean)).toHaveLength(1);
+            expect(await TaskService.countRunning({ batchId: 'serial-claim' })).toBe(1);
+        });
+
         test('返回最高优先级的 pending 任务', async () => {
             await TaskService.add({
                 name: '低优先级',

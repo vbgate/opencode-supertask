@@ -73,7 +73,7 @@ setInterval(() => {}, 1000);
     return { executable, childPidFile, leader };
 }
 
-describe('进程树终止', () => {
+describe('受管进程组终止', () => {
     test('能区分当前进程与不存在的 PID', () => {
         expect(isProcessAlive(process.pid)).toBe(true);
         expect(isProcessAlive(2_147_483_647)).toBe(false);
@@ -93,8 +93,13 @@ describe('进程树终止', () => {
         const fakeBin = mkdtempSync(join(tmpdir(), 'supertask-hanging-ps-'));
         dirs.push(fakeBin);
         const fakePs = join(fakeBin, 'ps');
+        const psChildPidFile = join(fakeBin, 'ps-child.pid');
         const runner = join(fakeBin, 'runner.ts');
         writeFileSync(fakePs, `#!${process.execPath}
+import { spawn } from 'child_process';
+import { writeFileSync } from 'fs';
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+writeFileSync(${JSON.stringify(psChildPidFile)}, String(child.pid));
 await Bun.sleep(30_000);
 `);
         writeFileSync(runner, `
@@ -121,7 +126,57 @@ console.log(JSON.stringify({ result, elapsedMs: Date.now() - startedAt }));
         expect(result).toBe('inspect-failed');
         expect(elapsedMs).toBeLessThan(4_000);
         expect(isAlive(tree.leader.pid!)).toBe(true);
-    });
+        expect(existsSync(psChildPidFile)).toBe(true);
+        const psChildPid = Number(readFileSync(psChildPidFile, 'utf8'));
+        await waitForExit(psChildPid);
+        expect(isAlive(psChildPid)).toBe(false);
+    }, 10_000);
+
+    test('ps 输出溢出时终止探测进程组并保持 fail-closed', async () => {
+        const tree = createProcessTree();
+        await waitForFile(tree.childPidFile);
+        const fakeBin = mkdtempSync(join(tmpdir(), 'supertask-overflowing-ps-'));
+        dirs.push(fakeBin);
+        const fakePs = join(fakeBin, 'ps');
+        const psChildPidFile = join(fakeBin, 'ps-child.pid');
+        const runner = join(fakeBin, 'runner.ts');
+        writeFileSync(fakePs, `#!${process.execPath}
+import { spawn } from 'child_process';
+import { writeFileSync } from 'fs';
+const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+writeFileSync(${JSON.stringify(psChildPidFile)}, String(child.pid));
+process.stdout.write('x'.repeat(6 * 1024 * 1024));
+await Bun.sleep(30_000);
+`);
+        writeFileSync(runner, `
+import { signalRecordedProcessTreeWithResult } from ${JSON.stringify(join(process.cwd(), 'src/core/process-control.ts'))};
+const startedAt = Date.now();
+const result = signalRecordedProcessTreeWithResult(
+    ${tree.leader.pid!},
+    'SIGKILL',
+    ${JSON.stringify(basename(tree.executable))},
+);
+console.log(JSON.stringify({ result, elapsedMs: Date.now() - startedAt }));
+`);
+        chmodSync(fakePs, 0o755);
+        const output = execFileSync(process.execPath, [runner], {
+            encoding: 'utf8',
+            env: { ...process.env, PATH: `${fakeBin}:${originalPath ?? ''}` },
+            timeout: 6_000,
+        });
+        const { result, elapsedMs } = JSON.parse(output) as {
+            result: string;
+            elapsedMs: number;
+        };
+
+        expect(result).toBe('inspect-failed');
+        expect(elapsedMs).toBeLessThan(4_000);
+        expect(isAlive(tree.leader.pid!)).toBe(true);
+        expect(existsSync(psChildPidFile)).toBe(true);
+        const psChildPid = Number(readFileSync(psChildPidFile, 'utf8'));
+        await waitForExit(psChildPid);
+        expect(isAlive(psChildPid)).toBe(false);
+    }, 10_000);
 
     test('命令匹配时终止整个独立进程组', async () => {
         const tree = createProcessTree();

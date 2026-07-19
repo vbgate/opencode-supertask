@@ -213,6 +213,40 @@ describe('WorkerEngine', () => {
         expect(runs[0].log).toContain(JSON.stringify(prompt).slice(1, -1));
     });
 
+    test('停机发生在 claim 期间时把无 run 的任务恢复为 pending', async () => {
+        const task = await TaskService.add({
+            name: 'claim 停机竞态', agent: 'test-agent', prompt: '不得启动',
+        });
+        const originalClaimNext = TaskService.claimNext;
+        let releaseClaim = () => {};
+        let markClaimStarted = () => {};
+        const claimStarted = new Promise<void>((resolve) => {
+            markClaimStarted = resolve;
+        });
+        const claimGate = new Promise<void>((resolve) => {
+            releaseClaim = resolve;
+        });
+        TaskService.claimNext = async (...args) => {
+            markClaimStarted();
+            await claimGate;
+            return originalClaimNext.apply(TaskService, args);
+        };
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: '/definitely/not/opencode' });
+        workers.push(worker);
+
+        try {
+            worker.start();
+            await claimStarted;
+            const stopping = worker.stop();
+            releaseClaim();
+            expect(await stopping).toEqual([]);
+            expect(await TaskService.getById(task.id)).toMatchObject({ status: 'pending' });
+            expect(await TaskRunService.listByTaskId(task.id)).toEqual([]);
+        } finally {
+            TaskService.claimNext = originalClaimNext;
+        }
+    });
+
     test('非零退出码进入 dead_letter 并保留日志', async () => {
         const fake = createFakeOpencode({ exitCode: 7 });
         const task = await TaskService.add({
@@ -232,7 +266,7 @@ describe('WorkerEngine', () => {
         expect(failed.resultLog).toContain('agent=test-agent');
         expect(failed.resultLog).toContain('model=Agent/默认配置');
         expect(failed.resultLog).toContain('variant=Agent/模型默认配置');
-        expect(failed.resultLog).not.toContain('guardian 未提供进程树排空证明');
+        expect(failed.resultLog).not.toContain('guardian 未提供受管进程组排空证明');
         expect(runs[0].status).toBe('failed');
         expect(runs[0].log).toContain('退出码 7');
     });
@@ -257,7 +291,7 @@ describe('WorkerEngine', () => {
         expect(runs[0].log).toContain('任务超时');
     });
 
-    test('首次无法确认终止时会复核隔离态，并在进程树退出后释放 Worker', async () => {
+    test('首次无法确认终止时会复核隔离态，并在受管进程组排空后释放 Worker', async () => {
         const fake = createFakeOpencode({ delayMs: 140 });
         const task = await TaskService.add({
             name: '隔离态收敛测试',
@@ -424,7 +458,7 @@ describe('WorkerEngine', () => {
     test('OpenCode 主进程退出但后代仍存活时 guardian 保持组长并阻止提前结算', async () => {
         const fake = createOrphaningFakeOpencode();
         const first = await TaskService.add({
-            name: '残留进程树任务',
+            name: '残留进程组任务',
             agent: 'test-agent',
             prompt: '派生后代后退出',
             batchId: 'residual-tree-batch',
@@ -433,7 +467,7 @@ describe('WorkerEngine', () => {
         const second = await TaskService.add({
             name: '同批次后续任务',
             agent: 'test-agent',
-            prompt: '必须等整棵树退出',
+            prompt: '必须等待受管进程组排空',
             batchId: 'residual-tree-batch',
             maxRetries: 0,
         });
@@ -466,7 +500,7 @@ describe('WorkerEngine', () => {
         expect(isProcessAlive(descendantPid)).toBe(false);
     });
 
-    test('guardian 被单独 SIGKILL 时隔离遗留进程树并阻止同批次重入', async () => {
+    test('guardian 被单独 SIGKILL 时隔离遗留进程组并阻止同批次重入', async () => {
         const fake = createOrphaningFakeOpencode();
         const first = await TaskService.add({
             name: 'guardian 意外退出任务',
@@ -478,7 +512,7 @@ describe('WorkerEngine', () => {
         const second = await TaskService.add({
             name: '同批次不得重入',
             agent: 'test-agent',
-            prompt: '必须等遗留进程树消失',
+            prompt: '必须等遗留进程组消失',
             batchId: 'guardian-crash-batch',
             maxRetries: 0,
         });
@@ -519,7 +553,7 @@ describe('WorkerEngine', () => {
 
         const failed = await waitForStatus(first.id, ['dead_letter'], 3_000);
         const completed = await waitForStatus(second.id, ['done'], 3_000);
-        expect(failed.resultLog).toContain('guardian 未提供进程树排空证明');
+        expect(failed.resultLog).toContain('guardian 未提供受管进程组排空证明');
         expect(completed.status).toBe('done');
     });
 
@@ -599,7 +633,11 @@ describe('WorkerEngine', () => {
             prompt: '模拟数据库结算失败',
             maxRetries: 0,
         });
-        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        const worker = new WorkerEngine(createConfig(), {
+            opencodeBin: fake.executable,
+            settlementRetryDelaysMs: [10, 20],
+            settlementRetryIntervalMs: 20,
+        });
         workers.push(worker);
         const originalCompleteRun = TaskService.completeRun;
         const unhandled: unknown[] = [];
@@ -612,13 +650,94 @@ describe('WorkerEngine', () => {
         try {
             worker.start();
             await waitForStatus(task.id, ['running']);
-            await waitForWorkerCount(worker, 0);
-            await Bun.sleep(50);
+            await Bun.sleep(100);
             expect(unhandled).toEqual([]);
+            expect(worker.getRunningCount()).toBe(1);
             expect((await TaskRunService.getRunningRunByTaskId(task.id))?.status).toBe('running');
+            expect(await worker.stop()).toEqual([]);
+            await waitForWorkerCount(worker, 0);
         } finally {
             TaskService.completeRun = originalCompleteRun;
             process.off('unhandledRejection', onUnhandled);
+        }
+    });
+
+    test('临时结算失败时保持所有权并在短重试后成功', async () => {
+        const fake = createFakeOpencode({ delayMs: 20 });
+        const task = await TaskService.add({
+            name: '结算短重试',
+            agent: 'test-agent',
+            prompt: '临时数据库故障后成功',
+            maxRetries: 0,
+        });
+        const worker = new WorkerEngine(createConfig(), {
+            opencodeBin: fake.executable,
+            settlementRetryDelaysMs: [20, 20],
+        });
+        workers.push(worker);
+        const originalCompleteRun = TaskService.completeRun;
+        let attempts = 0;
+        TaskService.completeRun = async (...args) => {
+            attempts += 1;
+            if (attempts < 3) throw new Error('模拟临时结算失败');
+            return originalCompleteRun.apply(TaskService, args);
+        };
+
+        try {
+            worker.start();
+            await waitForStatus(task.id, ['running']);
+            const deadline = Date.now() + 3_000;
+            while (attempts < 2 && Date.now() < deadline) await Bun.sleep(10);
+            expect(attempts).toBeGreaterThanOrEqual(2);
+            expect(worker.getRunningCount()).toBe(1);
+
+            const completed = await waitForStatus(task.id, ['done']);
+            await waitForWorkerCount(worker, 0);
+            expect(completed.status).toBe('done');
+            expect(attempts).toBe(3);
+        } finally {
+            TaskService.completeRun = originalCompleteRun;
+        }
+    });
+
+    test('停机宽限期内继续结算并保留成功结果', async () => {
+        const fake = createFakeOpencode({ delayMs: 20 });
+        const task = await TaskService.add({
+            name: '停机结算宽限期',
+            agent: 'test-agent',
+            prompt: '宽限期内恢复数据库',
+            maxRetries: 1,
+        });
+        const worker = new WorkerEngine(createConfig(), {
+            opencodeBin: fake.executable,
+            settlementRetryDelaysMs: [250],
+            settlementRetryIntervalMs: 5_000,
+        });
+        workers.push(worker);
+        const originalCompleteRun = TaskService.completeRun;
+        let attempts = 0;
+        let databaseAvailable = false;
+        TaskService.completeRun = async (...args) => {
+            attempts += 1;
+            if (!databaseAvailable) throw new Error('模拟停机期间数据库不可用');
+            return originalCompleteRun.apply(TaskService, args);
+        };
+
+        try {
+            worker.start();
+            await waitForStatus(task.id, ['running']);
+            const deadline = Date.now() + 3_000;
+            while (attempts === 0 && Date.now() < deadline) await Bun.sleep(10);
+            expect(attempts).toBeGreaterThan(0);
+
+            const stopping = worker.stop(100);
+            await Bun.sleep(50);
+            databaseAvailable = true;
+            expect(await stopping).toEqual([]);
+            expect(await TaskService.getById(task.id)).toMatchObject({ status: 'done' });
+            expect(await TaskRunService.getRunningRunByTaskId(task.id)).toBeNull();
+        } finally {
+            TaskService.completeRun = originalCompleteRun;
         }
     });
 

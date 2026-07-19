@@ -9,3 +9,6 @@ dist/
 .factory/
 .playwright-cli/
 output/playwright/
+coverage/
+playwright-report/
+test-results/

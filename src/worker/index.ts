@@ -34,6 +34,8 @@ const FORBIDDEN_AGENT = 'supertask-runner';
 interface WorkerEngineOptions {
     opencodeBin?: string;
     maxOutputChars?: number;
+    settlementRetryDelaysMs?: number[];
+    settlementRetryIntervalMs?: number;
 }
 
 interface TaskTermination {
@@ -77,7 +79,7 @@ export function assertWorkerProcessIsolationSupported(
 ): void {
     if (platform === 'win32') {
         throw new Error(
-            'Windows Worker 已安全禁用：当前运行时无法用 Job Object 证明整个 OpenCode 进程树已退出',
+            'Windows Worker 已安全禁用：当前运行时无法用 Job Object 提供等价的受管进程隔离与排空证明',
         );
     }
 }
@@ -89,19 +91,26 @@ export class WorkerEngine {
     private pollTimer: ReturnType<typeof setTimeout> | null = null;
     private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
     private pollCyclePromise: Promise<void> | null = null;
+    private shutdownDeadlineMs: number | null = null;
+    private settlementRetryWakeups = new Set<() => void>();
     private cfg: GatewayConfig['worker'];
     private opencodeBin: string;
     private maxOutputChars: number;
+    private settlementRetryDelaysMs: number[];
+    private settlementRetryIntervalMs: number;
 
     constructor(cfg: GatewayConfig, options: WorkerEngineOptions = {}) {
         this.cfg = cfg.worker;
         this.opencodeBin = options.opencodeBin ?? process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
         this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
+        this.settlementRetryDelaysMs = options.settlementRetryDelaysMs ?? [250, 1_000, 4_000];
+        this.settlementRetryIntervalMs = options.settlementRetryIntervalMs ?? 5_000;
     }
 
     start() {
         assertWorkerProcessIsolationSupported();
         this.stopped = false;
+        this.shutdownDeadlineMs = null;
         markGatewayActivity('worker');
         this.poll();
         this.heartbeatTimer = setInterval(() => {
@@ -111,6 +120,8 @@ export class WorkerEngine {
 
     async stop(gracePeriodMs = 0): Promise<InterruptedTaskRun[]> {
         this.stopped = true;
+        this.shutdownDeadlineMs = Date.now() + Math.max(0, gracePeriodMs);
+        for (const wake of [...this.settlementRetryWakeups]) wake();
         if (this.pollTimer) {
             clearTimeout(this.pollTimer);
             this.pollTimer = null;
@@ -197,23 +208,19 @@ export class WorkerEngine {
 
             let task: Task | null;
             try {
-                task = await TaskService.next({ excludedBatchIds: [...this.activeBatchIds] });
+                task = await TaskService.claimNext({ excludedBatchIds: [...this.activeBatchIds] });
             } catch (err) {
                 this.logError('task claim failed', err);
                 throw err;
             }
             if (!task) break;
-            if (this.stopped) break;
-
-            if (!await TaskService.start(task.id)) continue;
-            const batchId = normalizeTaskBatchId(task.batchId);
-            if (batchId) this.activeBatchIds.add(batchId);
-
             if (this.stopped) {
                 await TaskService.resetRunningToPending([task.id]);
-                this.releaseBatch(task);
                 break;
             }
+
+            const batchId = normalizeTaskBatchId(task.batchId);
+            if (batchId) this.activeBatchIds.add(batchId);
 
             let runId: number | null = null;
             try {
@@ -447,7 +454,7 @@ export class WorkerEngine {
             const presence = pid == null
                 ? spawnError == null ? 'unknown' : 'not-running'
                 : inspectSpawnedProcessTreePresence(pid);
-            const message = 'guardian 未提供进程树排空证明';
+            const message = 'guardian 未提供受管进程组排空证明';
             if (presence !== 'not-running') {
                 if (entry.timeoutTimer) {
                     clearTimeout(entry.timeoutTimer);
@@ -493,19 +500,54 @@ export class WorkerEngine {
             entry.timeoutTimer = null;
         }
 
-        const settlement = this.commitEntry(entry, code, failure)
-            .then(() => true)
-            .catch((error) => {
-                markGatewayFailure('worker', error);
-                this.logError('task settlement failed', error, entry.task.id);
-                return false;
-            })
+        const settlement = this.commitEntryWithRetry(entry, code, failure)
             .finally(() => {
                 this.runningTasks.delete(entry.task.id);
                 this.releaseBatch(entry.task);
             });
         entry.settlementPromise = settlement;
         return settlement;
+    }
+
+    private async commitEntryWithRetry(
+        entry: RunningTask,
+        code: number | null,
+        failure?: string,
+    ): Promise<boolean> {
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                await this.commitEntry(entry, code, failure);
+                return true;
+            } catch (error) {
+                markGatewayFailure('worker', error);
+                const shortRetryDelayMs = this.settlementRetryDelaysMs[attempt];
+                let retryDelayMs = shortRetryDelayMs ?? this.settlementRetryIntervalMs;
+                if (this.stopped) {
+                    const remainingMs = Math.max(0, (this.shutdownDeadlineMs ?? 0) - Date.now());
+                    if (remainingMs === 0) return false;
+                    retryDelayMs = Math.min(retryDelayMs, remainingMs);
+                }
+                this.logError(
+                    `task settlement failed; retrying in ${retryDelayMs}ms`,
+                    error,
+                    entry.task.id,
+                );
+                await this.waitForSettlementRetry(retryDelayMs);
+            }
+        }
+    }
+
+    private waitForSettlementRetry(delayMs: number): Promise<void> {
+        return new Promise((resolve) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const finish = () => {
+                clearTimeout(timer);
+                this.settlementRetryWakeups.delete(finish);
+                resolve();
+            };
+            timer = setTimeout(finish, delayMs);
+            this.settlementRetryWakeups.add(finish);
+        });
     }
 
     private async commitEntry(

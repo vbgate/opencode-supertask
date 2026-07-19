@@ -441,10 +441,14 @@ describe('job-templates', () => {
             await expect(TaskTemplateService.create({
                 ...base,
                 cwd: `${process.cwd()}/不存在的-template-cwd`,
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
             })).rejects.toThrow('不存在或无法访问');
             await expect(TaskTemplateService.create({
                 ...base,
                 cwd: `${process.cwd()}/package.json`,
+                scheduleType: 'recurring',
+                intervalMs: 60_000,
             })).rejects.toThrow('不是目录');
         });
 

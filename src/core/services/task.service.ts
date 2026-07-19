@@ -40,6 +40,11 @@ export interface EditableTaskUpdate {
     timeoutMs?: number | null;
 }
 
+interface TaskQueueScope {
+    cwd?: string;
+    excludedBatchIds?: string[];
+}
+
 export class TaskDeletionConflictError extends Error {
     constructor(message: string) {
         super(message);
@@ -186,13 +191,26 @@ export class TaskService {
             });
             const maxRetries = normalizedData.maxRetries ?? task.maxRetries ?? 3;
             const exhausted = task.status === 'failed' && (task.retryCount ?? 0) > maxRetries;
-            return tx.update(tasks).set({
+            const updated = tx.update(tasks).set({
                 ...normalizedData,
                 ...(exhausted ? {
                     status: 'dead_letter',
                     retryAfter: null,
                 } : {}),
             }).where(eq(tasks.id, id)).returning().get() ?? null;
+            if (exhausted && updated) {
+                const finishedAt = new Date();
+                tx.update(tasks)
+                    .set({
+                        status: 'dead_letter',
+                        finishedAt,
+                        retryAfter: null,
+                        resultLog: `依赖任务 #${id} 已进入不可恢复终态`,
+                    })
+                    .where(blockedDependentsOf(id))
+                    .run();
+            }
+            return updated;
         }, { behavior: 'immediate' });
     }
 
@@ -221,9 +239,7 @@ export class TaskService {
         }
     }
 
-    static async next(
-        scope: { cwd?: string; excludedBatchIds?: string[] } = {},
-    ): Promise<Task | null> {
+    private static buildRunnableTaskWhere(scope: TaskQueueScope) {
         const baseConditions = [...this.buildScopeWhere(scope)];
         const nowMs = Date.now();
         const retryAfterFilter = or(
@@ -264,43 +280,48 @@ export class TaskService {
             conditions.push(batchFilter);
         }
 
+        return and(
+            ...conditions,
+            or(
+                isNull(tasks.dependsOn),
+                sql`EXISTS (
+                    SELECT 1 FROM tasks AS dependency_task
+                    WHERE dependency_task.id = ${tasks.dependsOn}
+                      AND dependency_task.status = 'done'
+                      AND dependency_task.cwd IS ${tasks.cwd}
+                )`,
+            ),
+            or(
+                isNull(tasks.batchId),
+                sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ''`,
+                sql`NOT EXISTS (
+                    SELECT 1 FROM tasks AS running_batch_task
+                    WHERE trim(running_batch_task.batch_id, ${TASK_BATCH_TRIM_CHARACTERS})
+                        = trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS})
+                      AND (
+                          running_batch_task.status = 'running'
+                          OR EXISTS (
+                              SELECT 1 FROM task_runs AS running_batch_run
+                              WHERE running_batch_run.task_id = running_batch_task.id
+                                AND running_batch_run.status = 'running'
+                          )
+                      )
+                    )`,
+            ),
+            sql`NOT EXISTS (
+                SELECT 1 FROM task_runs AS candidate_active_run
+                WHERE candidate_active_run.task_id = ${tasks.id}
+                  AND candidate_active_run.status = 'running'
+            )`,
+        );
+    }
+
+    static async next(scope: TaskQueueScope = {}): Promise<Task | null> {
+
         const result = await db
             .select()
             .from(tasks)
-            .where(and(
-                ...conditions,
-                or(
-                    isNull(tasks.dependsOn),
-                    sql`EXISTS (
-                        SELECT 1 FROM tasks AS dependency_task
-                        WHERE dependency_task.id = ${tasks.dependsOn}
-                          AND dependency_task.status = 'done'
-                          AND dependency_task.cwd IS ${tasks.cwd}
-                    )`,
-                ),
-                or(
-                    isNull(tasks.batchId),
-                    sql`trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS}) = ''`,
-                    sql`NOT EXISTS (
-                        SELECT 1 FROM tasks AS running_batch_task
-                        WHERE trim(running_batch_task.batch_id, ${TASK_BATCH_TRIM_CHARACTERS})
-                            = trim(${tasks.batchId}, ${TASK_BATCH_TRIM_CHARACTERS})
-                          AND (
-                              running_batch_task.status = 'running'
-                              OR EXISTS (
-                                  SELECT 1 FROM task_runs AS running_batch_run
-                                  WHERE running_batch_run.task_id = running_batch_task.id
-                                    AND running_batch_run.status = 'running'
-                              )
-                          )
-                        )`,
-                ),
-                sql`NOT EXISTS (
-                    SELECT 1 FROM task_runs AS candidate_active_run
-                    WHERE candidate_active_run.task_id = ${tasks.id}
-                      AND candidate_active_run.status = 'running'
-                )`,
-            ))
+            .where(this.buildRunnableTaskWhere(scope))
             .orderBy(
                 desc(tasks.urgency),
                 desc(tasks.importance),
@@ -310,6 +331,35 @@ export class TaskService {
             .limit(1);
 
         return result[0] ?? null;
+    }
+
+    static async claimNext(scope: TaskQueueScope = {}): Promise<Task | null> {
+        return db.transaction((tx) => {
+            const candidate = tx
+                .select()
+                .from(tasks)
+                .where(this.buildRunnableTaskWhere(scope))
+                .orderBy(
+                    desc(tasks.urgency),
+                    desc(tasks.importance),
+                    asc(tasks.createdAt),
+                    asc(tasks.id),
+                )
+                .limit(1)
+                .get();
+            if (!candidate) return null;
+
+            return tx
+                .update(tasks)
+                .set({
+                    status: 'running',
+                    startedAt: new Date(),
+                    finishedAt: null,
+                })
+                .where(eq(tasks.id, candidate.id))
+                .returning()
+                .get() ?? null;
+        }, { behavior: 'immediate' });
     }
 
     static async countRunning(

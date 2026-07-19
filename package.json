@@ -1,6 +1,6 @@
 {
     "name": "opencode-supertask",
-    "version": "0.1.40",
+    "version": "0.1.41",
     "description": "AI Agent 任务调度系统 — OpenCode 插件 + CLI + Gateway 常驻进程",
     "type": "module",
     "main": "dist/plugin/supertask.js",
@@ -30,7 +30,12 @@
         "ui": "bun run src/web/index.tsx",
         "gateway": "bun run src/gateway/index.ts",
         "test": "bun test",
-        "typecheck": "tsc --noEmit"
+        "test:browser": "playwright test",
+        "test:coverage": "bun test --coverage --coverage-reporter=lcov && bun scripts/check-coverage.ts",
+        "typecheck": "tsc --noEmit",
+        "typecheck:tests": "tsc --project tsconfig.tests.json",
+        "lint": "eslint \"*.ts\" \"src/**/*.{ts,tsx}\" \"plugin/**/*.ts\" \"scripts/**/*.ts\" \"tests/**/*.ts\"",
+        "package:smoke": "bun scripts/package-install-smoke.ts"
     },
     "bin": {
         "supertask": "dist/cli/index.js"
@@ -62,12 +67,16 @@
         "hono": "^4.7.4"
     },
     "devDependencies": {
+        "@eslint/js": "^10.0.1",
         "@opencode-ai/plugin": "^1.1.42",
+        "@playwright/test": "^1.61.1",
         "@types/bun": "latest",
         "@types/node": "^25.1.0",
         "drizzle-kit": "^0.30.4",
+        "eslint": "^10.7.0",
         "tsup": "^8.5.1",
-        "typescript": "^5.9.3"
+        "typescript": "^5.9.3",
+        "typescript-eslint": "^8.64.0"
     },
     "peerDependencies": {
         "@opencode-ai/plugin": "^1.1.0"

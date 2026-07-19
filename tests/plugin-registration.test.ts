@@ -6,6 +6,11 @@ import { MANAGED_RUN_ENV, MANAGED_RUN_ENV_VALUE } from '../src/core/launch-proto
 
 const originalPm2Bin = process.env.SUPERTASK_PM2_BIN;
 
+interface RuntimeSchema {
+    description?: string;
+    safeParse(value: unknown): { success: boolean };
+}
+
 describe('OpenCode 插件注册', () => {
     beforeEach(() => {
         setupTestDb();
@@ -45,17 +50,23 @@ describe('OpenCode 插件注册', () => {
         const add = hooks.tool?.supertask_add;
         const schedule = hooks.tool?.supertask_schedule;
         if (!add || !schedule) throw new Error('任务创建工具未注册');
+        const addArgs = add.args as unknown as { batchId: RuntimeSchema; variant: RuntimeSchema };
+        const scheduleArgs = schedule.args as unknown as {
+            batchId: RuntimeSchema;
+            variant: RuntimeSchema;
+            max_instances: RuntimeSchema;
+        };
         expect(add.description).toContain('跨项目的相同非空 batchId 任务全局严格串行');
-        expect(schedule.args.batchId.description).toContain('不会同时执行');
-        expect(schedule.args.max_instances.description).toContain('自动调度');
-        expect(schedule.args.max_instances.description).toContain('排队');
-        expect(schedule.args.max_instances.description).toContain('手动立即运行不受此限制');
-        expect(add.args.batchId.safeParse(undefined).success).toBe(true);
-        expect(add.args.batchId.safeParse('').success).toBe(false);
-        expect(add.args.variant.safeParse('xhigh').success).toBe(true);
-        expect(add.args.variant.safeParse('   ').success).toBe(false);
-        expect(schedule.args.variant.safeParse('high').success).toBe(true);
-        expect(schedule.args.batchId.safeParse('   ').success).toBe(false);
+        expect(scheduleArgs.batchId.description).toContain('不会同时执行');
+        expect(scheduleArgs.max_instances.description).toContain('自动调度');
+        expect(scheduleArgs.max_instances.description).toContain('排队');
+        expect(scheduleArgs.max_instances.description).toContain('手动立即运行不受此限制');
+        expect(addArgs.batchId.safeParse(undefined).success).toBe(true);
+        expect(addArgs.batchId.safeParse('').success).toBe(false);
+        expect(addArgs.variant.safeParse('xhigh').success).toBe(true);
+        expect(addArgs.variant.safeParse('   ').success).toBe(false);
+        expect(scheduleArgs.variant.safeParse('high').success).toBe(true);
+        expect(scheduleArgs.batchId.safeParse('   ').success).toBe(false);
     });
 
     test('按 batchId 查询时同时返回当前项目和跨项目占用状态', async () => {
@@ -122,7 +133,7 @@ describe('OpenCode 插件注册', () => {
         });
     });
 
-    test('Gateway 管理的队列任务拒绝在自身进程树内升级', async () => {
+    test('Gateway 管理的队列任务拒绝在自身受管执行上下文内升级', async () => {
         const originalManagedRun = process.env[MANAGED_RUN_ENV];
         process.env[MANAGED_RUN_ENV] = MANAGED_RUN_ENV_VALUE;
         try {

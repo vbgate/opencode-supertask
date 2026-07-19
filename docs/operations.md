@@ -7,7 +7,7 @@
 
 PM2 不是任务执行所必需的组件。Gateway 才负责 Worker、Scheduler、Watchdog 和 Dashboard；PM2 只负责让 Gateway 崩溃后重启，并配合系统启动项长期运行。
 
-当前 Gateway 任务执行支持 macOS 和 Linux。Windows Worker 会明确拒绝启动；仅靠 `taskkill /T` 无法在父链断裂后证明所有 OpenCode 后代已退出，必须等 Job Object 隔离完成后再开放。
+当前 Gateway 任务执行支持 macOS 和 Linux。Worker 的隔离与排空单位是独立 Unix 进程组；普通后代会继承该组，主动调用 `setsid()` 或以 detached/daemon 方式离组的进程不受 SuperTask 管理，必须自行维护生命周期。Windows Worker 会明确拒绝启动；仅靠 `taskkill /T` 无法在父链断裂后提供等价的可恢复排空证明，必须等 Job Object 隔离完成后再开放。
 
 | 场景 | 命令 | 是否需要 PM2 |
 |---|---|---|
@@ -174,7 +174,7 @@ supertask edit --id 42 --model openai/gpt-5.6-sol --variant xhigh --importance 5
 supertask edit --id 42 --clear-variant
 ```
 
-运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`；修改该状态后仍需人工重试才会重新入队。
+运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`，并在同一事务递归停止无法继续的下游依赖；修改该状态后仍需人工重试才会重新入队。
 
 Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、variant、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时。重试、超时与循环间隔先选常用预设，只有选“自定义”时才出现数字和秒/分钟/小时/天单位；一次性任务使用日期时间选择器。CLI 仍支持 `30s`、`5min`、`1h` 或 `2d` 以便脚本调用。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
 
@@ -203,6 +203,7 @@ curl -fsS http://127.0.0.1:4680/health
 - 普通 `doctor` 不调用模型；`--smoke` 才会以当前目录（或 `--smoke-cwd`）创建一个 `maxRetries=0` 的真实高优先级任务，通过 Gateway、Worker、launcher 和 OpenCode 完整链路执行，并检查返回标记。它会在数据库中保留任务/run 作为审计证据。
 - `/health` 可访问说明 Gateway 的 HTTP、数据库锁及内部循环正常；如果禁用了 Dashboard，此信号不适用，PM2 管理仍使用 ready 锁判断。
 - Dashboard 顶栏可切换中文/English 和跟随系统/浅色/深色主题。语言写入当前站点 Cookie，主题写入浏览器本地存储；它们只影响当前浏览器显示，不修改 Gateway 配置。
+- Dashboard 只接受 Host 为 `localhost`、`127.0.0.1` 或 `[::1]` 的请求；不要用自定义域名、反向代理或端口转发暴露页面。系统页和重启状态所需的 PM2/systemd 探测在独立 Bun runner 中异步执行并短时缓存，慢诊断不会暂停任务调度和锁心跳。
 - 新 run 的日志首行保存 Worker 真正执行的 executable、args 和 `cwd`。执行记录页在被点击的 run 下方展开可复制的 `cd <cwd> && opencode run ...`，并分层展示 Agent 文本、错误和工具；原始 JSONL 收在二级折叠入口。任务、定时任务和执行详情默认展示人类可读字段，原始 JSON 只在折叠区保留。旧 run 不会补造命令，仍可查看原始日志。
 - 新 run 使用 `gated-v3-token-guardian`，每 run UUID 会同时写入 `task_runs.locked_by` 和 launcher argv。Watchdog 只有在 launcher、OpenCode 参数与 UUID 全部匹配时才终止进程组；Worker 仅在收到 launcher 通过独立 IPC 返回的同 UUID 排空证明后才结算正常退出。guardian 无证明退出会保持 run 和批次隔离，进程组明确消失后才作失败收敛。旧 v2/legacy 记录的 PID 或 PGID 仍存活、被复用或无法确认时只隔离且不发信号，只有二者都明确消失才恢复。无法确认子进程退出时 `/health` 会降级；旧版 `started_at`/`heartbeat_at` 同时缺失的运行记录也会立即进入诊断隔离。
 - drain proof 使用双向确认：Worker 校验同 UUID 证明后回送确认，launcher 收件后才退出，不再依赖旧 Bun 不可靠的 `process.send` callback。
@@ -240,7 +241,7 @@ opencode run --agent <agent> --format json [-m <model>] [--variant <variant>] '<
 
 Watchdog 的恢复时间不是任务超时时间。Worker 的 `taskTimeoutMs` 控制正常运行时的硬超时；Watchdog 在心跳停止超过 `heartbeatTimeoutMs` 后，下一次检查才恢复任务。
 
-运行中 `cancel` 会在下一个 Worker 轮询周期被发现，随后终止对应进程树、保留任务 `cancelled` 状态，并把本次 run 关闭为失败。
+运行中 `cancel` 会在下一个 Worker 轮询周期被发现，随后终止对应的受管进程组、保留任务 `cancelled` 状态，并把本次 run 关闭为失败。主动离开该组的 daemon 不在取消保证内；需要长期后台服务时应交给 PM2、systemd、launchd 等外部管理器，并由任务明确负责启停。
 
 若升级前的旧 Worker 恰好在启动 OpenCode 后、记录 PID 前崩溃，Watchdog 会保守保留无 PID run，避免重复执行。只有 `doctor`/日志明确标为旧版隔离，且你已独立确认不存在遗留进程时，才使用上述 `run abandon` 流程；该命令只关闭 run，任务继续保持 `cancelled`，不会自动重试。
 
@@ -323,6 +324,6 @@ supertask uninstall   # 仅从 PM2 移除 Gateway，保留其他 PM2 项和数�
 
 升级必须从 Gateway 外部发起。Worker 管理的队列任务会被标记为受管执行上下文，插件在其中拒绝 `supertask_upgrade`；不要把“升级 SuperTask”作为队列任务提交，否则升级会返回安全拒绝提示。
 
-发布流程通过 GitHub Release 触发，也可带明确版本参数手动运行 `publish.yml` 处理发布基础设施故障。稳定版本发布到 npm `latest`，带 prerelease 后缀的版本只发布到 `next`。工作流使用 npm Trusted Publisher/OIDC，不依赖长期 `NPM_TOKEN`；不要在本机手动 `npm publish`。
+发布流程通过 GitHub Release 触发，也可带明确版本参数手动运行 `publish.yml` 处理发布基础设施故障。稳定版本发布到 npm `latest`，带 prerelease 后缀的版本只发布到 `next`。发布门禁包括源码与测试类型检查、lint、覆盖率、真实 Chromium smoke、Linux/macOS 测试、最低 Bun 代表性回归，以及 `npm pack` 后隔离安装的 CLI/migration smoke。工作流使用 npm Trusted Publisher/OIDC，不依赖长期 `NPM_TOKEN`；不要在本机手动 `npm publish`。
 
 更完整的设计边界见[当前架构与决策](./architecture.md)。

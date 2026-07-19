@@ -186,7 +186,7 @@ async function main(): Promise<void> {
             child.once('exit', (code, signal) => resolve({ code, signal }));
         });
 
-        // 保持进程组长存活，直到 OpenCode 派生的整棵进程树都退出。
+        // 保持进程组长存活，直到仍属于该受管进程组的进程全部退出。
         // Watchdog 因而始终可以通过 launcher 命令验证进程组归属，避免 PID/PGID 复用误杀。
         await waitForProcessGroupDrain();
         if (launchIdentity) {

@@ -36,7 +36,7 @@ SuperTask is not another wrapper around cron. Scheduled work becomes an ordinary
 | Automatic recovery | Retry budgets, exponential backoff, dead-letter state, and manual retry |
 | Controlled execution | Global concurrency, priority ordering, dependencies, and global batch serialization |
 | Project awareness | Each task keeps its OpenCode project directory, Agent, model, and optional model variant |
-| Safe process handling | Cancel and shutdown wait for the managed OpenCode process tree to stop |
+| Safe process handling | Cancel and shutdown wait for the managed OpenCode Unix process group to drain |
 | Observable runs | Session ID, exact reproducible command, model output, tools, errors, and raw JSONL |
 | Local Dashboard | Create, schedule, inspect, retry, cancel, and diagnose from `127.0.0.1` |
 
@@ -162,8 +162,10 @@ The project picker reads the selected directory's real `opencode agent list` and
 ## Reliability Without Hand-Waving
 
 - SQLite `BEGIN IMMEDIATE` protects the single-Gateway lock and global batch serialization.
+- Candidate selection and the `running` transition happen in one immediate transaction, so concurrent edits cannot alter a claimed task.
 - Each managed run has a unique launcher identity and an isolated Unix process group.
 - A run settles only after the launcher proves the entire process group drained.
+- Process containment ends at that group: descendants that deliberately call `setsid()` or start as detached daemons must manage their own lifecycle.
 - Shutdown and cancellation fail closed when process ownership cannot be proven.
 - `supertask doctor` verifies OpenCode, the effective pinned plugin, cache, CLI, Gateway package, ready lock, SQLite, Dashboard, and PM2 environment.
 - Database clear and restore are transactional, backup-first, WAL-consistent, and reject active work.
@@ -188,7 +190,7 @@ When every component already matches npm `latest`, normal upgrade is a no-op and
 - Node.js/npm for the documented install and upgrade flow
 - macOS or Linux for Gateway task execution
 
-Windows Worker execution remains disabled until OS Job Object containment can guarantee safe process-tree cancellation. Queue execution does not require PM2 when the Gateway runs in the foreground.
+Windows Worker execution remains disabled until OS Job Object containment can provide equivalent managed-process isolation and a recoverable drain proof. Queue execution does not require PM2 when the Gateway runs in the foreground.
 
 ## Install From Source
 
@@ -233,10 +235,15 @@ Then restart OpenCode and run `bun run gateway` from the repository.
 bun install --frozen-lockfile
 bun test
 bun run typecheck
+bun run typecheck:tests
+bun run lint
+bun run test:coverage
+bun run test:browser
 bun run build
+bun run package:smoke
 ```
 
-CI also runs the built launcher IPC smoke test on the minimum supported Bun version.
+CI runs the suite on Linux and macOS, exercises the real Dashboard in Chromium, installs the packed npm artifact, and runs representative built-product tests on the minimum supported Bun version.
 
 ## License
 

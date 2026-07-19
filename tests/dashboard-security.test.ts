@@ -18,6 +18,7 @@ import {
     markGatewaySuccess,
     resetGatewayHealth,
 } from '../src/gateway/health';
+import { clearDashboardGatewayDiagnosticCache } from '../src/web/gateway-diagnostic';
 
 describe('Dashboard 安全边界', () => {
     let testDb: ReturnType<typeof setupTestDb>;
@@ -26,6 +27,7 @@ describe('Dashboard 安全边界', () => {
     beforeEach(() => {
         testDb = setupTestDb();
         resetGatewayHealth();
+        clearDashboardGatewayDiagnosticCache();
     });
 
     test('独立 Dashboard 默认只监听回环地址', () => {
@@ -610,6 +612,7 @@ describe('Dashboard 安全边界', () => {
             currentScope: scope,
             gatewayScope: scope,
             scopeMatches: true,
+            gatewayOpenCode: null,
         };
 
         expect(isSafeDashboardRestartTarget(diagnostic, 42)).toBe(true);
@@ -647,6 +650,39 @@ describe('Dashboard 安全边界', () => {
         });
         expect(allowed.status).toBe(200);
         expect(await TaskService.getById(task.id)).toBeNull();
+    });
+
+    test('拒绝非回环 Host 的读取请求', async () => {
+        const blocked = await dashboardApp.request('http://evil.example/api/filesystem/directories');
+        expect(blocked.status).toBe(421);
+        expect(await blocked.json()).toEqual({ error: 'invalid dashboard host' });
+
+        const conflicting = await dashboardApp.request('http://localhost/api/filesystem/directories', {
+            headers: { Host: 'evil.example' },
+        });
+        expect(conflicting.status).toBe(421);
+
+        for (const malformedHost of [
+            'evil.example@localhost',
+            'localhost/evil.example',
+            'localhost#evil.example',
+            'local%68ost',
+            'localhost:99999',
+            'localhost, evil.example',
+        ]) {
+            const malformed = await dashboardApp.request('http://localhost/api/tasks/99999', {
+                headers: { Host: malformedHost },
+            });
+            expect(malformed.status).toBe(421);
+        }
+
+        for (const host of ['localhost', 'localhost:4680', '127.0.0.1', '[::1]']) {
+            const requestHost = host.includes(':') && !host.startsWith('[') ? host.split(':')[0] : host;
+            const allowed = await dashboardApp.request(`http://${requestHost}/api/tasks/99999`, {
+                headers: { Host: host },
+            });
+            expect(allowed.status).toBe(404);
+        }
     });
 
     test('运行中任务必须先取消，不能从 Dashboard 直接删除', async () => {

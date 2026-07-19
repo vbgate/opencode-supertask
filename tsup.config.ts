@@ -1,6 +1,6 @@
-import { defineConfig } from 'tsup';
+import { defineConfig, type Options } from 'tsup';
 
-const shared = {
+const shared: Options & { alias: Record<string, string> } = {
   outDir: 'dist',
   format: ['esm'],
   target: 'esnext',
@@ -44,6 +44,7 @@ export default defineConfig([
       'plugin/supertask': 'plugin/supertask.ts',
       'worker/index': 'src/worker/index.ts',
       'worker/launcher': 'src/worker/launcher.ts',
+      'daemon/gateway-diagnostic-runner': 'src/daemon/gateway-diagnostic-runner.ts',
       'daemon/pm2-supervisor': 'src/daemon/pm2-supervisor.ts',
     },
     dts: { resolve: true },

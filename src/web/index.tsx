@@ -33,7 +33,8 @@ import {
 import { getConfigPath, loadConfig, validateConfig, type GatewayConfig } from '@gateway/config';
 import { getGatewayHealth } from '@gateway/health';
 import { triggerTaskFromTemplate } from '@gateway/scheduler/job-templates';
-import { getGatewayDiagnostic, type GatewayDiagnostic } from '../daemon/pm2';
+import type { GatewayDiagnostic } from '../daemon/pm2';
+import { getDashboardGatewayDiagnostic } from './gateway-diagnostic';
 import {
     formatDateTime,
     formatFuture,
@@ -52,6 +53,7 @@ const TASK_STATUSES = new Set<TaskStatus>([
     'pending', 'running', 'done', 'failed', 'dead_letter', 'cancelled',
 ]);
 const SESSION_ID_PATTERN = /^ses_[A-Za-z0-9_]+$/;
+const LOOPBACK_HOST_PATTERN = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::([1-9]\d{0,4}))?$/i;
 let runtimeConfig: GatewayConfig | null = null;
 let restartScheduled = false;
 
@@ -98,10 +100,13 @@ export function isSafeDashboardRestartTarget(
         && diagnostic.scopeMatches;
 }
 
-function canRestartCurrentGateway(): boolean {
+async function canRestartCurrentGateway(fresh = false): Promise<boolean> {
     if (runtimeConfig === null) return false;
     try {
-        return isSafeDashboardRestartTarget(getGatewayDiagnostic(), process.pid);
+        return isSafeDashboardRestartTarget(
+            await getDashboardGatewayDiagnostic({ fresh }),
+            process.pid,
+        );
     } catch {
         return false;
     }
@@ -298,6 +303,16 @@ function resolveLocale(c: Context): Locale {
 }
 
 app.use('*', async (c, next) => {
+    const requestHostname = new URL(c.req.url).hostname;
+    const hostHeader = c.req.header('Host');
+    const loopbackHosts = ['localhost', '127.0.0.1', '[::1]'];
+    const hostMatch = hostHeader?.match(LOOPBACK_HOST_PATTERN) ?? null;
+    const hostPort = hostMatch?.[1] === undefined ? null : Number(hostMatch[1]);
+    if (!loopbackHosts.includes(requestHostname)
+        || (hostHeader !== undefined
+            && (!hostMatch || (hostPort !== null && hostPort > 65_535)))) {
+        return c.json({ error: 'invalid dashboard host' }, 421);
+    }
     await next();
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('X-Frame-Options', 'DENY');
@@ -910,7 +925,7 @@ app.get('/system', async (c) => {
     const config = loadConfig();
     const activeConfig = runtimeConfig ?? config;
     const restartRequired = runtimeConfig !== null && !configsEqual(config, runtimeConfig);
-    const managedRestart = canRestartCurrentGateway();
+    const managedRestart = await canRestartCurrentGateway();
     const configState = resolveDashboardConfigState(
         runtimeConfig !== null,
         restartRequired,
@@ -1039,9 +1054,9 @@ app.get('/api/runs/:id/session-command', async (c) => {
     return c.json({ command: sessionCommand(run.sessionId) });
 });
 
-app.get('/api/gateway/status', (c) => {
+app.get('/api/gateway/status', async (c) => {
     const savedConfig = loadConfig();
-    const managed = canRestartCurrentGateway();
+    const managed = await canRestartCurrentGateway();
     return c.json({
         pid: process.pid,
         managed,
@@ -1185,7 +1200,7 @@ app.put('/api/config', async (c) => {
         return c.json({
             success: true,
             restartRequired: runtimeConfig === null || !configsEqual(savedConfig, runtimeConfig),
-            managed: canRestartCurrentGateway(),
+            managed: await canRestartCurrentGateway(),
         });
     } catch (error) {
         return c.json({
@@ -1204,9 +1219,10 @@ app.post('/api/gateway/restart', async (c) => {
         return c.json({ error: 'confirmation must be RESTART' }, 400);
     }
     if (restartScheduled) return c.json({ error: 'restart already scheduled' }, 409);
-    if (!canRestartCurrentGateway()) {
+    if (!await canRestartCurrentGateway(true)) {
         return c.json({ error: '当前 Gateway 不是由匹配运行作用域的 PM2 进程托管，无法从网页安全重启' }, 409);
     }
+    if (restartScheduled) return c.json({ error: 'restart already scheduled' }, 409);
 
     restartScheduled = true;
     const previousPid = process.pid;

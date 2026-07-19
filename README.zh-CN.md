@@ -36,7 +36,7 @@ SuperTask 不是给 cron 套一层壳。定时器生成的也是普通持久任�
 | 自动恢复 | 重试预算、指数退避、停止重试状态和人工恢复 |
 | 可控执行 | 全局并发、优先级、依赖关系和全局同批次串行 |
 | 项目感知 | 每个任务保留 OpenCode 项目目录、Agent、模型和可选模型 variant |
-| 安全进程管理 | 取消或停机时等待整棵 OpenCode 进程树退出 |
+| 安全进程管理 | 取消或停机时等待受管 OpenCode Unix 进程组排空 |
 | 可观测执行 | Session、真实命令、模型输出、工具、错误和原始 JSONL |
 | 本地控制台 | 在 `127.0.0.1` 创建、定时、查看、重试、取消和诊断 |
 
@@ -162,8 +162,10 @@ supertask cancel --id 42
 ## 可靠不是一句口号
 
 - SQLite `BEGIN IMMEDIATE` 保护单 Gateway 锁和全局批次串行。
+- 候选筛选与 `running` 转换在同一个即时事务完成，并发编辑无法改写已经抢占的任务。
 - 每次执行都有唯一 launcher 身份和独立 Unix 进程组。
 - launcher 证明整组进程排空后，任务才会结算。
+- 进程隔离边界止于该组；主动调用 `setsid()` 或以 detached daemon 方式离组的后代必须自行管理生命周期。
 - 无法证明进程归属时，取消和停机保持保守，不误杀、不重复跑。
 - `supertask doctor` 检查 OpenCode、精确插件、缓存、CLI、Gateway 包、ready 锁、SQLite、Dashboard 和 PM2 环境。
 - 数据库清空和恢复采用事务、先备份、包含 WAL 一致数据，并拒绝运行中任务。
@@ -188,7 +190,7 @@ supertask doctor --smoke --smoke-agent build --smoke-model provider/model --smok
 - 按本文方式安装和升级需要 Node.js/npm
 - Gateway 任务执行当前支持 macOS 和 Linux
 
-Windows Worker 在具备 Job Object 进程树隔离前保持禁用。前台运行 Gateway 时不依赖 PM2。
+Windows Worker 在 Job Object 能提供等价的受管进程隔离与可恢复排空证明前保持禁用。前台运行 Gateway 时不依赖 PM2。
 
 ## 从源码安装
 
@@ -233,10 +235,15 @@ bun run build
 bun install --frozen-lockfile
 bun test
 bun run typecheck
+bun run typecheck:tests
+bun run lint
+bun run test:coverage
+bun run test:browser
 bun run build
+bun run package:smoke
 ```
 
-CI 还会使用最低支持 Bun 版本执行构建后 launcher IPC 冒烟测试。
+CI 在 Linux 和 macOS 运行测试，用真实 Chromium 执行 Dashboard 冒烟验证，隔离安装 npm 打包产物，并在最低支持 Bun 版本运行代表性的构建产物测试。
 
 ## 许可证
 

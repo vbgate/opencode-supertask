@@ -1,4 +1,3 @@
-import { spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { basename, dirname, resolve } from 'path';
 import {
@@ -13,6 +12,58 @@ interface ProcessInfo {
 }
 
 const OS_COMMAND_TIMEOUT_MS = 2_000;
+const OS_COMMAND_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const OS_COMMAND_RESULT_MARKER = '\n\0supertask-os-command-result:';
+const BOUNDED_OS_COMMAND_RUNNER = `
+const { writeSync } = await import('fs');
+let child;
+try {
+    child = Bun.spawn(process.argv.slice(2), {
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'ignore',
+    });
+} catch {
+    process.exit(127);
+}
+const terminateGroup = () => {
+    if (process.platform !== 'win32') {
+        try {
+            process.kill(-process.pid, 'SIGKILL');
+        } catch {
+        }
+    }
+    try {
+        child.kill('SIGKILL');
+    } catch {
+    }
+    process.exit(1);
+};
+const timer = setTimeout(terminateGroup, ${OS_COMMAND_TIMEOUT_MS});
+try {
+    const chunks = [];
+    let outputBytes = 0;
+    const readOutput = async () => {
+        const reader = child.stdout.getReader();
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) return;
+            outputBytes += value.byteLength;
+            if (outputBytes > ${OS_COMMAND_MAX_OUTPUT_BYTES}) terminateGroup();
+            chunks.push(value);
+        }
+    };
+    const [exitCode] = await Promise.all([child.exited, readOutput()]);
+    clearTimeout(timer);
+    for (const chunk of chunks) writeSync(1, chunk);
+    writeSync(1, ${JSON.stringify(OS_COMMAND_RESULT_MARKER)} + String(exitCode));
+    if (process.platform !== 'win32') terminateGroup();
+    process.exit(0);
+} catch {
+    clearTimeout(timer);
+    terminateGroup();
+}
+`;
 
 export type RecordedProcessSignalResult =
     | 'signalled'
@@ -23,6 +74,39 @@ export type RecordedProcessSignalResult =
 
 export type GatewayProcessIdentity = 'match' | 'mismatch' | 'unknown' | 'not-running';
 export type SpawnedProcessTreePresence = 'running' | 'not-running' | 'unknown';
+
+function runBoundedOsCommand(
+    command: string,
+    args: string[],
+    captureOutput = true,
+): { status: number | null; stdout: string } {
+    // Bun 1.1.45 ignores child_process.spawnSync timeouts. The helper remains
+    // synchronous to callers while enforcing the deadline with Bun.spawn.
+    const result = Bun.spawnSync({
+        cmd: [
+            process.execPath,
+            '-e',
+            BOUNDED_OS_COMMAND_RUNNER,
+            'supertask-os-command',
+            command,
+            ...args,
+        ],
+        detached: process.platform !== 'win32',
+        maxBuffer: OS_COMMAND_MAX_OUTPUT_BYTES + 1024,
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'ignore',
+    });
+    const output = new TextDecoder().decode(result.stdout);
+    const markerIndex = output.lastIndexOf(OS_COMMAND_RESULT_MARKER);
+    if (markerIndex < 0) return { status: null, stdout: '' };
+    const statusText = output.slice(markerIndex + OS_COMMAND_RESULT_MARKER.length);
+    if (!/^\d+$/.test(statusText)) return { status: null, stdout: '' };
+    return {
+        status: Number(statusText),
+        stdout: captureOutput ? output.slice(0, markerIndex) : '',
+    };
+}
 
 function isSafePid(pid: number): boolean {
     return Number.isInteger(pid) && pid > 1 && pid !== process.pid;
@@ -67,12 +151,10 @@ export function inspectSpawnedProcessTreePresence(pid: number): SpawnedProcessTr
 }
 
 function inspectUnixProcess(pid: number): ProcessInfo | null {
-    const result = spawnSync('ps', ['-o', 'pgid=', '-o', 'command=', '-p', String(pid)], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: OS_COMMAND_TIMEOUT_MS,
-        killSignal: 'SIGKILL',
-    });
+    const result = runBoundedOsCommand(
+        'ps',
+        ['-o', 'pgid=', '-o', 'command=', '-p', String(pid)],
+    );
     if (result.status !== 0) return null;
     const match = result.stdout.trim().match(/^(\d+)\s+(.+)$/s);
     if (!match) return null;
@@ -81,15 +163,9 @@ function inspectUnixProcess(pid: number): ProcessInfo | null {
 
 function inspectWindowsCommand(pid: number): string | null {
     const script = `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`;
-    const result = spawnSync(
+    const result = runBoundedOsCommand(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-Command', script],
-        {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: OS_COMMAND_TIMEOUT_MS,
-            killSignal: 'SIGKILL',
-        },
     );
     if (result.status !== 0) return null;
     return result.stdout.trim() || null;
@@ -97,15 +173,9 @@ function inspectWindowsCommand(pid: number): string | null {
 
 function inspectWindowsProcessTree(rootPid: number): number[] | null {
     const script = `$root=${rootPid}; $all=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId); $ids=New-Object 'System.Collections.Generic.HashSet[int]'; [void]$ids.Add($root); do { $added=$false; foreach($p in $all) { if($ids.Contains([int]$p.ParentProcessId) -and $ids.Add([int]$p.ProcessId)) { $added=$true } } } while($added); $all | Where-Object { $ids.Contains([int]$_.ProcessId) } | Select-Object -ExpandProperty ProcessId`;
-    const result = spawnSync(
+    const result = runBoundedOsCommand(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-Command', script],
-        {
-            encoding: 'utf8',
-            stdio: ['ignore', 'pipe', 'ignore'],
-            timeout: OS_COMMAND_TIMEOUT_MS,
-            killSignal: 'SIGKILL',
-        },
     );
     if (result.status !== 0) return null;
     return result.stdout
@@ -218,11 +288,7 @@ export function signalSpawnedProcessTree(pid: number, signal: NodeJS.Signals): b
     if (process.platform === 'win32') {
         const args = ['/PID', String(pid), '/T'];
         if (signal === 'SIGKILL') args.push('/F');
-        const status = spawnSync('taskkill', args, {
-            stdio: 'ignore',
-            timeout: OS_COMMAND_TIMEOUT_MS,
-            killSignal: 'SIGKILL',
-        }).status;
+        const status = runBoundedOsCommand('taskkill', args, false).status;
         return status === 0 || !isSpawnedProcessTreeAlive(pid);
     }
 
@@ -279,11 +345,7 @@ export function signalRecordedProcessTreeWithResult(
         }
         const args = ['/PID', String(pid), '/T'];
         if (signal === 'SIGKILL') args.push('/F');
-        const status = spawnSync('taskkill', args, {
-            stdio: 'ignore',
-            timeout: OS_COMMAND_TIMEOUT_MS,
-            killSignal: 'SIGKILL',
-        }).status;
+        const status = runBoundedOsCommand('taskkill', args, false).status;
         if (status === 0) return 'signalled';
         return isProcessAlive(pid) ? 'signal-failed' : absentLeaderResult(pid);
     }

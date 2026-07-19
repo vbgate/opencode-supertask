@@ -54,6 +54,7 @@ beforeEach(() => {
     writeFileSync(fakeOpencode, '#!/bin/sh\nprintf "test-opencode 1.0.0\\n"\n');
     chmodSync(fakeOpencode, 0o755);
     process.env.PATH = `${dir}${delimiter}${originalEnv.path ?? ''}`;
+    process.env.PM2_HOME = join(dir, 'pm2-home');
 });
 
 afterEach(() => {
@@ -210,11 +211,13 @@ if (args[0] === 'print') {
         expect(contents).toContain('<key>KeepAlive</key>\n    <true/>');
         const calls = readFileSync(launchctlLog, 'utf8').trim().split('\n')
             .map((line) => JSON.parse(line) as string[]);
+        const uid = process.getuid?.();
+        if (uid === undefined) throw new Error('测试平台不支持 getuid');
         expect(calls).toEqual([
-            ['bootout', `gui/${process.getuid()}/com.supertask.pm2-resurrect`],
-            ['bootstrap', `gui/${process.getuid()}`, plist],
-            ['bootstrap', `gui/${process.getuid()}`, plist],
-            ['print', `gui/${process.getuid()}/com.supertask.pm2-resurrect`],
+            ['bootout', `gui/${uid}/com.supertask.pm2-resurrect`],
+            ['bootstrap', `gui/${uid}`, plist],
+            ['bootstrap', `gui/${uid}`, plist],
+            ['print', `gui/${uid}/com.supertask.pm2-resurrect`],
         ]);
     });
 

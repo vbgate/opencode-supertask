@@ -9,7 +9,6 @@
 | 文件 | 导出 | 工具前缀 | 工具数量 |
 |------|------|---------|---------|
 | `supertask.ts` | `SuperTaskPlugin` | `supertask_` | 8 个（add/next/status/retry/list/get/schedule/upgrade） |
-| `task.ts` | `TaskPlugin` | `task_` | 7 个；旧架构兼容文件，不在当前 npm 导出链路 |
 
 ## 设计
 

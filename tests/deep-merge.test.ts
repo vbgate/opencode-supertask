@@ -52,7 +52,7 @@ describe('deepMerge', () => {
     });
 
     test('新增字段被添加', () => {
-        const base = { a: 1 };
+        const base: { a: number; b?: number } = { a: 1 };
         const result = deepMerge(base, { b: 2 });
         expect(result.a).toBe(1);
         expect(result.b).toBe(2);
