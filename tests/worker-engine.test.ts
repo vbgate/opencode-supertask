@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import {
+    chmodSync,
+    existsSync,
+    mkdtempSync,
+    readFileSync,
+    realpathSync,
+    rmSync,
+    writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { spawn } from 'child_process';
@@ -195,8 +203,10 @@ describe('WorkerEngine', () => {
             '-m', 'test-model', '--variant', 'xhigh', prompt,
         ]);
         expect(childEnv.managedRun).toBe(MANAGED_RUN_ENV_VALUE);
-        expect(childEnv.cwd).toBe(fake.dir);
-        expect(childEnv.pwd).toBe(fake.dir);
+        if (!childEnv.pwd) throw new Error('子进程未记录 PWD');
+        const expectedCwd = realpathSync(fake.dir);
+        expect(realpathSync(childEnv.cwd)).toBe(expectedCwd);
+        expect(realpathSync(childEnv.pwd)).toBe(expectedCwd);
         expect(existsSync(marker)).toBe(false);
         expect(completed.resultLog).toContain('任务执行完成');
         expect(runs).toHaveLength(1);
