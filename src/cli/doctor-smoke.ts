@@ -6,6 +6,7 @@ import { TaskRunService } from '@core/services/task-run.service';
 export interface DoctorSmokeOptions {
     agent: string;
     model?: string;
+    variant?: string;
     cwd: string;
     timeoutMs: number;
     marker?: string;
@@ -19,6 +20,7 @@ export interface DoctorSmokeResult {
     status: string;
     agent: string;
     model: string | null;
+    variant: string | null;
     cwd: string;
     durationMs: number;
     error: string | null;
@@ -57,11 +59,13 @@ export async function runDoctorSmoke(options: DoctorSmokeOptions): Promise<Docto
     const cwd = resolve(options.cwd);
     const marker = options.marker ?? `SUPERTASK_SMOKE_${randomUUID().replaceAll('-', '').toUpperCase()}`;
     const model = options.model && options.model !== 'default' ? options.model : undefined;
+    const variant = options.variant?.trim() || undefined;
     const startedAt = Date.now();
     const task = await TaskService.add({
         name: '[doctor] Gateway real smoke test',
         agent: options.agent,
         model,
+        variant,
         prompt: `不要调用任何工具。只回复这一行：${marker}`,
         cwd,
         category: 'diagnostic',
@@ -86,6 +90,7 @@ export async function runDoctorSmoke(options: DoctorSmokeOptions): Promise<Docto
                 status: 'missing',
                 agent: options.agent,
                 model: model ?? null,
+                variant: variant ?? null,
                 cwd,
                 durationMs: Date.now() - startedAt,
                 error: '冒烟任务在完成前被删除',
@@ -101,6 +106,7 @@ export async function runDoctorSmoke(options: DoctorSmokeOptions): Promise<Docto
                 status: current.status,
                 agent: options.agent,
                 model: model ?? null,
+                variant: variant ?? null,
                 cwd,
                 durationMs: Date.now() - startedAt,
                 error: markerObserved ? null : 'OpenCode 已退出成功，但模型文本不是预期的精确标记',
@@ -114,6 +120,7 @@ export async function runDoctorSmoke(options: DoctorSmokeOptions): Promise<Docto
                 status: current.status,
                 agent: options.agent,
                 model: model ?? null,
+                variant: variant ?? null,
                 cwd,
                 durationMs: Date.now() - startedAt,
                 error: tail(run?.log ?? current.resultLog) ?? `任务进入 ${current.status}`,
@@ -132,6 +139,7 @@ export async function runDoctorSmoke(options: DoctorSmokeOptions): Promise<Docto
         status: current?.status ?? 'missing',
         agent: options.agent,
         model: model ?? null,
+        variant: variant ?? null,
         cwd,
         durationMs: Date.now() - startedAt,
         error: `等待 Gateway 执行超过 ${options.timeoutMs}ms，冒烟任务已请求取消`,

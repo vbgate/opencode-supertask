@@ -17,7 +17,7 @@ Gateway ─ Worker + Scheduler + Watchdog + Dashboard
 ```
 
 - 插件在 `plugin/supertask.ts` 注册 8 个 `supertask_*` 工具：`add/next/status/retry/list/get/schedule/upgrade`；运行态与执行终态只允许 Gateway 写入，不得恢复外部 `start/done/fail`。
-- Worker 先启动等待握手的 launcher，持久化 launcher PID 后才通过参数数组执行 `opencode run --agent <task.agent> --format json <task.prompt>`；新 run 使用 `gated-v3-token-guardian`，每 run UUID 必须同时写入 `task_runs.locked_by` 和 launcher argv。launcher 只能在整个进程组排空后通过不传递给 OpenCode 的 IPC 发回绑定 UUID 的证明；无证明退出必须隔离，不得结算或释放批次。退出码决定成功或失败，Gateway 统一写任务状态和执行记录。当前只有 Unix 独立进程组能提供可恢复的整树退出证明；Windows 在引入 Job Object 前必须拒绝启动 Worker，不得退回不完整的父子 PID 扫描。
+- Worker 先启动等待握手的 launcher，持久化 launcher PID 后才通过参数数组执行 `opencode run --agent <task.agent> --format json [-m <model>] [--variant <variant>] <task.prompt>`；新 run 使用 `gated-v3-token-guardian`，每 run UUID 必须同时写入 `task_runs.locked_by` 和 launcher argv。launcher 只能在整个进程组排空后通过不传递给 OpenCode 的 IPC 发回绑定 UUID 的证明；无证明退出必须隔离，不得结算或释放批次。退出码决定成功或失败，Gateway 统一写任务状态和执行记录。当前只有 Unix 独立进程组能提供可恢复的整树退出证明；Windows 在引入 Job Object 前必须拒绝启动 Worker，不得退回不完整的父子 PID 扫描。
 - Worker 校验 drain proof 后必须通过同一 IPC 回送绑定 UUID 的确认，launcher 收件后才退出；不得依赖旧 Bun 不可靠的 `process.send` callback。最低支持 Bun 1.1.45，CI 必须用该版本真实执行构建后的 launcher IPC smoke test。
 - Worker 启动的受管 OpenCode 进程设置 `SUPERTASK_MANAGED_RUN=1`；该上下文必须拒绝 `supertask_upgrade`，避免升级流程删除并等待承载自己的 Gateway。升级只能从外部 CLI 或非队列 OpenCode 会话发起。
 - `agents/supertask-runner.md` 与 `plugin/task.ts` 是旧架构遗留，不是当前 npm 运行链路；不得重新接入嵌套 runner。
@@ -76,7 +76,7 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - `cwd` 是任务的项目分组、隔离键和 OpenCode 工作目录；插件必须使用 OpenCode 工具上下文的 `directory`，不得信任模型传入的 `cwd`，查询和状态变更必须保持同一作用域。任务/模板入库前必须验证非空 `cwd` 是已存在的绝对目录；Worker 取到非法遗留目录时必须记录失败并直接进入 `dead_letter`，不得启动 OpenCode 或自动重试刷错。Dashboard 分组保持 `cwd → batchId → tasks`，不得另建会与任务漂移的项目表。
 - 队列顺序保持 `urgency DESC → importance DESC → createdAt ASC → id ASC`；全局并发和同一 `batchId` 串行必须依据数据库运行态，在 Gateway 重启后仍成立；不同批次可并行，依赖任务仅在同 cwd 的 `dependsOn` 完成后运行。
 - `maxRetries` 表示首次执行之外允许的重试次数；失败任务按指数退避，耗尽后进入 `dead_letter`。手动重试必须在同一写事务内确认依赖仍存在、同 `cwd` 且可恢复或已完成，才可重置重试预算，避免和历史清理并发制造悬空 `pending`。
-- `retryBackoffMs` 和 `timeoutMs` 可按任务覆盖；调度模板克隆时必须保留 `cwd/batchId/maxRetries/retryBackoffMs/timeoutMs`。
+- `variant`、`retryBackoffMs` 和 `timeoutMs` 可按任务覆盖；调度模板克隆时必须保留 `cwd/model/variant/batchId/maxRetries/retryBackoffMs/timeoutMs`，新 run 必须快照实际 model/variant。
 - 运行中任务进入 `cancelled` 后，Worker 必须在轮询周期内终止对应进程树并关闭 run；只有确认整棵进程树退出后才能关闭、重试、释放批次或在 Gateway 停机时重置为 `pending`，否则必须保持隔离。
 - 删除任务必须拒绝 `running` 状态、仍有 `running` 执行记录，或仍被 `pending/running/failed/dead_letter` 任务依赖的前置任务；手动删除与过期清理都必须防止子进程失联和依赖悬空。
 - Watchdog 处理当前 guardian PID 前必须同时校验 launcher 路径、配置的 OpenCode 参数和 `locked_by` 中的每 run UUID；旧 v2/legacy 记录只要 PID/PGID 仍存活或无法确认就必须隔离且不得发信号，只有二者均明确消失才可恢复。组长已退出但进程组仍存活时不得按 `not-running` 恢复。旧版 `started_at`/`heartbeat_at` 同时为 NULL 的 running run 必须视为 stale 并按协议隔离，不得永久占用并发且逃逸诊断。Unix 使用独立进程组；Windows 在 Job Object 隔离完成前禁止启动 Worker。
@@ -84,8 +84,8 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - Watchdog 的 `checkIntervalMs` 是心跳检查间隔，`cleanupIntervalMs` 是数据清理间隔，两者不可混用；配置经 `validateConfig` 校验后才允许运行或保存。
 - 调度模板支持 `cron | delayed | recurring`，Scheduler 自动克隆普通任务时受 `maxInstances` 限制；Dashboard 手动“立即运行一次”必须始终入队，但创建的任务仍计入后续自动调度的活跃实例数，并受 Worker 全局并发限制；`delayed` 自动生成一次后必须自动禁用。
 - Dashboard 可创建和编辑定时任务，写入必须复用 `TaskTemplateService` 校验；编辑必须在即时事务内重算 `nextRunAt`，保留启用状态和历史执行时间，只影响以后生成的任务。Scheduler 克隆前必须核对扫描到的触发时间，防止并发编辑后按旧时间提前执行。
-- Dashboard 可创建普通任务，必须暴露项目目录、模型、Agent、提示词、重要/紧急程度、批次、重试和超时，并在项目分组中显示运行、排队和异常数量；创建只负责持久入队，不得因 Worker 并发已满而拒绝。
-- Dashboard 项目目录必须可从本机文件夹浏览器选择；选定后必须以该 `cwd` 执行配置的 OpenCode `agent list` 和 `models`。新任务只显示 primary/all Agent，不得把 subagent 或旧 `supertask-runner` 作为可直接运行选项；编辑时允许保留不在当前列表中的历史值。时长控件必须先提供常用预设，数字+单位只作为自定义退路。
+- Dashboard 可创建普通任务，必须暴露项目目录、模型、variant、Agent、提示词、重要/紧急程度、批次、重试和超时，并在项目分组中显示运行、排队和异常数量；创建只负责持久入队，不得因 Worker 并发已满而拒绝。
+- Dashboard 项目目录必须可从本机文件夹浏览器选择；选定后必须以该 `cwd` 执行配置的 OpenCode `agent list` 和 `models --verbose`，并按模型元数据展示 variants。新任务只显示 primary/all Agent，不得把 subagent 或旧 `supertask-runner` 作为可直接运行选项；编辑时允许保留不在当前列表中的历史模型/variant。时长控件必须先提供常用预设，数字+单位只作为自定义退路。
 - 普通任务编辑必须经 `TaskService` 同时服务 Dashboard 与 CLI，只允许 `pending/failed/dead_letter`，且不得修改 `cwd/dependsOn`；运行中和完成/取消终态拒绝修改。降低失败任务重试预算导致现有次数超限时必须立即收敛到 `dead_letter`。
 - Dashboard 继续会话命令必须按 run ID 从服务端读取并校验 Session ID 后生成，不得把完整 Session ID 直接写入 HTML 或未经校验拼接成终端命令。
 - Dashboard 的任务、定时任务和执行详情必须默认使用人类可读标签和格式；原始 JSON/JSONL 只作为折叠的二级排障入口。执行日志必须在所点击的 run 附近展开，不得统一堆到页面末尾。

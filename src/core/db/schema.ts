@@ -10,6 +10,7 @@ export const tasks = sqliteTable('tasks', {
     name: text('name').notNull(),
     agent: text('agent').notNull(),
     model: text('model').default('default'),
+    variant: text('variant'),
     prompt: text('prompt').notNull(),
     cwd: text('cwd'),
 
@@ -68,6 +69,7 @@ export const taskRuns = sqliteTable('task_runs', {
 
     sessionId: text('session_id'),
     model: text('model'),
+    variant: text('variant'),
     status: text('status').default('running'),
 
     startedAt: integer('started_at', { mode: 'timestamp' })
@@ -97,6 +99,7 @@ export const taskTemplates = sqliteTable('task_templates', {
     name: text('name').notNull(),
     agent: text('agent').notNull(),
     model: text('model').default('default'),
+    variant: text('variant'),
     prompt: text('prompt').notNull(),
     cwd: text('cwd'),
     category: text('category').default('general'),

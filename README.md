@@ -35,7 +35,7 @@ SuperTask is not another wrapper around cron. Scheduled work becomes an ordinary
 | Three schedule types | Cron, run-once delay, and fixed recurring interval |
 | Automatic recovery | Retry budgets, exponential backoff, dead-letter state, and manual retry |
 | Controlled execution | Global concurrency, priority ordering, dependencies, and global batch serialization |
-| Project awareness | Each task keeps its OpenCode project directory, Agent, and explicit or default model |
+| Project awareness | Each task keeps its OpenCode project directory, Agent, model, and optional model variant |
 | Safe process handling | Cancel and shutdown wait for the managed OpenCode process tree to stop |
 | Observable runs | Session ID, exact reproducible command, model output, tools, errors, and raw JSONL |
 | Local Dashboard | Create, schedule, inspect, retry, cancel, and diagnose from `127.0.0.1` |
@@ -105,7 +105,7 @@ The single Gateway owns runtime state transitions. Clients create and manage wor
 ### Natural language in OpenCode
 
 ```text
-Run a security review with agent build and model provider/model.
+Run a security review with agent build, model provider/model, and variant high.
 
 Every weekday at 9:00, create a report task for this project.
 
@@ -126,12 +126,14 @@ supertask_list      supertask_get       supertask_next     supertask_upgrade
 ```bash
 # Queue work
 supertask add --name "Security review" --agent build \
+  --model openai/gpt-5.6-sol --variant xhigh \
   --prompt "Review authentication and authorization" \
   --importance 5 --urgency 4 --max-retries 2 \
   --retry-backoff 30s --timeout 30min
 
 # Schedule work
 supertask template add --name "Weekday report" --agent build \
+  --model openai/gpt-5.6-sol --variant high \
   --prompt "Summarize important project changes" \
   --type cron --cron "0 9 * * 1-5"
 
@@ -155,7 +157,7 @@ The responsive Dashboard supports English and Chinese, light and dark themes, an
 | Execution Logs | Read structured output, tools, errors, sessions, and the exact historical command |
 | System Status | Inspect active configuration, health, concurrency, and backup-first database maintenance |
 
-The project picker reads the selected directory's real `opencode agent list` and `opencode models` output, so forms offer only locally available models and directly runnable Agents.
+The project picker reads the selected directory's real `opencode agent list` and `opencode models --verbose` output, so forms offer only locally available models, each model's declared variants, and directly runnable Agents. Leaving variant at its default omits `--variant` and follows the Agent/model configuration.
 
 ## Reliability Without Hand-Waving
 
@@ -174,7 +176,7 @@ The detailed guarantees and recovery rules live in [Architecture](docs/architect
 supertask upgrade          # update only when versions or components have drifted
 supertask upgrade --force  # reinstall the current version, refresh environment, restart
 supertask doctor
-supertask doctor --smoke --smoke-agent build --smoke-model provider/model
+supertask doctor --smoke --smoke-agent build --smoke-model provider/model --smoke-variant high
 ```
 
 When every component already matches npm `latest`, normal upgrade is a no-op and does not restart the Gateway. Smoke diagnostics make one real model call; ordinary `doctor` does not.
@@ -215,7 +217,7 @@ Then restart OpenCode and run `bun run gateway` from the repository.
 - Plugin tools use the OpenCode context directory and reject a model-supplied working directory.
 - Task-management commands return JSON, while database and doctor commands support explicit `--json`; interactive summaries are concise and localized.
 - `AGENTS.md` records architecture invariants, testing rules, release rules, and unsafe shortcuts for coding agents.
-- Commands record exact executable, arguments, model, Agent, and working directory for reproducible diagnosis.
+- Commands record the exact executable, arguments, model, variant, Agent, and working directory for reproducible diagnosis.
 
 ## Documentation
 

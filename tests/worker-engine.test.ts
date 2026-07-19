@@ -172,6 +172,7 @@ describe('WorkerEngine', () => {
             name: '安全执行测试',
             agent: 'test-agent',
             model: 'test-model',
+            variant: 'xhigh',
             prompt,
             maxRetries: 0,
             cwd: fake.dir,
@@ -191,7 +192,7 @@ describe('WorkerEngine', () => {
 
         expect(args).toEqual([
             'run', '--agent', 'test-agent', '--format', 'json',
-            '-m', 'test-model', prompt,
+            '-m', 'test-model', '--variant', 'xhigh', prompt,
         ]);
         expect(childEnv.managedRun).toBe(MANAGED_RUN_ENV_VALUE);
         expect(childEnv.cwd).toBe(fake.dir);
@@ -200,6 +201,7 @@ describe('WorkerEngine', () => {
         expect(completed.resultLog).toContain('任务执行完成');
         expect(runs).toHaveLength(1);
         expect(runs[0].status).toBe('done');
+        expect(runs[0].variant).toBe('xhigh');
         expect(runs[0].workerPid).toBe(process.pid);
         expect(runs[0].launchProtocol).toBe(TOKEN_GUARDIAN_LAUNCH_PROTOCOL);
         expect(runs[0].lockedBy).toMatch(/^gateway-\d+:launch:/);
@@ -207,6 +209,7 @@ describe('WorkerEngine', () => {
         expect(runs[0].log).toContain('任务执行完成');
         expect(runs[0].log).toContain('"type":"supertask_command"');
         expect(runs[0].log).toContain('"args":["run","--agent","test-agent"');
+        expect(runs[0].log).toContain('"--variant","xhigh"');
         expect(runs[0].log).toContain(JSON.stringify(prompt).slice(1, -1));
     });
 
@@ -228,6 +231,7 @@ describe('WorkerEngine', () => {
         expect(failed.resultLog).toContain('退出码 7');
         expect(failed.resultLog).toContain('agent=test-agent');
         expect(failed.resultLog).toContain('model=Agent/默认配置');
+        expect(failed.resultLog).toContain('variant=Agent/模型默认配置');
         expect(failed.resultLog).not.toContain('guardian 未提供进程树排空证明');
         expect(runs[0].status).toBe('failed');
         expect(runs[0].log).toContain('退出码 7');

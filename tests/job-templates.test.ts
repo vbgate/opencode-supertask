@@ -43,6 +43,8 @@ describe('job-templates', () => {
             const tmpl = await TaskTemplateService.create({
                 name: '项目内定时任务',
                 agent: 'reviewer',
+                model: 'openai/gpt-5',
+                variant: 'xhigh',
                 prompt: '检查项目',
                 cwd: process.cwd(),
                 batchId: '每日检查',
@@ -56,6 +58,8 @@ describe('job-templates', () => {
             const task = await cloneTaskFromTemplate(tmpl.id);
             expect(task).toMatchObject({
                 cwd: process.cwd(),
+                model: 'openai/gpt-5',
+                variant: 'xhigh',
                 batchId: '每日检查',
                 maxRetries: 4,
                 retryBackoffMs: 12_345,
@@ -478,6 +482,7 @@ describe('job-templates', () => {
                 name: '更新后的模板',
                 agent: 'build',
                 model: 'openai/gpt-5',
+                variant: 'high',
                 prompt: '使用新提示词',
                 cwd: process.cwd(),
                 category: 'maintenance',
@@ -495,6 +500,7 @@ describe('job-templates', () => {
             });
 
             expect(updated?.model).toBe('openai/gpt-5');
+            expect(updated?.variant).toBe('high');
             expect(updated?.prompt).toBe('使用新提示词');
             expect(updated?.enabled).toBe(false);
             expect(updated?.lastRunAt).toBe(lastRunAt);
@@ -505,6 +511,7 @@ describe('job-templates', () => {
         test('调度扫描后发生编辑时，不按扫描到的旧时间提前创建任务', async () => {
             const template = await TaskTemplateService.create({
                 ...base,
+                variant: 'xhigh',
                 scheduleType: 'recurring',
                 intervalMs: 60_000,
             });
@@ -530,6 +537,7 @@ describe('job-templates', () => {
             });
 
             expect(await cloneTaskFromTemplate(template.id, scannedNextRunAt)).toBeNull();
+            expect((await TaskTemplateService.getById(template.id))?.variant).toBe('xhigh');
             expect(await TaskService.list()).toHaveLength(0);
         });
     });

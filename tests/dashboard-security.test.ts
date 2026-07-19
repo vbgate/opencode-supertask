@@ -73,6 +73,7 @@ describe('Dashboard 安全边界', () => {
                 cwd: process.cwd(),
                 agent: 'build',
                 model: 'openai/gpt-5',
+                variant: 'high',
                 prompt: '执行真实项目检查',
                 category: 'review',
                 batchId: 'project-review',
@@ -88,6 +89,7 @@ describe('Dashboard 安全边界', () => {
         expect(await TaskService.getById(createdBody.task.id)).toMatchObject({
             cwd: process.cwd(),
             model: 'openai/gpt-5',
+            variant: 'high',
             importance: 5,
             urgency: 4,
             retryBackoffMs: 10_000,
@@ -104,6 +106,7 @@ describe('Dashboard 安全边界', () => {
                     cwd: process.cwd(),
                     agent: 'review',
                     model: 'anthropic/claude-sonnet-4',
+                    variant: 'thinking',
                     prompt: '使用修改后的模型和优先级',
                     category: 'review',
                     batchId: '',
@@ -117,10 +120,34 @@ describe('Dashboard 安全边界', () => {
         );
         expect(updatedResponse.status).toBe(200);
         expect(await TaskService.getById(createdBody.task.id)).toMatchObject({
-            model: 'anthropic/claude-sonnet-4', prompt: '使用修改后的模型和优先级',
+            model: 'anthropic/claude-sonnet-4', variant: 'thinking', prompt: '使用修改后的模型和优先级',
             importance: 2, urgency: 5, batchId: null, maxRetries: 1,
             retryBackoffMs: 20_000, timeoutMs: null, cwd: process.cwd(),
         });
+
+        const omittedVariantResponse = await dashboardApp.request(
+            `http://localhost/api/tasks/${createdBody.task.id}`,
+            {
+                method: 'PUT',
+                headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: '网页普通任务（兼容旧客户端）',
+                    cwd: process.cwd(),
+                    agent: 'review',
+                    model: 'anthropic/claude-sonnet-4',
+                    prompt: '未提交 variant 字段',
+                    category: 'review',
+                    batchId: '',
+                    importance: 2,
+                    urgency: 5,
+                    maxRetries: 1,
+                    retryBackoff: '20s',
+                    timeout: '',
+                }),
+            },
+        );
+        expect(omittedVariantResponse.status).toBe(200);
+        expect((await TaskService.getById(createdBody.task.id))?.variant).toBe('thinking');
 
         const otherProject = await TaskService.add({
             name: '另一个项目运行中', agent: 'build', prompt: '运行', cwd: '/tmp',
@@ -135,7 +162,9 @@ describe('Dashboard 安全边界', () => {
         expect(html).toContain('id="task-agent" required><option');
         expect(html).toContain('id="task-model-provider"');
         expect(html).toContain('id="task-model" required');
+        expect(html).toContain('id="task-variant" onchange="handleVariantChange(\'task\')" disabled');
         expect(html).toContain('跟随 Agent / OpenCode 默认模型');
+        expect(html).toContain('跟随 Agent / 模型默认设置');
         expect(html).toContain("fetch('/api/opencode/catalog?cwd='");
         expect(html).toContain('id="task-timeout-preset"');
         expect(html).toContain('使用 Gateway 默认超时');
@@ -175,6 +204,7 @@ describe('Dashboard 安全边界', () => {
                 headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     name: '不能修改', cwd: '/tmp', agent: 'build', model: 'default',
+                    variant: '',
                     prompt: '运行中', importance: 3, urgency: 3, maxRetries: 3,
                     retryBackoff: '30s', timeout: '',
                 }),
@@ -251,6 +281,7 @@ describe('Dashboard 安全边界', () => {
         expect(html).toContain('新建定时任务');
         expect(html).toContain('id="template-dialog"');
         expect(html).toContain('id="template-model"');
+        expect(html).toContain('id="template-variant" onchange="handleVariantChange(\'template\')" disabled');
         expect(html).toContain('id="template-interval-preset"');
         expect(html).toContain('每 1 小时');
         expect(html).toContain('id="template-cwd"');
@@ -269,6 +300,7 @@ describe('Dashboard 安全边界', () => {
             cwd: process.cwd(),
             agent: 'build',
             model: 'openai/gpt-5',
+            variant: 'high',
             prompt: '检查项目并生成报告',
             scheduleType: 'recurring',
             cronExpr: '',
@@ -293,6 +325,7 @@ describe('Dashboard 安全边界', () => {
         const created = await TaskTemplateService.getById(createdBody.template.id);
         expect(created).toMatchObject({
             model: 'openai/gpt-5',
+            variant: 'high',
             prompt: '检查项目并生成报告',
             cwd: process.cwd(),
             intervalMs: 300_000,
@@ -308,6 +341,7 @@ describe('Dashboard 安全边界', () => {
                 body: JSON.stringify({
                     ...input,
                     model: 'anthropic/claude-sonnet-4',
+                    variant: 'thinking',
                     prompt: '使用更新后的提示词',
                     scheduleType: 'cron',
                     cronExpr: '0 8 * * *',
@@ -319,6 +353,7 @@ describe('Dashboard 安全边界', () => {
         const updated = await TaskTemplateService.getById(createdBody.template.id);
         expect(updated).toMatchObject({
             model: 'anthropic/claude-sonnet-4',
+            variant: 'thinking',
             prompt: '使用更新后的提示词',
             scheduleType: 'cron',
             cronExpr: '0 8 * * *',
@@ -331,6 +366,13 @@ describe('Dashboard 安全边界', () => {
             body: JSON.stringify({ ...input, prompt: '' }),
         });
         expect(invalid.status).toBe(400);
+
+        const invalidVariant = await dashboardApp.request('http://localhost/api/templates', {
+            method: 'POST',
+            headers: { Origin: 'http://localhost', 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...input, variant: 123 }),
+        });
+        expect(invalidVariant.status).toBe(400);
 
         for (const interval of ['1', '+1', '0x1', '1e3']) {
             const unitlessInterval = await dashboardApp.request('http://localhost/api/templates', {
@@ -464,7 +506,7 @@ describe('Dashboard 安全边界', () => {
             type: 'supertask_command',
             executable: '/opt/Open Code/opencode',
             cwd: '/tmp/project with space',
-            args: ['run', '--agent', 'build', '--format', 'json', '-m', 'openai/gpt-5', 'say "hi"'],
+            args: ['run', '--agent', 'build', '--format', 'json', '-m', 'openai/gpt-5', '--variant', 'xhigh', 'say "hi"'],
         });
         const output = JSON.stringify({
             type: 'text',
@@ -474,7 +516,7 @@ describe('Dashboard 安全边界', () => {
 
         expect(presented.command).toEqual({
             cwd: '/tmp/project with space',
-            command: "cd '/tmp/project with space' && '/opt/Open Code/opencode' run --agent build --format json -m openai/gpt-5 'say \"hi\"'",
+            command: "cd '/tmp/project with space' && '/opt/Open Code/opencode' run --agent build --format json -m openai/gpt-5 --variant xhigh 'say \"hi\"'",
         });
         expect(presented.text).toBe('任务完成');
         expect(presented.errors).toEqual(['opencode 退出码 1']);
@@ -643,7 +685,11 @@ describe('Dashboard 安全边界', () => {
             prompt: 'p',
         });
         await TaskService.start(task.id);
-        const run = await TaskRunService.create({ taskId: task.id, status: 'running' });
+        const run = await TaskRunService.create({
+            taskId: task.id,
+            variant: '<svg onload=alert(3)>',
+            status: 'running',
+        });
         await TaskRunService.fail(run.id, '<script>alert("日志")</script> &');
 
         const tmpl = await TaskTemplateService.create({
@@ -654,16 +700,20 @@ describe('Dashboard 安全边界', () => {
             cronExpr: '0 9 * * *',
         });
         await testDb.db.update(testDb.schema.taskTemplates)
-            .set({ cronExpr: '<svg onload=alert(2)>' })
+            .set({ cronExpr: '<svg onload=alert(2)>', variant: '<img src=x onerror=alert(4)>' })
             .where(eq(testDb.schema.taskTemplates.id, tmpl.id));
 
         const runsHtml = await (await dashboardApp.request('http://localhost/runs')).text();
         const templatesHtml = await (await dashboardApp.request('http://localhost/templates')).text();
         expect(runsHtml).not.toContain('<img src=x onerror=alert(1)>');
         expect(runsHtml).not.toContain('<script>alert("日志")</script>');
+        expect(runsHtml).not.toContain('<svg onload=alert(3)>');
+        expect(runsHtml).toContain('&lt;svg onload=alert(3)&gt;');
         expect(runsHtml).toContain('&lt;script&gt;alert(&quot;日志&quot;)&lt;/script&gt; &amp;');
         expect(templatesHtml).not.toContain('<svg onload=alert(2)>');
         expect(templatesHtml).toContain('&lt;svg onload=alert(2)&gt;');
+        expect(templatesHtml).not.toContain('<img src=x onerror=alert(4)>');
+        expect(templatesHtml).toContain('&lt;img src=x onerror=alert(4)&gt;');
     });
 
     test('非法 ID 和非法配置返回 400', async () => {

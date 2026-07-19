@@ -34,6 +34,7 @@ describe('TaskService', () => {
                 agent: 'reviewer',
                 prompt: '审查 PR #42',
                 model: 'gpt-4',
+                variant: '  high  ',
                 category: 'review',
                 importance: 5,
                 urgency: 5,
@@ -47,6 +48,7 @@ describe('TaskService', () => {
             expect(task.urgency).toBe(5);
             expect(task.batchId).toBe('batch-001');
             expect(task.model).toBe('gpt-4');
+            expect(task.variant).toBe('high');
             expect(task.cwd).toBe(process.cwd());
             expect(task.maxRetries).toBe(5);
         });
@@ -56,6 +58,8 @@ describe('TaskService', () => {
             await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', importance: 6 })).rejects.toThrow('importance');
             await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', maxRetries: -1 })).rejects.toThrow('maxRetries');
             await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', timeoutMs: 999 })).rejects.toThrow('timeoutMs');
+            await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', variant: 'x'.repeat(129) })).rejects.toThrow('variant');
+            await expect(TaskService.add({ name: '任务', agent: 'a', prompt: 'p', variant: 'high\u0000bad' })).rejects.toThrow('控制字符');
         });
 
         test('批次 ID 去除首尾空白，空白批次统一保存为无批次', async () => {
@@ -159,6 +163,7 @@ describe('TaskService', () => {
             });
             const updated = await TaskService.update(task.id, {
                 model: 'openai/gpt-5',
+                variant: 'xhigh',
                 prompt: '新提示词',
                 importance: 5,
                 urgency: 4,
@@ -167,9 +172,12 @@ describe('TaskService', () => {
             }, { cwd: process.cwd() });
 
             expect(updated).toMatchObject({
-                model: 'openai/gpt-5', prompt: '新提示词', importance: 5, urgency: 4,
+                model: 'openai/gpt-5', variant: 'xhigh', prompt: '新提示词', importance: 5, urgency: 4,
                 batchId: 'review', timeoutMs: 60_000, cwd: process.cwd(), status: 'pending',
             });
+
+            expect((await TaskService.update(task.id, { prompt: '保留 variant' }))?.variant).toBe('xhigh');
+            expect((await TaskService.update(task.id, { variant: '' }))?.variant).toBeNull();
         });
 
         test('拒绝编辑运行中、已完成、已取消或其他项目的任务', async () => {

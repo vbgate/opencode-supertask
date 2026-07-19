@@ -10,6 +10,7 @@ import {
     normalizeTaskBatchId,
     TASK_BATCH_TRIM_CHARACTERS,
 } from '@core/task-batch';
+import { normalizeModelVariant } from '@core/model-variant';
 
 const { tasks, taskRuns } = schema;
 let cleanupInvocation = 0;
@@ -28,6 +29,7 @@ export interface EditableTaskUpdate {
     name?: string;
     agent?: string;
     model?: string;
+    variant?: string | null;
     prompt?: string;
     category?: string;
     importance?: number;
@@ -106,6 +108,7 @@ export class TaskService {
         const normalizedData = {
             ...data,
             batchId: normalizeTaskBatchId(data.batchId),
+            variant: normalizeModelVariant(data.variant),
         };
         this.validateNewTask(normalizedData);
         return db.transaction((tx) => {
@@ -148,9 +151,15 @@ export class TaskService {
         scope: { cwd?: string } = {},
     ): Promise<Task | null> {
         if (Object.keys(data).length === 0) throw new Error('至少提供一个要修改的字段');
-        const normalizedData: EditableTaskUpdate = data.batchId === undefined
-            ? data
-            : { ...data, batchId: normalizeTaskBatchId(data.batchId) ?? null };
+        const normalizedData: EditableTaskUpdate = {
+            ...data,
+            ...(data.batchId === undefined
+                ? {}
+                : { batchId: normalizeTaskBatchId(data.batchId) ?? null }),
+            ...(data.variant === undefined
+                ? {}
+                : { variant: normalizeModelVariant(data.variant) ?? null }),
+        };
         return db.transaction((tx) => {
             const task = tx.select().from(tasks).where(and(
                 eq(tasks.id, id),
@@ -163,6 +172,7 @@ export class TaskService {
                 name: normalizedData.name ?? task.name,
                 agent: normalizedData.agent ?? task.agent,
                 model: normalizedData.model ?? task.model,
+                variant: normalizedData.variant === undefined ? task.variant : normalizedData.variant,
                 prompt: normalizedData.prompt ?? task.prompt,
                 cwd: task.cwd,
                 category: normalizedData.category ?? task.category,

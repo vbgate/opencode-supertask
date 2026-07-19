@@ -157,6 +157,7 @@ CLI 帮助、`doctor` 和数据库维护的交互式摘要支持 `auto | zh-CN |
 
 ```bash
 supertask add -n "生成报告" -a "reporter" -p "汇总本周进展" \
+  --model openai/gpt-5.6-sol --variant xhigh \
   --max-retries 5 --retry-backoff 1min --timeout 45min
 
 supertask retry --id 42   # 仅 failed/dead_letter；依赖仍有效时清零重试计数
@@ -166,17 +167,18 @@ supertask retry --id 42   # 仅 failed/dead_letter；依赖仍有效时清零重
 
 `cwd` 同时是项目分组、查询隔离键和 OpenCode 子进程工作目录。插件、CLI、Dashboard 和定时任务模板在入库前都会拒绝空字符串、相对路径、不存在路径和文件路径；旧数据库中遗留的非法 `cwd` 若被 Worker 取到，会直接记录一次失败并进入 `dead_letter`，不会启动 OpenCode 或反复刷错。Dashboard 的任务首页按 `cwd` 汇总运行、排队和异常数量；新建普通任务时选择同一路径即可先看到该项目当前是否有任务执行。`batchId` 是独立于项目分组的全局串行键：所有相同非空值的任务不会同时执行，空白值统一保存为无批次；需要确定完成顺序时使用 `dependsOn`。
 
-`pending`、等待自动重试的 `failed` 和 `dead_letter` 任务可以在 Dashboard 编辑名称、Agent、模型、提示词、分类、优先级、批次、重试与超时；项目目录和依赖关系保持不变。CLI 使用同一 Service：
+`pending`、等待自动重试的 `failed` 和 `dead_letter` 任务可以在 Dashboard 编辑名称、Agent、模型、variant、提示词、分类、优先级、批次、重试与超时；项目目录和依赖关系保持不变。CLI 使用同一 Service：
 
 ```bash
-supertask edit --id 42 --model openai/gpt-5 --importance 5 --prompt "更新后的要求"
+supertask edit --id 42 --model openai/gpt-5.6-sol --variant xhigh --importance 5 --prompt "更新后的要求"
+supertask edit --id 42 --clear-variant
 ```
 
 运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`；修改该状态后仍需人工重试才会重新入队。
 
-Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时。重试、超时与循环间隔先选常用预设，只有选“自定义”时才出现数字和秒/分钟/小时/天单位；一次性任务使用日期时间选择器。CLI 仍支持 `30s`、`5min`、`1h` 或 `2d` 以便脚本调用。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
+Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、variant、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时。重试、超时与循环间隔先选常用预设，只有选“自定义”时才出现数字和秒/分钟/小时/天单位；一次性任务使用日期时间选择器。CLI 仍支持 `30s`、`5min`、`1h` 或 `2d` 以便脚本调用。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
 
-新建任务或定时任务时，先用 Dashboard 的文件夹选择器确定项目。Gateway 会在该目录执行本机 `opencode agent list` 和 `opencode models`：Agent 下拉框只保留 primary/all 模式，避免把仅供委派的 subagent 直接传给 `opencode run`；模型先选 Provider 再选具体值。选“跟随 Agent / OpenCode 默认模型”时 Worker 不传 `-m`。读取失败会在表单中显示原因，不使用伪造的静态列表。
+新建任务或定时任务时，先用 Dashboard 的文件夹选择器确定项目。Gateway 会在该目录执行本机 `opencode agent list` 和 `opencode models --verbose`：Agent 下拉框只保留 primary/all 模式，避免把仅供委派的 subagent 直接传给 `opencode run`；模型先选 Provider 再选具体值，随后只显示该模型元数据声明的 variants。选“跟随 Agent / OpenCode 默认模型”时 Worker 不传 `-m`；variant 选默认值时不传 `--variant`。CLI 和插件仍允许 Provider 自定义 variant 字符串，最终由实际执行的 OpenCode 判定。读取失败会在表单中显示原因，不使用伪造的静态列表。
 
 任务页和执行记录页的“继续会话”会从服务端按 run ID 读取已捕获的 Session ID，校验格式后复制 `opencode --session <sessionId>`；完整 Session ID 不写入页面 HTML。界面中的“等待重试”对应内部 `failed`，仍会按退避策略自动执行；“已停止”对应内部 `dead_letter`，可能是重试用尽或依赖无法继续，系统不会再自动运行，需要查看失败原因后手动重试。
 
@@ -191,7 +193,7 @@ pm2 status
 supertask doctor
 supertask doctor --json
 supertask doctor --smoke --smoke-agent build
-supertask doctor --smoke --smoke-agent javazys --smoke-model provider/model --smoke-timeout 5min
+supertask doctor --smoke --smoke-agent javazys --smoke-model provider/model --smoke-variant high --smoke-timeout 5min
 supertask status
 curl -fsS http://127.0.0.1:4680/ >/dev/null
 curl -fsS http://127.0.0.1:4680/health
@@ -221,11 +223,11 @@ curl -fsS http://127.0.0.1:4680/health
 
 ### 自定义 Agent 手动正常、Gateway 失败
 
-先对比任务执行记录中的 `agent / model / cwd` 失败上下文，确认手动测试使用了完全相同的 Agent、显式模型（若有）、项目目录和提示词：
+先对比任务执行记录中的 `agent / model / variant / cwd` 失败上下文，确认手动测试使用了完全相同的 Agent、显式模型和 variant（若有）、项目目录和提示词：
 
 ```bash
 cd <任务 cwd>
-opencode run --agent <agent> --format json [-m <model>] '<prompt>'
+opencode run --agent <agent> --format json [-m <model>] [--variant <variant>] '<prompt>'
 ```
 
 若完全相同的命令在终端成功、Gateway 仍以 `Unexpected server error` 或 Provider 认证错误退出，通常说明 PM2 保存的 OpenCode/XDG/Provider 环境已落后。在这个手动命令可工作的终端执行 `supertask install`；有新版本时执行 `supertask upgrade`，已经最新时执行 `supertask upgrade --force`。这些命令会刷新执行环境并安全替换 Gateway，无需先卸载。若仍失败，保留任务/run 的完整输出和 `pm2 logs supertask-gateway`，不要只用 `general` 验证：OpenCode 可能把非主 Agent 名称降级到默认 Agent。

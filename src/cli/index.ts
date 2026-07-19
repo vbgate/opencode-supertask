@@ -92,6 +92,7 @@ program
     .requiredOption('-a, --agent <agent>', t('主 Agent 名称', 'primary agent name'))
     .requiredOption('-p, --prompt <prompt>', t('提示词', 'prompt'))
     .option('-m, --model <model>', t('模型', 'model'))
+    .option('--variant <variant>', t('模型 variant，如 high / xhigh', 'model variant, e.g. high / xhigh'))
     .option('-c, --category <category>', t('分类', 'category'), 'general')
     .option('-i, --importance <number>', t('重要程度 (1-5)', 'importance (1-5)'), '3')
     .option('-u, --urgency <number>', t('紧急程度 (1-5)', 'urgency (1-5)'), '3')
@@ -113,6 +114,7 @@ program
             agent: options.agent,
             prompt: options.prompt,
             model: options.model,
+            variant: options.variant,
             category: options.category,
             importance: parseBoundedInteger(options.importance, 'importance', 1, 5),
             urgency: parseBoundedInteger(options.urgency, 'urgency', 1, 5),
@@ -133,6 +135,8 @@ program
     .option('-n, --name <name>', t('任务名称', 'task name'))
     .option('-a, --agent <agent>', t('Agent 名称', 'agent name'))
     .option('-m, --model <model>', t('模型', 'model'))
+    .option('--variant <variant>', t('模型 variant，如 high / xhigh', 'model variant, e.g. high / xhigh'))
+    .option('--clear-variant', t('清空任务级 variant，跟随 Agent / 模型默认值', 'clear the task variant and use the Agent / model default'))
     .option('-p, --prompt <prompt>', t('提示词', 'prompt'))
     .option('-c, --category <category>', t('分类', 'category'))
     .option('-i, --importance <number>', t('重要程度 (1-5)', 'importance (1-5)'))
@@ -150,9 +154,15 @@ program
         if (options.timeout !== undefined && options.clearTimeout) {
             throw new Error('timeout 和 clear-timeout 不能同时使用');
         }
+        if (options.variant !== undefined && options.clearVariant) {
+            throw new Error('variant 和 clear-variant 不能同时使用');
+        }
         const update: EditableTaskUpdate = {};
         for (const field of ['name', 'agent', 'model', 'prompt', 'category'] as const) {
             if (options[field] !== undefined) update[field] = options[field];
+        }
+        if (options.variant !== undefined || options.clearVariant) {
+            update.variant = options.clearVariant ? null : options.variant;
         }
         if (options.importance !== undefined) {
             update.importance = parseBoundedInteger(options.importance, 'importance', 1, 5);
@@ -193,6 +203,7 @@ program
                 name: task.name,
                 agent: task.agent,
                 model: task.model,
+                variant: task.variant,
                 prompt: task.prompt,
                 cwd: task.cwd,
                 category: task.category,
@@ -326,6 +337,7 @@ program
             .option('--delay <duration>', t('延迟时间（delayed 必填），如 30s / 5min / 1h / 2d', 'delay (required for delayed), e.g. 30s / 5min / 1h / 2d'))
             .option('--interval <duration>', t('循环间隔（recurring 必填），如 1h / 30min / 5s', 'interval (required for recurring), e.g. 1h / 30min / 5s'))
             .option('-m, --model <model>', t('模型', 'model'))
+            .option('--variant <variant>', t('模型 variant，如 high / xhigh', 'model variant, e.g. high / xhigh'))
             .option('-c, --category <category>', t('分类', 'category'), 'general')
             .option('-i, --importance <number>', t('重要程度 1-5', 'importance 1-5'), '3')
             .option('-u, --urgency <number>', t('紧急程度 1-5', 'urgency 1-5'), '3')
@@ -365,6 +377,7 @@ program
                     agent: options.agent,
                     prompt: options.prompt,
                     model: options.model,
+                    variant: options.variant,
                     category: options.category,
                     importance: parseBoundedInteger(options.importance, 'importance', 1, 5),
                     urgency: parseBoundedInteger(options.urgency, 'urgency', 1, 5),
@@ -564,6 +577,7 @@ program
     .option('--smoke', t('通过 Gateway 提交一个真实 OpenCode 任务并验证输出', 'queue a real OpenCode task through Gateway and verify its output'))
     .option('--smoke-agent <agent>', t('真实冒烟任务使用的 Agent', 'Agent used by the real smoke task'), 'build')
     .option('--smoke-model <model>', t('真实冒烟任务使用的模型；默认跟随 Agent 配置', 'model used by the real smoke task; defaults to the Agent configuration'))
+    .option('--smoke-variant <variant>', t('真实冒烟任务使用的模型 variant', 'model variant used by the real smoke task'))
     .option('--smoke-cwd <path>', t('真实冒烟任务的项目目录；默认为当前目录', 'project directory for the real smoke task; defaults to the current directory'))
     .option('--smoke-timeout <duration>', t('真实冒烟任务等待上限，如 2min / 5min', 'real smoke task timeout, e.g. 2min / 5min'), '3min')
     .action(async (options: {
@@ -571,6 +585,7 @@ program
         smoke?: boolean;
         smokeAgent: string;
         smokeModel?: string;
+        smokeVariant?: string;
         smokeCwd?: string;
         smokeTimeout: string;
     }) => withDb(async () => {
@@ -708,6 +723,7 @@ program
                 smoke = await runDoctorSmoke({
                     agent: options.smokeAgent,
                     model: options.smokeModel,
+                    variant: options.smokeVariant,
                     cwd: options.smokeCwd ?? process.cwd(),
                     timeoutMs: smokeTimeoutMs,
                 });

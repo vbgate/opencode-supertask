@@ -114,6 +114,7 @@ function createTaskFromTemplate(
                 name: `${options.namePrefix ?? ''}${tmpl.name}`,
                 agent: tmpl.agent,
                 model: tmpl.model ?? 'default',
+                variant: tmpl.variant,
                 prompt: tmpl.prompt,
                 cwd: tmpl.cwd ?? null,
                 category: tmpl.category ?? 'general',

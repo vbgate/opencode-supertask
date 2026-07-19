@@ -1,8 +1,8 @@
 # SuperTask 当前架构与决策
 
 > 状态：当前有效
-> 最后核对：2026-07-16
-> 适用版本：源码 `main` 分支，当前开发基线 0.1.27
+> 最后核对：2026-07-19
+> 适用版本：源码 `main` 分支，当前开发基线 0.1.40
 
 ## 结论与适用边界
 
@@ -70,20 +70,20 @@ TaskService.start() 条件更新，pending/failed → running
 创建 task_run，启动等待握手的 launcher
           ↓
 持久化 launcher PID 后才放行：
-opencode run --agent <task.agent> --format json [-m <model>] <task.prompt>
+opencode run --agent <task.agent> --format json [-m <model>] [--variant <variant>] <task.prompt>
           ↓
 退出码 0 → task/run done；其他退出或启动错误 → task/run failed 或 dead_letter
 ```
 
-Worker 通过无 LLM 的 launcher 直接执行目标 Agent，不再嵌套 `supertask-runner`。新 run 使用 `gated-v3-token-guardian`：每次执行生成独立 UUID，同时写入 `task_runs.locked_by` 和 launcher argv；Watchdog 只有在 launcher 路径、OpenCode 参数和该 UUID 全部匹配时才会向进程组发信号。launcher 在 PID 成功落库前不会启动 OpenCode；父进程提前退出会关闭握手管道，避免产生未登记的执行进程。OpenCode 及其后代全部退出后，launcher 还必须通过不传递给 OpenCode 的 IPC 返回绑定该 UUID 的排空证明；guardian 异常退出且无证明时，Worker 保持 run 与批次隔离，直到进程组明确消失。受管 OpenCode 进程带有 `SUPERTASK_MANAGED_RUN=1`，插件在该上下文拒绝执行升级，避免任务删除并等待承载自己的 Gateway；升级只能从外部 CLI 或非队列会话发起。`task.agent=supertask-runner` 会被明确拒绝并进入死信，`agents/supertask-runner.md` 仅是历史备份。
+Worker 通过无 LLM 的 launcher 直接执行目标 Agent，不再嵌套 `supertask-runner`。新 run 使用 `gated-v3-token-guardian`：每次执行生成独立 UUID，同时写入 `task_runs.locked_by` 和 launcher argv；Watchdog 只有在 launcher 路径、OpenCode 参数和该 UUID 全部匹配时才会向进程组发信号。launcher 在 PID 成功落库前不会启动 OpenCode；父进程提前退出会关闭握手管道，避免产生未登记的执行进程。OpenCode 及其后代全部退出后，launcher 还必须通过不传递给 OpenCode 的 IPC 返回绑定该 UUID 的排空证明；guardian 异常退出且无证明时，Worker 保持 run 与批次隔离，直到进程组明确消失。受管 OpenCode 进程带有 `SUPERTASK_MANAGED_RUN=1`，插件在该上下文拒绝执行升级，避免任务删除并等待承载自己的 Gateway；升级只能从外部 CLI 或非队列会话发起。`task.agent=supertask-runner` 会被明确拒绝并进入死信。
 
-新执行记录在 OpenCode JSONL 前附加一条 SuperTask 命令元数据，保存 Worker 真正传给 launcher 的可执行文件、参数数组和 `cwd`。Dashboard 从该结构生成可复制的终端命令，并分开展示 Agent 文本、错误、工具与原始日志；旧 run 没有元数据时仍可查看原始输出。
+新执行记录会快照实际模型和 variant，并在 OpenCode JSONL 前附加一条 SuperTask 命令元数据，保存 Worker 真正传给 launcher 的可执行文件、参数数组和 `cwd`。Dashboard 从该结构生成可复制的终端命令，并分开展示 Agent 文本、错误、工具与原始日志；旧 run 没有元数据时仍可查看原始输出。variant 为空时不传 `--variant`，由 Agent/模型配置决定；非空时作为独立 argv 传递。
 
 排空证明使用双向确认：Worker 校验 launcher 发来的 UUID 后回送同 UUID，launcher 收件后才退出。该握手不依赖 Bun 旧版本不可靠的 `process.send` callback，同时保留“父进程确实收到证明”这一结算前提。
 
 `cwd` 是任务的项目分组与隔离键，也是子进程工作目录。插件使用 OpenCode 工具上下文的 `directory`，不信任模型传入的 `cwd`；插件侧查询和状态变更按同一目录限定。Service 在普通任务和模板入库前要求非空 `cwd` 是已存在的绝对目录，Dashboard 复用该校验。为兼容旧数据，Schema 仍允许 NULL；Worker 若取到不存在、相对或文件型的遗留目录，会创建失败 run 并直接将任务收敛到 `dead_letter`，不启动 OpenCode、不给它自动重试刷日志。Dashboard 直接聚合现有 `tasks.cwd`，形成 `cwd → batchId → tasks` 的最小分组层次，没有额外的可漂移项目表。
 
-Dashboard 的文件夹浏览只作用于回环地址上的本机路径选择。选定 `cwd` 后，Gateway 以该目录为工作目录并行执行 `opencode agent list` 和 `opencode models`，结果短时缓存；新任务下拉框过滤 `subagent` 和历史 `supertask-runner`，只提供可直接传给 `opencode run --agent` 的 Agent。编辑旧任务时保留数据库原值，避免不相关的编辑强制改写历史配置。
+Dashboard 的文件夹浏览只作用于回环地址上的本机路径选择。选定 `cwd` 后，Gateway 以该目录为工作目录并行执行 `opencode agent list` 和 `opencode models --verbose`，结果短时缓存；新任务下拉框过滤 `subagent` 和历史 `supertask-runner`，只提供可直接传给 `opencode run --agent` 的 Agent，并按模型元数据列出其声明支持的 variants。编辑旧任务时保留数据库原值，即使该模型或 variant 当前不可发现也不会因不相关编辑被强制改写。
 
 `running`、任务终态和 `task_runs` 执行终态只由 Gateway 写入。CLI 和插件不暴露 `start/done/fail`，避免外部调用制造没有 owner/PID 的运行记录或让任务与 run 状态分裂。普通任务的可编辑配置由 `TaskService.update` 统一处理，只接受 `pending`、`failed` 和 `dead_letter`；不允许迁移 `cwd` 或改依赖，运行中与完成/取消终态拒绝修改，避免已执行 run 与任务配置失真。Dashboard 与 `supertask edit` 共用该边界。
 
@@ -103,7 +103,7 @@ pending / running / failed ──cancel──> cancelled
 - 第 `retryCount` 次失败后的等待时间是 `min(retryBackoffMs × 2^(retryCount-1), 30 分钟)`。
 - 普通失败保存为 `failed`；退避到期后 Worker 可以直接重新抢占。Watchdog 恢复则保存为带 `retryAfter` 的 `pending`。
 - 超出预算进入 `dead_letter`，不会自动执行；手动 retry 仅在依赖仍存在、同 `cwd` 且仍可恢复或已完成时将状态改回 `pending`，并把 `retryCount` 清零。校验与状态更新使用同一写事务，避免和历史清理并发制造悬空依赖。
-- 单次任务可覆盖 `maxRetries`、`retryBackoffMs` 和 `timeoutMs`；模板克隆时会复制这些字段。
+- 单次任务可指定模型 `variant` 并覆盖 `maxRetries`、`retryBackoffMs` 和 `timeoutMs`；模板克隆时会复制这些字段。
 - 删除不是运行态迁移：`running` 任务或仍存在 `running` 执行记录的任务必须先取消并等待 Worker 关闭 run；仍被 `pending/running/failed/dead_letter` 任务依赖的前置任务也拒绝删除。手动删除和 Watchdog 过期清理都遵守依赖保护，避免制造悬空任务。
 
 ## 并发、超时与故障恢复

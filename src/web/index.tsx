@@ -180,6 +180,7 @@ function parseTaskPayload(value: unknown): NewTask {
         cwd: requiredString('cwd'),
         agent: requiredString('agent'),
         model: optionalString('model', 'default'),
+        variant: Object.hasOwn(input, 'variant') ? optionalString('variant') : undefined,
         prompt: requiredString('prompt'),
         category: optionalString('category', 'general'),
         batchId: optionalString('batchId'),
@@ -196,6 +197,7 @@ function editableTaskPayload(input: NewTask): EditableTaskUpdate {
         name: input.name,
         agent: input.agent,
         model: input.model ?? 'default',
+        ...(input.variant === undefined ? {} : { variant: input.variant }),
         prompt: input.prompt,
         category: input.category ?? 'general',
         batchId: input.batchId ?? null,
@@ -254,6 +256,7 @@ function parseTemplatePayload(value: unknown): TaskTemplateUpdate {
         name: requiredString('name'),
         agent: requiredString('agent'),
         model: optionalString('model', 'default'),
+        variant: Object.hasOwn(input, 'variant') ? optionalString('variant') : undefined,
         prompt: requiredString('prompt'),
         cwd: requiredString('cwd'),
         category: optionalString('category', 'general'),
@@ -646,7 +649,7 @@ app.get('/', async (c) => {
         const latestRun = latestRuns.get(task.id);
         const executionActive = latestRun?.status === 'running';
         const batchId = task.batchId?.trim() || null;
-        const searchable = esc(`${task.name} ${task.agent} ${task.prompt} ${task.cwd ?? ''} ${task.batchId ?? ''} ${task.category ?? ''}`);
+        const searchable = esc(`${task.name} ${task.agent} ${task.model ?? ''} ${task.variant ?? ''} ${task.prompt} ${task.cwd ?? ''} ${task.batchId ?? ''} ${task.category ?? ''}`);
         return `<tr data-task-row data-search="${searchable}">
           <td class="faint" data-label="${t(locale, 'table.id')}">#${task.id}</td>
           <td data-primary data-label="${t(locale, 'table.task')}"><div class="task-name">${esc(task.name)}</div><div class="task-prompt" title="${esc(task.prompt)}">${esc(task.prompt.substring(0, 160))}</div>
@@ -727,11 +730,12 @@ app.get('/', async (c) => {
               <label class="form-field"><span>${t(locale, 'template.cwd')}</span><div class="field-action"><input id="task-cwd" required autocomplete="off" list="task-cwd-options" placeholder="/path/to/project" oninput="updateTaskProjectStatus();scheduleCatalogLoad('task')"><button id="task-cwd-picker" type="button" class="btn" onclick="openDirectoryPicker('task-cwd')">${icon('folder')}${t(locale, 'action.chooseFolder')}</button></div><small>${t(locale, 'template.cwdHint')}</small></label>
               <datalist id="task-cwd-options">${projects.map((project) => `<option value="${esc(project.cwd)}"></option>`).join('')}</datalist>
               <label class="form-field"><span>${t(locale, 'template.agent')}</span><select id="task-agent" required><option value="">${t(locale, 'catalog.chooseProject')}</option></select><small>${t(locale, 'catalog.agentHint')}</small></label>
-              <label class="form-field"><span>${t(locale, 'template.model')}</span><div class="model-selector"><select id="task-model-provider" aria-label="${t(locale, 'catalog.provider')}" onchange="populateModelOptions('task')"><option value="">${t(locale, 'catalog.defaultProvider')}</option></select><select id="task-model" required aria-label="${t(locale, 'catalog.model')}" disabled><option value="default">${t(locale, 'catalog.defaultModel')}</option></select></div><small>${t(locale, 'catalog.modelHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.model')}</span><div class="model-selector"><select id="task-model-provider" aria-label="${t(locale, 'catalog.provider')}" onchange="handleProviderChange('task')"><option value="">${t(locale, 'catalog.defaultProvider')}</option></select><select id="task-model" required aria-label="${t(locale, 'catalog.model')}" onchange="handleModelChange('task')" disabled><option value="default">${t(locale, 'catalog.defaultModel')}</option></select></div><small>${t(locale, 'catalog.modelHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.variant')}</span><select id="task-variant" onchange="handleVariantChange('task')" disabled><option value="">${t(locale, 'catalog.defaultVariant')}</option></select><small>${t(locale, 'catalog.variantHint')}</small></label>
               <label class="form-field form-field-wide"><span>${t(locale, 'template.prompt')}</span><textarea id="task-prompt" rows="6" required></textarea></label>
             </div>
             <p id="task-project-status" class="form-note"></p>
-            <p id="task-catalog-status" class="form-note catalog-status"></p>
+            <p id="task-catalog-status" class="form-note catalog-status" role="status" aria-live="polite"></p>
             <details class="advanced-fields">
               <summary>${t(locale, 'template.advanced')}</summary>
               <div class="template-form-grid">
@@ -783,7 +787,7 @@ app.get('/templates', async (c) => {
         return `<tr>
           <td class="faint" data-label="${t(locale, 'table.id')}">#${template.id}</td>
           <td data-primary data-label="${t(locale, 'table.name')}"><div class="task-name">${esc(template.name)}</div><div class="task-prompt" title="${esc(template.prompt)}">${esc(template.prompt.substring(0, 140))}</div>
-            <div class="actions" style="margin-top:5px"><span class="tag">${esc(template.agent)}</span>${template.model && template.model !== 'default' ? `<span class="tag">${esc(template.model)}</span>` : ''}</div></td>
+            <div class="actions" style="margin-top:5px"><span class="tag">${esc(template.agent)}</span>${template.model && template.model !== 'default' ? `<span class="tag">${esc(template.model)}</span>` : ''}${template.variant ? `<span class="tag">${esc(template.variant)}</span>` : ''}</div></td>
           <td data-label="${t(locale, 'table.type')}"><span class="tag t-${scheduleType}">${typeLabel}</span></td>
           <td data-label="${t(locale, 'table.rule')}" class="m small">${esc(rule)}</td>
           <td data-label="${t(locale, 'table.status')}"><span class="badge ${template.enabled ? 'b-done' : 'b-cancelled'}">${t(locale, template.enabled ? 'schedule.enabled' : 'schedule.disabled')}</span></td>
@@ -816,14 +820,15 @@ app.get('/templates', async (c) => {
               <label class="form-field"><span>${t(locale, 'template.name')}</span><input id="template-name" required maxlength="200" autocomplete="off"></label>
               <label class="form-field"><span>${t(locale, 'template.cwd')}</span><div class="field-action"><input id="template-cwd" required autocomplete="off" placeholder="/path/to/project" oninput="scheduleCatalogLoad('template')"><button type="button" class="btn" onclick="openDirectoryPicker('template-cwd')">${icon('folder')}${t(locale, 'action.chooseFolder')}</button></div><small>${t(locale, 'template.cwdHint')}</small></label>
               <label class="form-field"><span>${t(locale, 'template.agent')}</span><select id="template-agent" required><option value="">${t(locale, 'catalog.chooseProject')}</option></select><small>${t(locale, 'catalog.agentHint')}</small></label>
-              <label class="form-field"><span>${t(locale, 'template.model')}</span><div class="model-selector"><select id="template-model-provider" aria-label="${t(locale, 'catalog.provider')}" onchange="populateModelOptions('template')"><option value="">${t(locale, 'catalog.defaultProvider')}</option></select><select id="template-model" required aria-label="${t(locale, 'catalog.model')}" disabled><option value="default">${t(locale, 'catalog.defaultModel')}</option></select></div><small>${t(locale, 'catalog.modelHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.model')}</span><div class="model-selector"><select id="template-model-provider" aria-label="${t(locale, 'catalog.provider')}" onchange="handleProviderChange('template')"><option value="">${t(locale, 'catalog.defaultProvider')}</option></select><select id="template-model" required aria-label="${t(locale, 'catalog.model')}" onchange="handleModelChange('template')" disabled><option value="default">${t(locale, 'catalog.defaultModel')}</option></select></div><small>${t(locale, 'catalog.modelHint')}</small></label>
+              <label class="form-field"><span>${t(locale, 'template.variant')}</span><select id="template-variant" onchange="handleVariantChange('template')" disabled><option value="">${t(locale, 'catalog.defaultVariant')}</option></select><small>${t(locale, 'catalog.variantHint')}</small></label>
               <label class="form-field form-field-wide"><span>${t(locale, 'template.prompt')}</span><textarea id="template-prompt" rows="6" required></textarea></label>
               <label class="form-field"><span>${t(locale, 'template.scheduleType')}</span><select id="template-schedule-type" onchange="updateTemplateScheduleFields()"><option value="recurring">${t(locale, 'schedule.recurring')}</option><option value="delayed">${t(locale, 'schedule.delayed')}</option><option value="cron">${t(locale, 'schedule.cron')}</option></select></label>
               <label id="template-cron-field" class="form-field" hidden><span>${t(locale, 'template.cronExpr')}</span><input id="template-cron" autocomplete="off" placeholder="0 9 * * *"><small>${t(locale, 'template.cronHint')}</small></label>
               <label id="template-interval-field" class="form-field"><span>${t(locale, 'template.interval')}</span>${durationControl(locale, 'template-interval', 3_600_000, 'interval')}<small>${t(locale, 'template.intervalHint')}</small></label>
               <label id="template-run-at-field" class="form-field" hidden><span>${t(locale, 'template.runAt')}</span><input id="template-run-at" type="datetime-local" step="0.001"></label>
             </div>
-            <p id="template-catalog-status" class="form-note catalog-status"></p>
+            <p id="template-catalog-status" class="form-note catalog-status" role="status" aria-live="polite"></p>
             <details class="advanced-fields">
               <summary>${t(locale, 'template.advanced')}</summary>
               <div class="template-form-grid">
@@ -856,7 +861,7 @@ app.get('/runs', async (c) => {
     const { taskRuns, tasks } = schema;
     const runs = await db.select({
         id: taskRuns.id, taskId: taskRuns.taskId, sessionId: taskRuns.sessionId,
-        model: taskRuns.model, status: taskRuns.status, startedAt: taskRuns.startedAt,
+        model: taskRuns.model, variant: taskRuns.variant, status: taskRuns.status, startedAt: taskRuns.startedAt,
         finishedAt: taskRuns.finishedAt, log: taskRuns.log, heartbeatAt: taskRuns.heartbeatAt,
         workerPid: taskRuns.workerPid, childPid: taskRuns.childPid,
         taskName: tasks.name, taskAgent: tasks.agent,
@@ -873,7 +878,7 @@ app.get('/runs', async (c) => {
         const log = run.log ? renderRunLog(run.id, run.taskName, run.log, locale, run.status !== 'done') : '';
         return `<tr class="run-summary-row">
           <td class="faint" data-label="${t(locale, 'table.run')}">#${run.id}</td>
-          <td data-primary data-label="${t(locale, 'table.task')}"><div class="task-name">${esc(run.taskName)} <span class="faint">#${run.taskId}</span></div>${run.model ? `<div style="margin-top:4px"><span class="tag">${esc(run.model)}</span></div>` : ''}</td>
+          <td data-primary data-label="${t(locale, 'table.task')}"><div class="task-name">${esc(run.taskName)} <span class="faint">#${run.taskId}</span></div>${run.model || run.variant ? `<div class="actions" style="margin-top:4px">${run.model ? `<span class="tag">${esc(run.model)}</span>` : ''}${run.variant ? `<span class="tag">${esc(run.variant)}</span>` : ''}</div>` : ''}</td>
           <td data-label="${t(locale, 'table.agent')}"><span class="tag">${esc(run.taskAgent)}</span></td>
           <td data-label="${t(locale, 'table.session')}" class="m small">${esc(maskSessionId(run.sessionId))}</td>
           <td data-label="${t(locale, 'table.status')}"><span class="badge b-${status}">${runStatusText(locale, run.status ?? 'unknown')}</span></td>
@@ -926,7 +931,7 @@ app.get('/system', async (c) => {
     const runRows = runningRuns.map((run) => {
         const session = maskSessionId(run.sessionId);
         return `<tr><td class="faint" data-label="${t(locale, 'table.run')}">#${run.id}</td><td data-primary data-label="${t(locale, 'table.task')}">#${run.taskId}</td><td data-label="${t(locale, 'table.session')}" class="m small">${esc(session)}</td>
-          <td data-label="${t(locale, 'table.model')}" class="small">${esc(run.model) || '—'}</td><td data-label="${t(locale, 'table.startedAt')}" class="small">${formatDateTime(run.startedAt, locale)}</td>
+          <td data-label="${t(locale, 'table.model')}" class="small">${esc(run.model) || '—'}${run.variant ? ` · ${esc(run.variant)}` : ''}</td><td data-label="${t(locale, 'table.startedAt')}" class="small">${formatDateTime(run.startedAt, locale)}</td>
           <td data-label="${t(locale, 'table.heartbeat')}" class="small muted">${formatRelative(run.heartbeatAt, locale)}</td><td data-label="${t(locale, 'table.pid')}" class="m small">W:${run.workerPid ?? '—'} C:${run.childPid ?? '—'}</td>
           <td data-label="${t(locale, 'table.duration')}" class="small">${formatDuration(run.startedAt, null)}</td></tr>`;
     }).join('');

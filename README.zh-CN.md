@@ -35,7 +35,7 @@ SuperTask 不是给 cron 套一层壳。定时器生成的也是普通持久任�
 | 三种定时方式 | Cron、延迟执行一次、固定间隔循环 |
 | 自动恢复 | 重试预算、指数退避、停止重试状态和人工恢复 |
 | 可控执行 | 全局并发、优先级、依赖关系和全局同批次串行 |
-| 项目感知 | 每个任务保留 OpenCode 项目目录、Agent 和显式或默认模型 |
+| 项目感知 | 每个任务保留 OpenCode 项目目录、Agent、模型和可选模型 variant |
 | 安全进程管理 | 取消或停机时等待整棵 OpenCode 进程树退出 |
 | 可观测执行 | Session、真实命令、模型输出、工具、错误和原始 JSONL |
 | 本地控制台 | 在 `127.0.0.1` 创建、定时、查看、重试、取消和诊断 |
@@ -105,7 +105,7 @@ flowchart LR
 ### 在 OpenCode 中说自然语言
 
 ```text
-用 build Agent 和 provider/model 模型执行一次安全审查。
+用 build Agent、provider/model 模型和 high variant 执行一次安全审查。
 
 每个工作日上午 9 点，为当前项目创建一条汇报任务。
 
@@ -126,12 +126,14 @@ supertask_list      supertask_get       supertask_next     supertask_upgrade
 ```bash
 # 创建任务
 supertask add --name "安全审查" --agent build \
+  --model openai/gpt-5.6-sol --variant xhigh \
   --prompt "检查认证与授权实现" \
   --importance 5 --urgency 4 --max-retries 2 \
   --retry-backoff 30s --timeout 30min
 
 # 创建定时任务
 supertask template add --name "工作日汇报" --agent build \
+  --model openai/gpt-5.6-sol --variant high \
   --prompt "汇总项目的重要变化" \
   --type cron --cron "0 9 * * 1-5"
 
@@ -155,7 +157,7 @@ supertask cancel --id 42
 | 执行记录 | 查看结构化输出、工具、错误、Session 和历史真实命令 |
 | 系统状态 | 检查生效配置、健康状态、并发，以及先备份后维护数据库 |
 
-项目选择器会读取目标目录真实的 `opencode agent list` 和 `opencode models`，表单只展示本机可用模型和可以直接运行的 Agent。
+项目选择器会读取目标目录真实的 `opencode agent list` 和 `opencode models --verbose`，表单只展示本机可用模型、各模型声明的 variants 和可以直接运行的 Agent。variant 留在默认值时不会传 `--variant`，继续跟随 Agent/模型配置。
 
 ## 可靠不是一句口号
 
@@ -174,7 +176,7 @@ supertask cancel --id 42
 supertask upgrade          # 仅在版本或组件漂移时更新
 supertask upgrade --force  # 同版本重装、刷新环境并重启
 supertask doctor
-supertask doctor --smoke --smoke-agent build --smoke-model provider/model
+supertask doctor --smoke --smoke-agent build --smoke-model provider/model --smoke-variant high
 ```
 
 所有组件已经匹配 npm `latest` 时，普通升级直接返回，不重启 Gateway。`doctor --smoke` 会产生一次真实模型调用，普通 `doctor` 不调用模型。
@@ -215,7 +217,7 @@ bun run build
 - 插件工具使用 OpenCode 上下文目录，拒绝模型伪造工作目录。
 - 任务管理命令返回 JSON，数据库与 doctor 命令支持显式 `--json`；交互摘要保持简洁并支持中英文。
 - `AGENTS.md` 为编码 Agent 记录架构不变量、测试规则、发布流程和禁止的危险捷径。
-- 每次执行记录真实 executable、参数、模型、Agent 和工作目录，方便 AI 精确复现和诊断。
+- 每次执行记录真实 executable、参数、模型、variant、Agent 和工作目录，方便 AI 精确复现和诊断。
 
 ## 文档
 

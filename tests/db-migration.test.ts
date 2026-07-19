@@ -27,12 +27,16 @@ describe('数据库迁移入口', () => {
         const sqlite = new Database(dbPath);
         const taskColumns = sqlite.query('PRAGMA table_info(tasks)').all() as Array<{ name: string }>;
         const templateColumns = sqlite.query('PRAGMA table_info(task_templates)').all() as Array<{ name: string }>;
+        const runColumns = sqlite.query('PRAGMA table_info(task_runs)').all() as Array<{ name: string }>;
         const taskIndexes = sqlite.query('PRAGMA index_list(tasks)').all() as Array<{ name: string }>;
         const runForeignKeys = sqlite.query('PRAGMA foreign_key_list(task_runs)').all() as Array<{ on_delete: string }>;
 
         expect(taskColumns.some((column) => column.name === 'retry_backoff_ms')).toBe(true);
+        expect(taskColumns.some((column) => column.name === 'variant')).toBe(true);
         expect(templateColumns.some((column) => column.name === 'batch_id')).toBe(true);
         expect(templateColumns.some((column) => column.name === 'timeout_ms')).toBe(true);
+        expect(templateColumns.some((column) => column.name === 'variant')).toBe(true);
+        expect(runColumns.some((column) => column.name === 'variant')).toBe(true);
         expect(taskIndexes.some((item) => item.name === 'tasks_queue_idx')).toBe(true);
         expect(runForeignKeys.some((item) => item.on_delete.toLowerCase() === 'cascade')).toBe(true);
         sqlite.close();

@@ -2,6 +2,15 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [0.1.40] - 2026-07-19
+
+### Added
+
+- Tasks and scheduled templates now accept an optional OpenCode model `variant` through plugin tools, CLI commands, smoke diagnostics, and the Dashboard; Workers pass it as `--variant` and snapshot it in every run.
+- The Dashboard now reads `opencode models --verbose` and offers only the variants declared by the selected model while preserving historical custom values.
+
+[0.1.40]: https://github.com/vbgate/opencode-supertask/compare/v0.1.39...v0.1.40
+
 ## [0.1.39] - 2026-07-18
 
 ### Fixed

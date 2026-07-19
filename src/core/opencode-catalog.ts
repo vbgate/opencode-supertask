@@ -6,6 +6,8 @@ const COMMAND_TIMEOUT_MS = 20_000;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const ANSI_PATTERN = /\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 
+class OpenCodeCommandExitError extends Error {}
+
 export type OpenCodeAgentMode = 'primary' | 'subagent' | 'all';
 
 export interface OpenCodeAgentOption {
@@ -16,6 +18,7 @@ export interface OpenCodeAgentOption {
 export interface OpenCodeCatalog {
     cwd: string;
     models: string[];
+    variantsByModel: Record<string, string[]>;
     agents: OpenCodeAgentOption[];
 }
 
@@ -47,17 +50,51 @@ function runOpenCode(
             cwd,
             env: process.env,
             stdio: ['ignore', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
         });
         let stdout = '';
         let stderr = '';
         let failure: Error | null = null;
-        let finished = false;
+        let settled = false;
+        let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
+        let finalRejectTimer: ReturnType<typeof setTimeout> | null = null;
+        let timer: ReturnType<typeof setTimeout>;
+
+        const signalProcessTree = (signal: NodeJS.Signals): void => {
+            if (process.platform !== 'win32' && child.pid) {
+                try {
+                    process.kill(-child.pid, signal);
+                    return;
+                } catch {}
+            }
+            child.kill(signal);
+        };
+
+        const rejectOnce = (error: Error): void => {
+            failure ??= error;
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            if (forceKillTimer) clearTimeout(forceKillTimer);
+            if (finalRejectTimer) clearTimeout(finalRejectTimer);
+            reject(failure);
+        };
+
+        const terminate = (error: Error): void => {
+            if (failure) return;
+            failure = error;
+            signalProcessTree('SIGTERM');
+            forceKillTimer = setTimeout(() => {
+                signalProcessTree('SIGKILL');
+                rejectOnce(error);
+            }, 1_000);
+            finalRejectTimer = setTimeout(() => rejectOnce(error), 2_000);
+        };
 
         const append = (current: string, chunk: Buffer): string => {
             const next = current + chunk.toString();
             if (Buffer.byteLength(next) > MAX_OUTPUT_BYTES && failure === null) {
-                failure = new Error(`OpenCode 输出超过 ${MAX_OUTPUT_BYTES} bytes`);
-                child.kill('SIGTERM');
+                terminate(new Error(`OpenCode 输出超过 ${MAX_OUTPUT_BYTES} bytes`));
             }
             return next.slice(-MAX_OUTPUT_BYTES);
         };
@@ -69,25 +106,27 @@ function runOpenCode(
             stderr = append(stderr, chunk);
         });
         child.once('error', (error) => {
-            failure ??= error;
+            if (forceKillTimer) return;
+            rejectOnce(error);
         });
 
-        const timer = setTimeout(() => {
-            failure ??= new Error(`OpenCode 命令超过 ${timeoutMs}ms 未完成`);
-            child.kill('SIGTERM');
+        timer = setTimeout(() => {
+            terminate(new Error(`OpenCode 命令超过 ${timeoutMs}ms 未完成`));
         }, timeoutMs);
 
         child.once('close', (code) => {
-            if (finished) return;
-            finished = true;
             clearTimeout(timer);
+            if (forceKillTimer) return;
+            if (finalRejectTimer) clearTimeout(finalRejectTimer);
+            if (settled) return;
+            settled = true;
             if (failure) {
                 reject(failure);
                 return;
             }
             if (code !== 0) {
                 const detail = cleanOutput(stderr).trim() || `退出码 ${code ?? 'null'}`;
-                reject(new Error(`OpenCode ${args.join(' ')} 失败：${detail}`));
+                reject(new OpenCodeCommandExitError(`OpenCode ${args.join(' ')} 失败：${detail}`));
                 return;
             }
             resolve(cleanOutput(stdout));
@@ -100,6 +139,61 @@ export function parseOpenCodeModels(output: string): string[] {
         .map((line) => line.trim())
         .filter((line) => /^[^\s/]+\/.+/.test(line)))]
         .sort((left, right) => left.localeCompare(right));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function findJsonObjectEnd(value: string, start: number): number | null {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < value.length; index += 1) {
+        const character = value[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === '"') inString = false;
+            continue;
+        }
+        if (character === '"') inString = true;
+        else if (character === '{') depth += 1;
+        else if (character === '}' && --depth === 0) return index + 1;
+    }
+    return null;
+}
+
+export function parseOpenCodeModelMetadata(output: string): {
+    models: string[];
+    variantsByModel: Record<string, string[]>;
+} {
+    const cleaned = cleanOutput(output);
+    const models = new Set<string>();
+    const variantsByModel: Record<string, string[]> = {};
+    const headingPattern = /^([^\s/]+\/[^\r\n]+)\r?\n\s*(?=\{)/gm;
+    for (const match of cleaned.matchAll(headingPattern)) {
+        const model = match[1].trim();
+        models.add(model);
+        let objectStart = (match.index ?? 0) + match[0].length;
+        while (/\s/.test(cleaned[objectStart] ?? '')) objectStart += 1;
+        if (cleaned[objectStart] !== '{') continue;
+        const objectEnd = findJsonObjectEnd(cleaned, objectStart);
+        if (objectEnd === null) continue;
+        try {
+            const metadata: unknown = JSON.parse(cleaned.slice(objectStart, objectEnd));
+            if (!isRecord(metadata) || !isRecord(metadata.variants)) continue;
+            variantsByModel[model] = Object.keys(metadata.variants)
+                .filter((variant) => variant.trim().length > 0)
+                .sort((left, right) => left.localeCompare(right));
+        } catch {
+            // Keep the model visible even when one provider emits malformed metadata.
+        }
+    }
+    return {
+        models: [...models].sort((left, right) => left.localeCompare(right)),
+        variantsByModel,
+    };
 }
 
 export function parseOpenCodeAgents(output: string): OpenCodeAgentOption[] {
@@ -131,15 +225,22 @@ export async function loadOpenCodeCatalog(
     }
 
     const result = Promise.all([
-        runOpenCode(executable, ['models'], cwd, timeoutMs),
+        runOpenCode(executable, ['models', '--verbose'], cwd, timeoutMs)
+            .catch((error: unknown) => {
+                if (!(error instanceof OpenCodeCommandExitError)) throw error;
+                return runOpenCode(executable, ['models'], cwd, timeoutMs);
+            }),
         runOpenCode(executable, ['agent', 'list'], cwd, timeoutMs),
     ]).then(([modelsOutput, agentsOutput]) => {
-        const models = parseOpenCodeModels(modelsOutput);
+        const metadata = parseOpenCodeModelMetadata(modelsOutput);
+        const models = metadata.models.length > 0
+            ? metadata.models
+            : parseOpenCodeModels(modelsOutput);
         const agents = parseOpenCodeAgents(agentsOutput)
             .filter((agent) => agent.mode !== 'subagent');
         if (models.length === 0) throw new Error('OpenCode 没有返回可用模型');
         if (agents.length === 0) throw new Error('OpenCode 没有返回可直接运行的主 Agent');
-        return { cwd, models, agents };
+        return { cwd, models, variantsByModel: metadata.variantsByModel, agents };
     });
 
     if (options.useCache !== false) {

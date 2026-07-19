@@ -23,11 +23,13 @@ describe('TaskRunService', () => {
             const run = await TaskRunService.create({
                 taskId: task.id,
                 model: 'glm-4',
+                variant: 'high',
                 status: 'running',
             });
             expect(run.id).toBeGreaterThan(0);
             expect(run.taskId).toBe(task.id);
             expect(run.model).toBe('glm-4');
+            expect(run.variant).toBe('high');
             expect(run.status).toBe('running');
             expect(run.startedAt).not.toBeNull();
         });

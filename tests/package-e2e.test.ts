@@ -195,19 +195,22 @@ describe('构建产物端到端', () => {
             return value;
         };
         const taskByName = (name: string) => db.query(
-            'SELECT id, status, result_log, retry_count, template_id FROM tasks WHERE name = ? ORDER BY id DESC LIMIT 1',
+            'SELECT id, status, result_log, retry_count, template_id, variant FROM tasks WHERE name = ? ORDER BY id DESC LIMIT 1',
         ).get(name) as {
             id: number;
             status: string;
             result_log: string | null;
             retry_count: number;
             template_id: number | null;
+            variant: string | null;
         } | null;
 
         runCli<{ id: number }>([
             'add',
             '--name', '构建产物普通任务',
             '--agent', 'test-agent',
+            '--model', 'openai/test-model',
+            '--variant', 'xhigh',
             '--prompt', '验证普通队列执行',
             '--max-retries', '0',
         ]);
@@ -216,12 +219,16 @@ describe('构建产物端到端', () => {
             (task) => task.status === 'done',
         );
         expect(normalTask?.status).toBe('done');
+        expect(normalTask?.variant).toBe('xhigh');
         expect(normalTask?.result_log).toContain('隔离任务执行完成');
+        expect(db.query('SELECT variant FROM task_runs WHERE task_id = ?').get(normalTask!.id))
+            .toEqual({ variant: 'xhigh' });
 
         runCli<{ id: number }>([
             'add',
             '--name', '构建产物重试任务',
             '--agent', 'test-agent',
+            '--variant', 'high',
             '--prompt', '验证失败后自动重试',
             '--max-retries', '1',
             '--retry-backoff', '100ms',
@@ -233,14 +240,17 @@ describe('构建产物端到端', () => {
         expect(retriedTask?.status).toBe('done');
         expect(retriedTask?.retry_count).toBe(1);
         const retryRuns = db.query(
-            'SELECT status FROM task_runs WHERE task_id = ? ORDER BY id',
-        ).all(retriedTask!.id) as Array<{ status: string }>;
+            'SELECT status, variant FROM task_runs WHERE task_id = ? ORDER BY id',
+        ).all(retriedTask!.id) as Array<{ status: string; variant: string | null }>;
         expect(retryRuns.map((run) => run.status)).toEqual(['failed', 'done']);
+        expect(retryRuns.map((run) => run.variant)).toEqual(['high', 'high']);
 
         const delayedTemplate = runCli<{ id: number; status: string }>([
             'template', 'add',
             '--name', '构建产物定时任务',
             '--agent', 'test-agent',
+            '--model', 'openai/test-model',
+            '--variant', 'high',
             '--prompt', '验证 Gateway 独立调度',
             '--type', 'delayed',
             '--delay', '200ms',
@@ -252,11 +262,13 @@ describe('构建产物端到端', () => {
             (task) => task.status === 'done',
         );
         const delayedRow = db.query(
-            'SELECT enabled FROM task_templates WHERE name = ? ORDER BY id DESC LIMIT 1',
-        ).get('构建产物定时任务') as { enabled: number } | null;
+            'SELECT enabled, variant FROM task_templates WHERE name = ? ORDER BY id DESC LIMIT 1',
+        ).get('构建产物定时任务') as { enabled: number; variant: string | null } | null;
         expect(delayedTask?.status).toBe('done');
         expect(delayedTask?.template_id).toBe(delayedTemplate.id);
+        expect(delayedTask?.variant).toBe('high');
         expect(delayedRow?.enabled).toBe(0);
+        expect(delayedRow?.variant).toBe('high');
 
         const recurringTemplate = runCli<{ id: number }>([
             'template', 'add',
@@ -304,6 +316,14 @@ describe('构建产物端到端', () => {
         for (const args of invocations) {
             expect(args.slice(0, 5)).toEqual(['run', '--agent', 'test-agent', '--format', 'json']);
         }
+        expect(invocations.find((args) => args.at(-1) === '验证普通队列执行')).toEqual([
+            'run', '--agent', 'test-agent', '--format', 'json',
+            '-m', 'openai/test-model', '--variant', 'xhigh', '验证普通队列执行',
+        ]);
+        expect(invocations.find((args) => args.at(-1) === '验证 Gateway 独立调度')).toEqual([
+            'run', '--agent', 'test-agent', '--format', 'json',
+            '-m', 'openai/test-model', '--variant', 'high', '验证 Gateway 独立调度',
+        ]);
 
         const finalHealth = await fetch(`http://127.0.0.1:${dashboardPort}/health`);
         expect(finalHealth.status).toBe(200);

@@ -37,7 +37,7 @@ describe('CLI integration', () => {
 
     test('add task', () => {
         const result = runJson<{ id: number; status: string }>(
-            `add --name "集成测试任务A" --agent "test-agent" --prompt "测试提示词" --importance 4 --urgency 5 --max-retries 2 --retry-backoff 5s --timeout 2min`,
+            `add --name "集成测试任务A" --agent "test-agent" --model "openai/test-model" --variant "high" --prompt "测试提示词" --importance 4 --urgency 5 --max-retries 2 --retry-backoff 5s --timeout 2min`,
         );
         expect(result.id).toBeGreaterThan(0);
         expect(result.status).toBe('created');
@@ -57,9 +57,10 @@ describe('CLI integration', () => {
     });
 
     test('get task by id', () => {
-        const task = runJson<{ id: number; name: string; status: string; maxRetries: number; retryBackoffMs: number; timeoutMs: number }>(`get --id ${taskId1}`);
+        const task = runJson<{ id: number; name: string; status: string; variant: string; maxRetries: number; retryBackoffMs: number; timeoutMs: number }>(`get --id ${taskId1}`);
         expect(task.id).toBe(taskId1);
         expect(task.name).toBe('集成测试任务A');
+        expect(task.variant).toBe('high');
         expect(task.maxRetries).toBe(2);
         expect(task.retryBackoffMs).toBe(5000);
         expect(task.timeoutMs).toBe(120000);
@@ -67,17 +68,22 @@ describe('CLI integration', () => {
 
     test('edit pending task model and priority', () => {
         const edited = runJson<{ id: number; status: string; updated: boolean }>(
-            `edit --id ${taskId1} --model "openai/gpt-5" --prompt "修改后的提示词" --importance 5 --urgency 2 --clear-batch --retry-backoff 10s --clear-timeout`,
+            `edit --id ${taskId1} --model "openai/gpt-5" --variant "xhigh" --prompt "修改后的提示词" --importance 5 --urgency 2 --clear-batch --retry-backoff 10s --clear-timeout`,
         );
         expect(edited).toEqual({ id: taskId1, status: 'pending', updated: true });
         const task = runJson<{
-            model: string; prompt: string; importance: number; urgency: number;
+            model: string; variant: string; prompt: string; importance: number; urgency: number;
             batchId: string | null; retryBackoffMs: number; timeoutMs: number | null;
         }>(`get --id ${taskId1}`);
         expect(task).toMatchObject({
-            model: 'openai/gpt-5', prompt: '修改后的提示词', importance: 5, urgency: 2,
+            model: 'openai/gpt-5', variant: 'xhigh', prompt: '修改后的提示词', importance: 5, urgency: 2,
             batchId: null, retryBackoffMs: 10_000, timeoutMs: null,
         });
+    });
+
+    test('clear pending task variant', () => {
+        runJson(`edit --id ${taskId1} --clear-variant`);
+        expect(runJson<{ variant: string | null }>(`get --id ${taskId1}`).variant).toBeNull();
     });
 
     test('next returns a pending task', () => {
@@ -175,7 +181,7 @@ describe('CLI template', () => {
 
     test('template add', () => {
         const result = runJson<{ id: number; status: string; nextRunAt: number | null }>(
-            `template add --name "测试模板" --agent "test-agent" --prompt "定时任务" --type cron --cron "0 9 * * *" --batch "每日批次" --retry-backoff 5s --timeout 2min`,
+            `template add --name "测试模板" --agent "test-agent" --model "openai/test-model" --variant "high" --prompt "定时任务" --type cron --cron "0 9 * * *" --batch "每日批次" --retry-backoff 5s --timeout 2min`,
         );
         expect(result.id).toBeGreaterThan(0);
         expect(result.status).toBe('created');
@@ -184,10 +190,11 @@ describe('CLI template', () => {
     });
 
     test('template list', () => {
-        const templates = runJson<Array<{ id: number; cwd: string; batchId: string; retryBackoffMs: number; timeoutMs: number }>>('template list');
+        const templates = runJson<Array<{ id: number; cwd: string; variant: string; batchId: string; retryBackoffMs: number; timeoutMs: number }>>('template list');
         expect(templates.length).toBeGreaterThan(0);
         const template = templates.find((item) => item.id === templateId)!;
         expect(template.cwd).toBe(process.cwd());
+        expect(template.variant).toBe('high');
         expect(template.batchId).toBe('每日批次');
         expect(template.retryBackoffMs).toBe(5000);
         expect(template.timeoutMs).toBe(120000);

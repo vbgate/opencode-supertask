@@ -52,6 +52,9 @@ describe('OpenCode 插件注册', () => {
         expect(schedule.args.max_instances.description).toContain('手动立即运行不受此限制');
         expect(add.args.batchId.safeParse(undefined).success).toBe(true);
         expect(add.args.batchId.safeParse('').success).toBe(false);
+        expect(add.args.variant.safeParse('xhigh').success).toBe(true);
+        expect(add.args.variant.safeParse('   ').success).toBe(false);
+        expect(schedule.args.variant.safeParse('high').success).toBe(true);
         expect(schedule.args.batchId.safeParse('   ').success).toBe(false);
     });
 
@@ -107,10 +110,16 @@ describe('OpenCode 插件注册', () => {
             name: '上下文隔离',
             agent: 'build',
             prompt: '验证 cwd',
+            model: 'openai/gpt-5.6-sol',
+            variant: 'xhigh',
             cwd: `${process.cwd()}/package.json`,
         }, context)) as { id: number };
 
-        expect((await TaskService.getById(output.id))?.cwd).toBe(process.cwd());
+        expect(await TaskService.getById(output.id)).toMatchObject({
+            cwd: process.cwd(),
+            model: 'openai/gpt-5.6-sol',
+            variant: 'xhigh',
+        });
     });
 
     test('Gateway 管理的队列任务拒绝在自身进程树内升级', async () => {

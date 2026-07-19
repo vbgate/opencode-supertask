@@ -14,6 +14,7 @@ describe('doctor real smoke task', () => {
         const pendingResult = runDoctorSmoke({
             agent: 'build',
             model: 'openai/test-model',
+            variant: 'xhigh',
             cwd: process.cwd(),
             timeoutMs: 2_000,
             marker,
@@ -29,6 +30,7 @@ describe('doctor real smoke task', () => {
         const run = await TaskRunService.create({
             taskId: task.id,
             model: task.model,
+            variant: task.variant,
             status: 'running',
         });
         await TaskService.completeRun(task.id, run.id, JSON.stringify({
@@ -43,6 +45,7 @@ describe('doctor real smoke task', () => {
             status: 'done',
             agent: 'build',
             model: 'openai/test-model',
+            variant: 'xhigh',
             cwd: process.cwd(),
             error: null,
         });

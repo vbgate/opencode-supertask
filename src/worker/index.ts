@@ -221,6 +221,7 @@ export class WorkerEngine {
                 const run = await TaskRunService.create({
                     taskId: task.id,
                     model: this.resolveModel(task.model),
+                    variant: this.resolveVariant(task.variant),
                     status: 'running',
                     workerPid: process.pid,
                     lockedAt: Date.now(),
@@ -288,8 +289,10 @@ export class WorkerEngine {
 
     private async spawnTask(task: Task, runId: number, launchIdentity: string): Promise<void> {
         const model = this.resolveModel(task.model);
+        const variant = this.resolveVariant(task.variant);
         const args = ['run', '--agent', task.agent, '--format', 'json'];
         if (model) args.push('-m', model);
+        if (variant) args.push('--variant', variant);
         args.push(task.prompt);
         const cwd = task.cwd || process.cwd();
 
@@ -469,7 +472,7 @@ export class WorkerEngine {
         const failure = code === 0
             ? undefined
             : `${spawnError ? '无法启动 opencode' : 'opencode 退出码'} ${spawnError?.message ?? code ?? 'null'}${signal ? `，信号 ${signal}` : ''}`
-                + `（agent=${entry.task.agent}，model=${this.resolveModel(entry.task.model) ?? 'Agent/默认配置'}，cwd=${entry.task.cwd ?? process.cwd()}）`;
+                + `（agent=${entry.task.agent}，model=${this.resolveModel(entry.task.model) ?? 'Agent/默认配置'}，variant=${this.resolveVariant(entry.task.variant) ?? 'Agent/模型默认配置'}，cwd=${entry.task.cwd ?? process.cwd()}）`;
         this.runDetached(
             this.settleEntry(entry, code, failure),
             'task settlement failed',
@@ -712,6 +715,10 @@ export class WorkerEngine {
     private resolveModel(taskModel: string | null): string | null {
         if (!taskModel || taskModel === 'default') return null;
         return taskModel;
+    }
+
+    private resolveVariant(taskVariant: string | null): string | null {
+        return taskVariant?.trim() || null;
     }
 
     private runDetached(operation: Promise<unknown>, message: string, taskId?: number): void {

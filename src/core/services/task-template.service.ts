@@ -4,6 +4,7 @@ import type { TaskTemplate, NewTaskTemplate, ScheduleType } from '@core/db/schem
 import { getNextCronRun, isValidCronExpr } from '@core/cron-parser';
 import { validateTaskWorkingDirectory } from '@core/task-working-directory';
 import { normalizeTaskBatchId } from '@core/task-batch';
+import { normalizeModelVariant } from '@core/model-variant';
 
 const { taskTemplates } = schema;
 
@@ -11,13 +12,14 @@ export type TaskTemplateUpdate = Pick<TaskTemplate,
     'name' | 'agent' | 'model' | 'prompt' | 'cwd' | 'category' | 'importance' | 'urgency'
     | 'batchId' | 'scheduleType' | 'cronExpr' | 'intervalMs' | 'runAt' | 'maxInstances'
     | 'maxRetries' | 'retryBackoffMs' | 'timeoutMs'
->;
+> & { variant?: string | null };
 
 export class TaskTemplateService {
     static async create(data: NewTaskTemplate): Promise<TaskTemplate> {
         const normalizedData = {
             ...data,
             batchId: normalizeTaskBatchId(data.batchId),
+            variant: normalizeModelVariant(data.variant),
         };
         this.validate(normalizedData);
         const now = Date.now();
@@ -105,6 +107,9 @@ export class TaskTemplateService {
         const normalizedData = {
             ...data,
             batchId: normalizeTaskBatchId(data.batchId) ?? null,
+            ...(data.variant === undefined
+                ? {}
+                : { variant: normalizeModelVariant(data.variant) ?? null }),
         };
         this.validate(normalizedData);
         const now = Date.now();
