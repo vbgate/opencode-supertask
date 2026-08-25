@@ -16,6 +16,10 @@ test('Dashboard 核心客户端交互可在真实浏览器执行', async ({ page
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
     await expect(page.getByText('任务队列', { exact: true }).first()).toBeVisible();
 
+    await page.getByRole('button', { name: 'ES', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('lang', 'es-ES');
+    await expect(page.getByText('Cola de tareas', { exact: true }).first()).toBeVisible();
+
     const createTaskButton = page.locator('button[onclick="openTaskCreator()"]');
     await createTaskButton.click();
     await expect(page.locator('#task-dialog')).toBeVisible();

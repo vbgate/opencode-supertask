@@ -40,6 +40,7 @@ import {
     formatFuture,
     formatRelative,
     icon,
+    intlLocale,
     renderLayout,
     runStatusText,
     statusText,
@@ -283,23 +284,39 @@ function safeStatus(value: string | null): TaskStatus | 'unknown' {
     return value && TASK_STATUSES.has(value as TaskStatus) ? value as TaskStatus : 'unknown';
 }
 
+const SUPPORTED_LOCALES = new Set<Locale>(['en', 'es', 'zh-CN']);
+
+function parseLocale(value: string | null | undefined): Locale | null {
+    if (!value) return null;
+    const normalized = value.trim().toLowerCase().replace('_', '-');
+    if (normalized === 'zh' || normalized.startsWith('zh-')) return 'zh-CN';
+    if (normalized === 'es' || normalized.startsWith('es-')) return 'es';
+    if (normalized === 'en' || normalized.startsWith('en-')) return 'en';
+    return SUPPORTED_LOCALES.has(value as Locale) ? value as Locale : null;
+}
+
 function resolveLocale(c: Context): Locale {
-    const requested = c.req.query('lang');
-    if (requested === 'en' || requested === 'zh-CN') return requested;
+    const requested = parseLocale(c.req.query('lang'));
+    if (requested) return requested;
 
     const cookie = c.req.header('Cookie') ?? '';
     const match = /(?:^|;\s*)supertask_locale=([^;]+)/.exec(cookie);
     if (match) {
         try {
-            const saved = decodeURIComponent(match[1]);
-            if (saved === 'en' || saved === 'zh-CN') return saved;
+            const saved = parseLocale(decodeURIComponent(match[1]));
+            if (saved) return saved;
         } catch {
             // Ignore malformed client cookies and continue with browser negotiation.
         }
     }
 
     const accepted = c.req.header('Accept-Language')?.toLowerCase() ?? '';
-    return accepted.startsWith('en') ? 'en' : 'zh-CN';
+    for (const part of accepted.split(',')) {
+        const tag = part.split(';')[0]?.trim() ?? '';
+        const matched = parseLocale(tag);
+        if (matched) return matched;
+    }
+    return 'en';
 }
 
 app.use('*', async (c, next) => {
@@ -558,7 +575,7 @@ function durationControl(
 }
 
 function formatInterval(milliseconds: number, locale: Locale): string {
-    const formatter = new Intl.NumberFormat(locale === 'en' ? 'en-US' : 'zh-CN', {
+    const formatter = new Intl.NumberFormat(intlLocale(locale), {
         maximumFractionDigits: 1,
     });
     if (milliseconds < 60_000) {

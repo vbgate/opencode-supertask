@@ -1,3 +1,10 @@
+## Unreleased
+
+### Added
+- Dashboard and CLI now support Spanish (`es`) alongside English and Chinese.
+- CLI `--lang es` / `SUPERTASK_LANG=es`, and automatic selection from Spanish system locales.
+- Dashboard language switcher includes **ES**; `Accept-Language` and `supertask_locale` negotiate `es`.
+
 # Changelog
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.

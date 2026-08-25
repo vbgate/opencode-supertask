@@ -89,7 +89,7 @@ PM2 生命周期操作和 macOS supervisor 始终先获取 `PM2_HOME/supertask-g
 
 CLI 的任务/模板 ID、优先级、重试次数和列表数量均按完整十进制整数解析；带尾随字符、小数、越界值和未知任务状态会返回非零退出码，不会再由 `parseInt` 静默截断。
 
-CLI 帮助、`doctor` 和数据库维护的交互式摘要支持 `auto | zh-CN | en`。默认 `auto` 根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 选择，非中文 locale 回退英文；可用全局 `--lang` 或 `SUPERTASK_LANG` 覆盖。JSON 字段和底层诊断错误保持原样，不因界面语言变化而破坏 Agent、管道和脚本解析。
+CLI 帮助、`doctor` 和数据库维护的交互式摘要支持 `auto | zh-CN | en | es`。默认 `auto` 根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 选择，中文/西班牙文 locale 分别选择对应语言，其余回退英文；可用全局 `--lang` 或 `SUPERTASK_LANG` 覆盖。JSON 字段和底层诊断错误保持原样，不因界面语言变化而破坏 Agent、管道和脚本解析。
 
 ## 完整配置
 

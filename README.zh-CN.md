@@ -144,7 +144,7 @@ supertask retry --id 42
 supertask cancel --id 42
 ```
 
-运行 `supertask --help` 或 `supertask <命令> --help` 查看完整参数。CLI 帮助和人类可读诊断支持 `auto`、`zh-CN` 和 `en`。
+运行 `supertask --help` 或 `supertask <命令> --help` 查看完整参数。CLI 帮助和人类可读诊断支持 `auto`、`zh-CN`、`en` 和 `es`。
 
 ## Web 控制台
 
