@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <strong>English</strong> | <a href="https://github.com/vbgate/opencode-supertask/blob/main/README.zh-CN.md">简体中文</a>
+  <strong>English</strong> | <a href="https://github.com/vbgate/opencode-supertask/blob/main/README.zh-CN.md">简体中文</a> | <a href="https://github.com/vbgate/opencode-supertask/blob/main/README.es.md">Español</a>
 </p>
 
 SuperTask turns one-off `opencode run` commands into durable Agent operations. It gives OpenCode agents a persistent SQLite queue, scheduling, retries, concurrency control, safe cancellation, execution history, and a local Web Dashboard.
@@ -144,11 +144,11 @@ supertask retry --id 42
 supertask cancel --id 42
 ```
 
-Run `supertask --help` or `supertask <command> --help` for the complete command surface. CLI help and human-readable diagnostics support `auto`, `en`, and `zh-CN`.
+Run `supertask --help` or `supertask <command> --help` for the complete command surface. CLI help and human-readable diagnostics support `auto`, `en`, `es`, and `zh-CN`.
 
 ## Dashboard
 
-The responsive Dashboard supports English and Chinese, light and dark themes, and four focused views:
+The responsive Dashboard supports English, Spanish, and Chinese, light and dark themes, and four focused views:
 
 | Page | Purpose |
 | --- | --- |

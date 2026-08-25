@@ -48,20 +48,41 @@ function formatCounts(counts: DatabaseCounts, locale: CliLocale): string {
         locale,
         `任务 ${counts.tasks} · 执行记录 ${counts.taskRuns} · 定时任务模板 ${counts.taskTemplates}`,
         `tasks ${counts.tasks} · runs ${counts.taskRuns} · scheduled templates ${counts.taskTemplates}`,
+        `tareas ${counts.tasks} · ejecuciones ${counts.taskRuns} · plantillas programadas ${counts.taskTemplates}`,
     );
 }
 
 function formatGateway(gateway: GatewayMaintenanceReport, locale: CliLocale): string {
-    if (gateway.restarted) return cliText(locale, '已自动停止、重启并恢复就绪', 'stopped, restarted, and ready');
-    if (gateway.keptStopped) return cliText(locale, '已自动停止，按要求保持停止', 'stopped and left stopped as requested');
+    if (gateway.restarted) {
+        return cliText(
+            locale,
+            '已自动停止、重启并恢复就绪',
+            'stopped, restarted, and ready',
+            'detenido, reiniciado y listo',
+        );
+    }
+    if (gateway.keptStopped) {
+        return cliText(
+            locale,
+            '已自动停止，按要求保持停止',
+            'stopped and left stopped as requested',
+            'detenido y dejado detenido según lo solicitado',
+        );
+    }
     if (!gateway.wasRunning) {
         return cliText(
             locale,
             '无需自动停启（未发现匹配当前数据库的 PM2 Gateway）',
             'no matching PM2 Gateway was running',
+            'no había un Gateway PM2 coincidente en ejecución',
         );
     }
-    return cliText(locale, '原 Gateway 未恢复运行', 'the previous Gateway was not restored');
+    return cliText(
+        locale,
+        '原 Gateway 未恢复运行',
+        'the previous Gateway was not restored',
+        'el Gateway anterior no se restauró',
+    );
 }
 
 function formatCheck(result: DatabaseCheckResult, locale: CliLocale): string {
@@ -80,6 +101,25 @@ function formatCheck(result: DatabaseCheckResult, locale: CliLocale): string {
                 `Integrity: ${result.integrityMessages.join('; ') || 'no result'}`,
                 `Foreign-key violations: ${result.foreignKeyViolations}`,
                 `Missing tables: ${result.missingTables.join(', ') || 'none'}`,
+            );
+        }
+        return lines.join('\n');
+    }
+    if (locale === 'es') {
+        const lines = [
+            result.ok ? '✓ Comprobación de la base de datos correcta' : '✗ Comprobación de la base de datos fallida',
+            '',
+            `Base de datos: ${result.path}`,
+            `Tamaño: ${formatBytes(result.sizeBytes)}`,
+            `Modo de journal: ${result.journalMode}`,
+            `Recuentos: ${formatCounts(result.counts, locale)}`,
+            `En ejecución: tareas ${result.runningTasks} · ejecuciones ${result.runningRuns}`,
+        ];
+        if (!result.ok) {
+            lines.push(
+                `Integridad: ${result.integrityMessages.join('; ') || 'sin resultado'}`,
+                `Violaciones de clave foránea: ${result.foreignKeyViolations}`,
+                `Tablas ausentes: ${result.missingTables.join(', ') || 'ninguna'}`,
             );
         }
         return lines.join('\n');
@@ -123,6 +163,16 @@ function formatHuman<K extends keyof DatabaseResultMap>(
                     `Integrity: ${backup.check.ok ? 'passed' : 'failed'}`,
                 ].join('\n');
             }
+            if (locale === 'es') {
+                return [
+                    '✓ Copia de seguridad de la base de datos completada',
+                    '',
+                    `Copia: ${backup.path}`,
+                    `Tamaño: ${formatBytes(backup.sizeBytes)}`,
+                    `Recuentos: ${formatCounts(backup.check.counts, locale)}`,
+                    `Integridad: ${backup.check.ok ? 'correcta' : 'fallida'}`,
+                ].join('\n');
+            }
             return [
                 '✓ 数据库备份完成',
                 '',
@@ -142,6 +192,16 @@ function formatHuman<K extends keyof DatabaseResultMap>(
                     `Safety backup: ${cleared.backupPath}`,
                     `Gateway: ${formatGateway(cleared.gateway, locale)}`,
                     `Integrity: ${cleared.check.ok ? 'passed' : 'failed'}`,
+                ].join('\n');
+            }
+            if (locale === 'es') {
+                return [
+                    '✓ Base de datos vaciada de forma segura',
+                    '',
+                    `Eliminado: ${formatCounts(cleared.deleted, locale)}`,
+                    `Copia de seguridad de seguridad: ${cleared.backupPath}`,
+                    `Gateway: ${formatGateway(cleared.gateway, locale)}`,
+                    `Integridad: ${cleared.check.ok ? 'correcta' : 'fallida'}`,
                 ].join('\n');
             }
             return [
@@ -165,6 +225,18 @@ function formatHuman<K extends keyof DatabaseResultMap>(
                     `Counts: ${formatCounts(restored.check.counts, locale)}`,
                     `Gateway: ${formatGateway(restored.gateway, locale)}`,
                     `Integrity: ${restored.check.ok ? 'passed' : 'failed'}`,
+                ].join('\n');
+            }
+            if (locale === 'es') {
+                return [
+                    '✓ Restauración de la base de datos completada',
+                    '',
+                    `Origen: ${restored.sourcePath}`,
+                    `Copia de seguridad previa a la restauración: ${restored.safetyBackupPath}`,
+                    `Estado de ejecución recuperado: tareas ${restored.recoveredRunningTasks} · ejecuciones ${restored.closedRunningRuns}`,
+                    `Recuentos: ${formatCounts(restored.check.counts, locale)}`,
+                    `Gateway: ${formatGateway(restored.gateway, locale)}`,
+                    `Integridad: ${restored.check.ok ? 'correcta' : 'fallida'}`,
                 ].join('\n');
             }
             return [
