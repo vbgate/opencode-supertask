@@ -991,6 +991,50 @@ if (args[0] === 'start') process.exit(0);
         expect(() => ensureGateway()).toThrow('未在限定时间内就绪');
     });
 
+    test('既有 PM2 进程的 kill_timeout 不足以覆盖优雅停机且仍有运行中任务时，拒绝删除旧 Gateway', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-kill-timeout-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const fakeBun = join(dir, 'bun');
+        const log = join(dir, 'calls.jsonl');
+        const oldGateway = join(dir, 'old-gateway.js');
+        const dbPath = join(dir, 'tasks.db');
+        writeFileSync(oldGateway, '');
+        writeFileSync(log, '');
+        writeFileSync(fakeBun, '#!/bin/sh\nexit 0\n');
+        chmodSync(fakeBun, 0o755);
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+import { appendFileSync } from 'fs';
+const args = Bun.argv.slice(2);
+if (args[0] === '--version') process.exit(0);
+if (args[0] === 'jlist') {
+    console.log(JSON.stringify([{ name: 'supertask-gateway', pid: 4242, pm2_env: { status: 'online', kill_timeout: 1600, args: [${JSON.stringify(oldGateway)}], pm_exec_path: ${JSON.stringify(fakeBun)}, pm_cwd: ${JSON.stringify(process.cwd())}, env: process.env } }]));
+    process.exit(0);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+process.exit(1);
+`);
+        chmodSync(fakePm2, 0o755);
+        const database = new Database(dbPath);
+        database.exec('CREATE TABLE gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
+        database.exec("CREATE TABLE tasks (id INTEGER PRIMARY KEY, status TEXT)");
+        database.exec("CREATE TABLE task_runs (id INTEGER PRIMARY KEY, status TEXT)");
+        database.exec("INSERT INTO tasks (status) VALUES ('running')");
+        database.exec("INSERT INTO task_runs (status) VALUES ('running')");
+        database.close();
+
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = fakeBun;
+        process.env.SUPERTASK_GATEWAY_ENTRY = join(dir, 'new-gateway.js');
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_CONFIG_PATH = join(dir, 'missing-config.json');
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '45000';
+        writeFileSync(join(dir, 'new-gateway.js'), '');
+
+        expect(() => ensureGateway()).toThrow('kill_timeout 为 1600ms');
+        expect(readFileSync(log, 'utf8').trim()).toBe('');
+    });
+
     test('插件自动替换 Gateway 失败时恢复 PM2 记录中的旧入口', () => {
         const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-ensure-rollback-'));
         dirs.push(dir);
@@ -1048,6 +1092,143 @@ if (args[0] === 'start') {
         process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '45000';
 
         expect(() => ensureGateway()).toThrow('已回滚到旧 Gateway');
+        const starts = readFileSync(log, 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line) as string[])
+            .filter((call) => call[0] === 'start');
+        expect(starts.map((call) => call.at(-1))).toEqual([newGateway, oldGateway]);
+        expect(readFileSync(versionFile, 'utf8')).toBe('0.1.20');
+        expect(isGatewayRunning()).toBe(true);
+    });
+
+    test('新 Gateway 就绪但锁中版本不是目标版本时回滚', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-version-mismatch-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const fakeBun = join(dir, 'bun');
+        const state = join(dir, 'state.json');
+        const log = join(dir, 'calls.jsonl');
+        const oldGateway = join(dir, 'old-gateway.js');
+        const newGateway = join(dir, 'new-broken-gateway.js');
+        const dbPath = join(dir, 'tasks.db');
+        const versionFile = join(dir, 'version');
+        writeFileSync(oldGateway, '');
+        writeFileSync(newGateway, '');
+        writeFileSync(fakeBun, '#!/bin/sh\nexit 0\n');
+        chmodSync(fakeBun, 0o755);
+        writeFileSync(state, JSON.stringify({ entry: oldGateway, pid: 4242 }));
+        writeFileSync(versionFile, '0.1.20');
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { Database } from 'bun:sqlite';
+const args = Bun.argv.slice(2);
+if (args[0] === '--version') process.exit(0);
+if (args[0] === 'jlist') {
+    if (!existsSync(${JSON.stringify(state)})) console.log('[]');
+    else {
+        const current = JSON.parse(readFileSync(${JSON.stringify(state)}, 'utf8'));
+        console.log(JSON.stringify([{ name: 'supertask-gateway', pid: current.pid, pm2_env: { status: 'online', args: [current.entry], pm_exec_path: ${JSON.stringify(fakeBun)}, pm_cwd: ${JSON.stringify(process.cwd())}, env: process.env } }]));
+    }
+    process.exit(0);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'delete') rmSync(${JSON.stringify(state)}, { force: true });
+if (args[0] === 'start') {
+    const entry = args.at(-1);
+    writeFileSync(${JSON.stringify(state)}, JSON.stringify({ entry, pid: 4242 }));
+    const db = new Database(${JSON.stringify(dbPath)});
+    db.exec('CREATE TABLE IF NOT EXISTS gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER, version TEXT)');
+    db.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at, version) VALUES (1, ?, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), Date.now(), entry === ${JSON.stringify(oldGateway)} ? null : '0.0.1');
+    db.close();
+}
+`);
+        chmodSync(fakePm2, 0o755);
+
+        const initialDb = new Database(dbPath);
+        initialDb.exec('CREATE TABLE gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER, version TEXT)');
+        initialDb.query('INSERT INTO gateway_lock VALUES (1, ?, ?, ?, ?, NULL)').run(4242, Date.now(), Date.now(), Date.now());
+        initialDb.close();
+
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = fakeBun;
+        process.env.SUPERTASK_GATEWAY_ENTRY = newGateway;
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_VERSION_FILE = versionFile;
+        process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '50';
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '45000';
+
+        expect(() => ensureGateway()).toThrow(/运行版本 0\.0\.1 不是目标版本.*已回滚到旧 Gateway/);
+        const starts = readFileSync(log, 'utf8').trim().split('\n')
+            .map((line) => JSON.parse(line) as string[])
+            .filter((call) => call[0] === 'start');
+        expect(starts.map((call) => call.at(-1))).toEqual([newGateway, oldGateway]);
+        expect(readFileSync(versionFile, 'utf8')).toBe('0.1.20');
+        expect(isGatewayRunning()).toBe(true);
+    });
+
+    test('清理失败的新 Gateway 报错时仍恢复旧 Gateway 并保留原始错误', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pm2-cleanup-rollback-'));
+        dirs.push(dir);
+        const fakePm2 = join(dir, 'pm2');
+        const fakeBun = join(dir, 'bun');
+        const state = join(dir, 'state.json');
+        const log = join(dir, 'calls.jsonl');
+        const oldGateway = join(dir, 'old-gateway.js');
+        const newGateway = join(dir, 'new-broken-gateway.js');
+        const dbPath = join(dir, 'tasks.db');
+        const versionFile = join(dir, 'version');
+        writeFileSync(oldGateway, '');
+        writeFileSync(newGateway, '');
+        writeFileSync(fakeBun, '#!/bin/sh\nexit 0\n');
+        chmodSync(fakeBun, 0o755);
+        writeFileSync(state, JSON.stringify({ entry: oldGateway, pid: 4242 }));
+        writeFileSync(versionFile, '0.1.20');
+        writeFileSync(fakePm2, `#!/usr/bin/env bun
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { Database } from 'bun:sqlite';
+const args = Bun.argv.slice(2);
+if (args[0] === '--version') process.exit(0);
+if (args[0] === 'jlist') {
+    if (!existsSync(${JSON.stringify(state)})) console.log('[]');
+    else {
+        const current = JSON.parse(readFileSync(${JSON.stringify(state)}, 'utf8'));
+        console.log(JSON.stringify([{ name: 'supertask-gateway', pid: current.pid, pm2_env: { status: 'online', args: [current.entry], pm_exec_path: ${JSON.stringify(fakeBun)}, pm_cwd: ${JSON.stringify(process.cwd())}, env: process.env } }]));
+    }
+    process.exit(0);
+}
+appendFileSync(${JSON.stringify(log)}, JSON.stringify(args) + '\\n');
+if (args[0] === 'delete') {
+    const current = JSON.parse(readFileSync(${JSON.stringify(state)}, 'utf8'));
+    rmSync(${JSON.stringify(state)}, { force: true });
+    if (current.entry === ${JSON.stringify(newGateway)}) {
+        console.error('模拟 delete 超时退出');
+        process.exit(1);
+    }
+}
+if (args[0] === 'start') {
+    const entry = args.at(-1);
+    writeFileSync(${JSON.stringify(state)}, JSON.stringify({ entry, pid: 4242 }));
+    const db = new Database(${JSON.stringify(dbPath)});
+    db.exec('CREATE TABLE IF NOT EXISTS gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
+    db.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at) VALUES (1, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), entry === ${JSON.stringify(oldGateway)} ? Date.now() : null);
+    db.close();
+}
+`);
+        chmodSync(fakePm2, 0o755);
+
+        const initialDb = new Database(dbPath);
+        initialDb.exec('CREATE TABLE gateway_lock (id INTEGER PRIMARY KEY, pid INTEGER NOT NULL, acquired_at INTEGER NOT NULL, heartbeat_at INTEGER NOT NULL, ready_at INTEGER)');
+        initialDb.query('INSERT INTO gateway_lock VALUES (1, ?, ?, ?, ?)').run(4242, Date.now(), Date.now(), Date.now());
+        initialDb.close();
+
+        process.env.SUPERTASK_PM2_BIN = fakePm2;
+        process.env.SUPERTASK_BUN_BIN = fakeBun;
+        process.env.SUPERTASK_GATEWAY_ENTRY = newGateway;
+        process.env.SUPERTASK_DB_PATH = dbPath;
+        process.env.SUPERTASK_VERSION_FILE = versionFile;
+        process.env.SUPERTASK_GATEWAY_READY_TIMEOUT_MS = '50';
+        process.env.SUPERTASK_PM2_KILL_TIMEOUT_MS = '45000';
+
+        expect(() => ensureGateway()).toThrow(/新 Gateway.*清理失败的新 Gateway 失败.*已回滚到旧 Gateway|清理失败的新 Gateway 失败.*已回滚到旧 Gateway/);
         const starts = readFileSync(log, 'utf8').trim().split('\n')
             .map((line) => JSON.parse(line) as string[])
             .filter((call) => call[0] === 'start');

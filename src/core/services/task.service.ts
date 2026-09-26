@@ -2,7 +2,7 @@
 // 封装所有任务相关的 CRUD 操作
 
 import { db, getSqlite, schema } from '@core/db';
-import { eq, and, desc, asc, sql, isNull, or } from 'drizzle-orm';
+import { eq, and, desc, asc, sql, isNull, or, type SQL } from 'drizzle-orm';
 import type { Task, NewTask, TaskStatus } from '@core/db/schema';
 import { computeBackoff } from '@core/backoff';
 import { validateTaskWorkingDirectory } from '@core/task-working-directory';
@@ -100,6 +100,11 @@ function blockedDependentsOf(prerequisiteId: number) {
     )`;
 }
 
+/** 未记录项目目录的旧任务。OR 必须自带括号：drizzle 的 and() 不会包裹原始 SQL 片段。 */
+function legacyCwdCondition(): SQL {
+    return sql`(${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = '')`;
+}
+
 export class TaskService {
     private static buildScopeWhere(scope?: { cwd?: string }) {
         const conditions: Array<ReturnType<typeof eq>> = [];
@@ -190,7 +195,9 @@ export class TaskService {
                 dependsOn: task.dependsOn,
             });
             const maxRetries = normalizedData.maxRetries ?? task.maxRetries ?? 3;
-            const exhausted = task.status === 'failed' && (task.retryCount ?? 0) > maxRetries;
+            // Watchdog/停机恢复会把已失败过的任务放回 pending 且保留 retryCount；降低预算后同样视为耗尽。
+            const exhausted = (task.status === 'failed' || task.status === 'pending')
+                && (task.retryCount ?? 0) > maxRetries;
             const updated = tx.update(tasks).set({
                 ...normalizedData,
                 ...(exhausted ? {
@@ -366,7 +373,7 @@ export class TaskService {
         scope: { cwd?: string; legacyCwd?: boolean; batchId?: string } = {},
     ): Promise<number> {
         const scopeConditions = scope.legacyCwd
-            ? [sql`${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = ''`]
+            ? [legacyCwdCondition()]
             : this.buildScopeWhere(scope);
         if (scope.batchId !== undefined) {
             const batchId = normalizeTaskBatchId(scope.batchId);
@@ -1004,7 +1011,7 @@ export class TaskService {
             conditions.push(eq(tasks.category, options.category));
         }
         if (options.legacyCwd) {
-            conditions.push(sql`${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = ''`);
+            conditions.push(legacyCwdCondition());
         } else if (options.cwd !== undefined) {
             conditions.push(eq(tasks.cwd, options.cwd));
         }
@@ -1038,7 +1045,7 @@ export class TaskService {
                 : sql`0`);
         }
         if (options.legacyCwd) {
-            conditions.push(sql`${tasks.cwd} IS NULL OR trim(${tasks.cwd}) = ''`);
+            conditions.push(legacyCwdCondition());
         } else if (options.cwd !== undefined) {
             conditions.push(eq(tasks.cwd, options.cwd));
         }

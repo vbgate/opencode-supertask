@@ -1,3 +1,4 @@
+import { openCodeExecutable } from '@core/opencode-cli';
 import { TaskRunService } from '@core/services/task-run.service';
 import { TaskService } from '@core/services/task.service';
 import {
@@ -94,7 +95,7 @@ export async function checkHeartbeats(
             if (run.childPid != null
                 && run.childPid > 0
                 && run.launchProtocol === TOKEN_GUARDIAN_LAUNCH_PROTOCOL) {
-                const expectedExecutable = process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
+                const expectedExecutable = openCodeExecutable();
                 const signalResult = signalRecordedProcessTreeWithResult(
                     run.childPid,
                     'SIGKILL',

@@ -10,6 +10,21 @@ describe('TaskService', () => {
         testDb = setupTestDb();
     });
 
+    test('旧任务（无 cwd）筛选仍受状态和批次条件约束', async () => {
+        await testDb.db.insert(testDb.schema.tasks).values([
+            { name: 'null-pending', agent: 'a', prompt: 'p', cwd: null, status: 'pending', batchId: 'X' },
+            { name: 'empty-done', agent: 'a', prompt: 'p', cwd: '', status: 'done', batchId: 'X' },
+            { name: 'empty-running', agent: 'a', prompt: 'p', cwd: '  ', status: 'running', batchId: 'Y' },
+            { name: 'scoped-running', agent: 'a', prompt: 'p', cwd: '/tmp', status: 'running', batchId: 'X' },
+        ]);
+
+        const pending = await TaskService.list({ legacyCwd: true, status: 'pending' });
+        expect(pending.map((task) => task.name)).toEqual(['null-pending']);
+        expect(await TaskService.countRunning({ legacyCwd: true })).toBe(1);
+        expect(await TaskService.countRunning({ legacyCwd: true, batchId: 'X' })).toBe(0);
+        expect((await TaskService.stats({ legacyCwd: true, batchId: 'X' })).total).toBe(2);
+    });
+
     describe('add', () => {
         test('创建基本任务', async () => {
             const task = await TaskService.add({
@@ -206,6 +221,15 @@ describe('TaskService', () => {
             expect(await TaskService.update(task.id, { maxRetries: 0 })).toMatchObject({
                 status: 'dead_letter', maxRetries: 0, retryAfter: null,
             });
+        });
+
+        test('降低预算时已耗尽次数的 pending 重试（Watchdog 恢复）同样收敛到 dead_letter', async () => {
+            const recovered = await TaskService.add({ name: '恢复待重试', agent: 'a', prompt: 'p', maxRetries: 3 });
+            testDb.sqlite.query("UPDATE tasks SET status = 'pending', retry_count = 3 WHERE id = ?").run(recovered.id);
+            const fresh = await TaskService.add({ name: '全新 pending', agent: 'a', prompt: 'p', maxRetries: 3 });
+
+            expect(await TaskService.update(recovered.id, { maxRetries: 1 })).toMatchObject({ status: 'dead_letter' });
+            expect(await TaskService.update(fresh.id, { maxRetries: 0 })).toMatchObject({ status: 'pending' });
         });
 
         test('降低重试预算进入 dead_letter 时递归收敛依赖链', async () => {

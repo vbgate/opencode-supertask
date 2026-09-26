@@ -162,8 +162,9 @@ async function main(): Promise<void> {
     }
 
     if (!await waitForRelease()) {
-        process.exitCode = 125;
-        return;
+        // 握手失败（父进程退出或关闭管道）时显式退出：Bun 1.1.x 的 IPC 句柄会让事件循环常驻，
+        // 仅设置 exitCode 会让未登记的 launcher 永久遗留。
+        process.exit(125);
     }
 
     const preserveGroupLeader = () => {};

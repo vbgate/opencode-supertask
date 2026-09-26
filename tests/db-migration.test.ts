@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync } from 'fs';
+import { execFileSync, spawn } from 'child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -42,3 +42,27 @@ describe('数据库迁移入口', () => {
         sqlite.close();
     });
 });
+
+describe('并发首次打开数据库', () => {
+    test('多个进程同时创建并迁移同一新库时全部成功', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-concurrent-open-'));
+        try {
+            const script = join(dir, 'open.ts');
+            writeFileSync(script, `const { getDb, closeDb } = await import(${JSON.stringify(join(process.cwd(), 'src/core/db/index.ts'))});\ngetDb();\ncloseDb();\n`);
+            for (let round = 0; round < 3; round += 1) {
+                const databasePath = join(dir, `round-${round}.db`);
+                const exits = await Promise.all(Array.from({ length: 5 }, () => new Promise<number | null>((resolve) => {
+                    const child = spawn(process.execPath, [script], {
+                        env: { ...process.env, SUPERTASK_DB_PATH: databasePath },
+                        stdio: 'ignore',
+                    });
+                    child.once('close', resolve);
+                })));
+                expect(exits).toEqual([0, 0, 0, 0, 0]);
+            }
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+    }, 60_000);
+});
+

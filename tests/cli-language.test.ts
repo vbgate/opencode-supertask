@@ -26,6 +26,10 @@ describe('CLI 语言', () => {
         expect(english.stdout).toContain('Durable task queue and scheduler');
         expect(english.stdout).toContain('create a queued task');
 
+        const shortChinese = help(['--lang', 'zh', '--help']);
+        expect(shortChinese.status).toBe(0);
+        expect(shortChinese.stdout).toContain('选项：');
+
         const chinese = help(['add', '--lang', 'zh-CN', '--help']);
         expect(chinese.status).toBe(0);
         expect(chinese.stdout).toContain('创建新任务');

@@ -77,4 +77,9 @@ describe("parseDuration", () => {
         expect(parseDuration("0")).toBeNull();
         expect(parseDuration("-1h")).toBeNull();
     });
+
+    test('拒绝空 ISO 8601 时长与非数字分量', () => {
+        for (const value of ['P', 'PT', 'P.D', 'PT.H', 'P1DT']) expect(parseDuration(value)).toBeNull();
+        expect(parseDuration('P1DT2H')).toBe(93_600_000);
+    });
 });

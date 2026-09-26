@@ -48,7 +48,12 @@ export interface GatewayRuntime {
     cwd: string;
     env: NodeJS.ProcessEnv;
     killTimeoutMs?: number;
+    /** 已存在 PM2 进程实际生效的 kill_timeout（未保存时为 PM2 默认值）；仅来自 jlist 的运行态才有。 */
+    pm2KillTimeoutMs?: number;
 }
+
+// PM2 未显式配置 kill_timeout 时的默认值。
+const PM2_DEFAULT_KILL_TIMEOUT_MS = 1_600;
 
 export interface RuntimeScope {
     cwd: string;
@@ -809,6 +814,7 @@ function gatewayRuntimeFromProcess(processInfo: Pm2Process | undefined): Gateway
         killTimeoutMs: Number.isInteger(killTimeout) && killTimeout! >= 5000
             ? killTimeout
             : undefined,
+        pm2KillTimeoutMs: Number.isInteger(killTimeout) ? killTimeout : PM2_DEFAULT_KILL_TIMEOUT_MS,
     };
 }
 
@@ -940,8 +946,22 @@ export function stopGatewayForMaintenance(): GatewayMaintenanceState {
     if (!managedCurrentDatabase) return { wasRunning: false };
 
     assertRuntimeCanControlPm2(runtime, proc);
-    requirePm2Termination("stop", "pm2 stop Gateway for database maintenance", runtime);
-    return { wasRunning: true, env: runtime.env, cwd: runtime.cwd };
+    assertPm2KillTimeoutCoversShutdown(runtime);
+    const state: GatewayMaintenanceState = { wasRunning: true, env: runtime.env, cwd: runtime.cwd };
+    try {
+        requirePm2Termination("stop", "pm2 stop Gateway for database maintenance", runtime);
+    } catch (error) {
+        // PM2 可能已开始停止 Gateway 后 CLI 才超时或失败；维护尚未开始，按“失败也恢复原状态”尝试恢复。
+        try {
+            restartGatewayAfterMaintenance(state);
+        } catch (restartError) {
+            const original = error instanceof Error ? error.message : String(error);
+            const restart = restartError instanceof Error ? restartError.message : String(restartError);
+            throw new Error(`${original}；Gateway 自动恢复也失败：${restart}`);
+        }
+        throw error;
+    }
+    return state;
 }
 
 export function restartGatewayAfterMaintenance(state: GatewayMaintenanceState): boolean {
@@ -962,12 +982,29 @@ export function restartGatewayAfterMaintenance(state: GatewayMaintenanceState): 
     return true;
 }
 
+/** 停机前后的运行中工作检查；停机会中断并重置运行中任务，所以不能只在停机后检查。 */
+export interface GatewayMaintenanceWorkGuard {
+    assertIdleBeforeStop(): number;
+    assertNoRunsStartedSince(baseline: number): void;
+}
+
 export function withGatewayMaintenance<T>(
     keepStopped: boolean,
     operation: () => T,
+    guard?: GatewayMaintenanceWorkGuard,
 ): GatewayMaintenanceResult<T> {
     return withManagementLock(() => {
+        const baseline = guard?.assertIdleBeforeStop();
         const state = stopGatewayForMaintenance();
+        if (guard && baseline !== undefined) {
+            try {
+                guard.assertNoRunsStartedSince(baseline);
+            } catch (error) {
+                // 维护未开始，无论 keepStopped 都恢复原状态。
+                if (state.wasRunning) restartGatewayAfterMaintenance(state);
+                throw error;
+            }
+        }
         let result: T;
         try {
             result = operation();
@@ -1058,18 +1095,55 @@ function gatewayTerminationCommandTimeoutMs(runtime: GatewayRuntime): number {
     return Math.max(pm2CommandTimeoutMs(runtime.env), minimumCommandTimeoutMs);
 }
 
+function runningWorkCount(path: string): number {
+    if (!existsSync(path)) return 0;
+    let database: Database | null = null;
+    try {
+        database = new Database(path, { readonly: true });
+        const tables = database.query(
+            "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name IN ('tasks', 'task_runs')",
+        ).get() as { count: number } | null;
+        if (Number(tables?.count ?? 0) < 2) return 0;
+        const row = database.query(
+            "SELECT (SELECT COUNT(*) FROM tasks WHERE status = 'running') + (SELECT COUNT(*) FROM task_runs WHERE status = 'running') AS count",
+        ).get() as { count: number } | null;
+        return Number(row?.count ?? 0);
+    } finally {
+        database?.close();
+    }
+}
+
+/**
+ * PM2 用进程自身保存的 kill_timeout 执行 stop/delete，命令侧超时无法延长它。若该值短于
+ * shutdown grace + 15s 且仍有运行中任务，PM2 会在优雅停机中途 SIGKILL，run 只能进入隔离；
+ * 此时在终止前失败关闭。没有运行中任务时停机很快，允许继续以免旧安装永远无法升级。
+ */
+function assertPm2KillTimeoutCoversShutdown(runtime: GatewayRuntime): void {
+    if (runtime.pm2KillTimeoutMs === undefined) return;
+    const scope = runtimeScope(runtime);
+    const requiredMs = loadConfig(scope.configPath).worker.shutdownGracePeriodMs + 15_000;
+    if (runtime.pm2KillTimeoutMs >= requiredMs) return;
+    const running = runningWorkCount(scope.databasePath);
+    if (running === 0) return;
+    throw new Error(
+        `[supertask] PM2 Gateway 的 kill_timeout 为 ${runtime.pm2KillTimeoutMs}ms，低于 shutdown grace + 15000ms（${requiredMs}ms），`
+        + `且仍有 ${running} 个运行中任务/执行记录；现在停止会在优雅停机中途被强制终止。请等待任务完成后重试`,
+    );
+}
+
 function requirePm2Termination(
     command: "stop" | "delete",
     action: string,
     runtime: GatewayRuntime,
 ): string {
+    assertPm2KillTimeoutCoversShutdown(runtime);
     return requirePm2([command, PROCESS_NAME], action, {
         env: runtime.env,
         timeoutMs: gatewayTerminationCommandTimeoutMs(runtime),
     });
 }
 
-function pm2StartGateway(runtime = currentGatewayRuntime()): void {
+function pm2StartGateway(runtime = currentGatewayRuntime(), expectedVersion?: string): void {
     try {
         accessSync(runtime.bunPath, constants.X_OK);
         accessSync(runtime.gatewayEntry, constants.R_OK);
@@ -1117,6 +1191,11 @@ function pm2StartGateway(runtime = currentGatewayRuntime()): void {
         || !waitForGatewayReady(started.pid, runtimeScope(runtime).databasePath, runtime.env)
     ) {
         throw new Error("[supertask] Gateway 进程 online，但未在限定时间内就绪；请查看 pm2 logs supertask-gateway");
+    }
+    // 就绪锁记录的版本必须是本次目标版本（入口指向陈旧缓存或被覆盖时会不一致）；旧版 Gateway 不写版本则无法比较。
+    const readyVersion = gatewayVersionFromLock(started.pid, runtimeScope(runtime).databasePath);
+    if (expectedVersion !== undefined && typeof readyVersion === "string" && readyVersion !== expectedVersion) {
+        throw new Error(`[supertask] Gateway 已就绪，但运行版本 ${readyVersion} 不是目标版本 ${expectedVersion}`);
     }
 }
 
@@ -1314,32 +1393,11 @@ function installUnlocked(): void {
 
     const version = getPackageVersion();
     try {
-        pm2StartGateway(targetRuntime);
+        pm2StartGateway(targetRuntime, version);
         savePm2State(targetRuntime.env);
         writeRunningVersion(version, targetRuntime.env, targetRuntime.cwd);
     } catch (error) {
-        const failed = pm2JsonList(targetRuntime.env).find((item) => item.name === PROCESS_NAME);
-        if (failed) {
-            requirePm2Termination(
-                "delete",
-                "pm2 delete failed Gateway",
-                gatewayRuntimeFromProcess(failed) ?? targetRuntime,
-            );
-        }
-        if (oldRuntime) {
-            try {
-                pm2StartGateway(oldRuntime);
-                savePm2State(oldRuntime.env);
-                if (before) writeRunningVersion(before, oldRuntime.env, oldRuntime.cwd);
-            } catch (rollbackError) {
-                const original = error instanceof Error ? error.message : String(error);
-                const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-                throw new Error(`${original}; 旧 Gateway 回滚也失败: ${rollback}`);
-            }
-            const message = error instanceof Error ? error.message : String(error);
-            throw new Error(`${message}; 已回滚到旧 Gateway`);
-        }
-        throw error;
+        return rollbackFailedGatewayStart(error, targetRuntime, oldRuntime, before);
     }
     if (!ensurePm2LogRotation(targetRuntime.env)) {
         console.warn("[supertask] pm2-logrotate 安装或配置失败；Gateway 已运行，但请执行 `supertask doctor` 检查日志治理。");
@@ -1444,11 +1502,27 @@ function upgradeUnlocked(target?: {
     if (existing) requirePm2Termination("delete", "pm2 delete old Gateway", oldRuntime!);
 
     try {
-        pm2StartGateway(targetRuntime);
+        pm2StartGateway(targetRuntime, currentVersion);
         savePm2State(targetRuntime.env);
         writeRunningVersion(currentVersion, targetRuntime.env, targetRuntime.cwd);
         return { before, after: currentVersion, restarted: true };
     } catch (error) {
+        return rollbackFailedGatewayStart(error, targetRuntime, oldRuntime, before);
+    }
+}
+
+/**
+ * 新 Gateway 启动失败后的统一回滚：清理失败进程的错误不能覆盖原始错误，也不能阻止尝试恢复旧 Gateway。
+ */
+function rollbackFailedGatewayStart(
+    error: unknown,
+    targetRuntime: GatewayRuntime,
+    oldRuntime: GatewayRuntime | null,
+    before: string | null,
+): never {
+    const message = (value: unknown) => (value instanceof Error ? value.message : String(value));
+    const problems: string[] = [];
+    try {
         const failed = pm2JsonList(targetRuntime.env).find((item) => item.name === PROCESS_NAME);
         if (failed) {
             requirePm2Termination(
@@ -1457,19 +1531,22 @@ function upgradeUnlocked(target?: {
                 gatewayRuntimeFromProcess(failed) ?? targetRuntime,
             );
         }
-        if (!oldRuntime) throw error;
-        try {
-            pm2StartGateway(oldRuntime);
-            savePm2State(oldRuntime.env);
-            if (before) writeRunningVersion(before, oldRuntime.env, oldRuntime.cwd);
-        } catch (rollbackError) {
-            const original = error instanceof Error ? error.message : String(error);
-            const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-            throw new Error(`${original}; 旧 Gateway 回滚也失败: ${rollback}`);
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new Error(`${message}; 已回滚到旧 Gateway`);
+    } catch (cleanupError) {
+        problems.push(`清理失败的新 Gateway 失败: ${message(cleanupError)}`);
     }
+    if (!oldRuntime) {
+        if (problems.length === 0) throw error;
+        throw new Error(`${message(error)}; ${problems.join("; ")}`);
+    }
+    try {
+        pm2StartGateway(oldRuntime);
+        savePm2State(oldRuntime.env);
+        if (before) writeRunningVersion(before, oldRuntime.env, oldRuntime.cwd);
+    } catch (rollbackError) {
+        problems.push(`旧 Gateway 回滚也失败: ${message(rollbackError)}`);
+        throw new Error(`${message(error)}; ${problems.join("; ")}`);
+    }
+    throw new Error(`${message(error)}; ${[...problems, "已回滚到旧 Gateway"].join("; ")}`);
 }
 
 export function ensureGateway(): EnsureGatewayResult {
@@ -1518,32 +1595,11 @@ function ensureGatewayUnlocked(): EnsureGatewayResult {
     assertOpenCodeRuntime(targetRuntime);
     if (existing) requirePm2Termination("delete", "pm2 delete stale Gateway", oldRuntime!);
     try {
-        pm2StartGateway(targetRuntime);
+        pm2StartGateway(targetRuntime, currentVersion);
         savePm2State(targetRuntime.env);
         writeRunningVersion(currentVersion, targetRuntime.env, targetRuntime.cwd);
     } catch (error) {
-        const failed = pm2JsonList(targetRuntime.env).find((item) => item.name === PROCESS_NAME);
-        if (failed) {
-            requirePm2Termination(
-                "delete",
-                "pm2 delete failed Gateway",
-                gatewayRuntimeFromProcess(failed) ?? targetRuntime,
-            );
-        }
-        if (oldRuntime) {
-            try {
-                pm2StartGateway(oldRuntime);
-                savePm2State(oldRuntime.env);
-                if (before) writeRunningVersion(before, oldRuntime.env, oldRuntime.cwd);
-            } catch (rollbackError) {
-                const original = error instanceof Error ? error.message : String(error);
-                const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
-                throw new Error(`${original}; 旧 Gateway 回滚也失败: ${rollback}`);
-            }
-            const message = error instanceof Error ? error.message : String(error);
-            throw new Error(`${message}; 已回滚到旧 Gateway`);
-        }
-        throw error;
+        return rollbackFailedGatewayStart(error, targetRuntime, oldRuntime, before);
     }
     return { ok: true, action: existing ? "restarted" : "started" };
 }

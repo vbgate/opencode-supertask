@@ -32,7 +32,7 @@ pm2 status
 pm2 logs supertask-gateway
 ```
 
-`supertask doctor` 会分别用当前终端环境和 PM2 保存的 Gateway 环境执行 `opencode --version`，再读取 `opencode debug config --pure` 的最终配置，要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、全局 CLI、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。终端可执行但 Gateway 环境不可执行、Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或任一组件版本不一致都会返回非零退出码。
+`supertask doctor` 会分别用当前终端环境和 PM2 保存的 Gateway 环境执行 `opencode --version`，再读取最终配置（1.x `opencode debug config --pure`；2.x `opencode debug config` 的来源数组，按顺序合并 `plugins`/旧键 `plugin`），要求 `opencode-supertask` 只出现一次且固定到精确语义版本；随后核对该版本的 OpenCode 缓存包、全局 CLI、PM2 实际 Gateway 入口中的包版本和数据库 ready 锁版本。终端可执行但 Gateway 环境不可执行、Gateway 入口仍包含 `opencode-supertask@latest` 或 `@next`、缓存缺失、入口包无法确认或任一组件版本不一致都会返回非零退出码。
 
 修改配置后必须重启 Gateway 才生效：
 
@@ -63,6 +63,25 @@ npm install -g opencode-supertask@<version>
 bun add -g opencode-supertask@<version>
 ```
 
+## 从 OpenCode 1.x 迁移到 2.x
+
+SuperTask 按 Gateway 实际使用的 OpenCode 可执行文件（`SUPERTASK_OPENCODE_BIN`，未设置时为 PATH 中的 `opencode`）运行时识别主版本，同一数据库中的历史任务、run 与 Session 无需迁移：
+
+- 1.x 风格的 `model` + `variant` 在 2.x 下自动改写为 `-m provider/model#variant`；只有 variant、没有模型的任务在 2.x 无法表达，会直接进入 `dead_letter` 并说明原因，补充模型后手动重试即可。
+- 旧 run 的“继续会话”复用该 run 实际执行的 OpenCode；2.x 会把 1.x 会话原位迁移并保留 Session ID。
+- 插件同一版本同时支持两代加载器。1.x 使用 `opencode plugin "opencode-supertask@<版本>" --global --force`，2.x 使用 `opencode plugin add "opencode-supertask@<版本>"`；两者共享的全局配置中只保留一条固定版本声明（`supertask upgrade` 会自动收敛重复项）。
+
+PM2 Gateway 的 `SUPERTASK_*` 环境在 `install`/`upgrade` 时始终沿用旧值，因此切换 Gateway 使用的 OpenCode 必须显式重装：
+
+```bash
+supertask status                      # 确认没有 running 任务
+supertask uninstall                   # 只移除 PM2 进程与 LaunchAgent，数据库和配置保留
+SUPERTASK_OPENCODE_BIN="$(which opencode)" supertask install   # 在目标 OpenCode 可用的终端执行
+supertask doctor
+```
+
+插件写入队列前会核对自身运行环境与 PM2 Gateway 的数据库、配置和 OpenCode 可执行文件是否一致；版本不同且作用域不一致时会拒绝写入并提示，避免某个 OpenCode 会话把 Gateway 切换到另一套 OpenCode。
+
 ## 初始化与数据位置
 
 运行时要求 Bun 1.1.45 或更高版本。CI 会用最低支持版本单独执行构建后 launcher 的真实 IPC 握手，避免最新版 Bun 测试掩盖旧版本中 `process.send` callback 不回调的问题。
@@ -77,7 +96,7 @@ supertask db check   # 完整性、外键、业务表和运行状态检查
 |---|---|---|
 | SQLite | `~/.local/share/opencode/tasks.db` | `SUPERTASK_DB_PATH` |
 | Gateway 配置 | `~/.config/opencode/supertask.json` | `SUPERTASK_CONFIG_PATH` |
-| 目标 OpenCode 可执行文件 | `opencode` | `SUPERTASK_OPENCODE_BIN` |
+| 目标 OpenCode 可执行文件（1.x 或 2.x，按 `--version` 自动适配） | `opencode` | `SUPERTASK_OPENCODE_BIN` |
 | PM2 内存重启阈值 | `512M` | `SUPERTASK_PM2_MAX_MEMORY`，格式如 `256M` / `1G` |
 | PM2 命令硬超时 | `15000` ms | `SUPERTASK_PM2_COMMAND_TIMEOUT_MS`；超时后强制终止 CLI，避免管理锁和 macOS supervisor 永久卡死 |
 | PM2 管理锁等待 | `15000` ms | `SUPERTASK_PM2_MANAGEMENT_LOCK_TIMEOUT_MS`；超过后拒绝并发生命周期操作 |
@@ -174,13 +193,13 @@ supertask edit --id 42 --model openai/gpt-5.6-sol --variant xhigh --importance 5
 supertask edit --id 42 --clear-variant
 ```
 
-运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`，并在同一事务递归停止无法继续的下游依赖；修改该状态后仍需人工重试才会重新入队。
+运行中、已完成和已取消任务拒绝编辑，避免执行参数与实际 run 或历史记录不一致。降低 `failed` 任务或保留了失败次数的 `pending` 任务（Watchdog/停机恢复后）的 `maxRetries` 导致现有重试次数超预算时，任务会立即进入 `dead_letter`，并在同一事务递归停止无法继续的下游依赖；修改该状态后仍需人工重试才会重新入队。
 
 Dashboard 的“定时任务”页可以直接创建和编辑 `cron`、固定间隔及一次性任务。表单支持模型、variant、Agent、提示词、项目目录、优先级、批次、自动调度活跃实例上限、重试等待和单次超时。重试、超时与循环间隔先选常用预设，只有选“自定义”时才出现数字和秒/分钟/小时/天单位；一次性任务使用日期时间选择器。CLI 仍支持 `30s`、`5min`、`1h` 或 `2d` 以便脚本调用。编辑只影响以后生成的任务，不会回写已经排队或正在运行的任务。
 
-新建任务或定时任务时，先用 Dashboard 的文件夹选择器确定项目。Gateway 会在该目录执行本机 `opencode agent list` 和 `opencode models --verbose`：Agent 下拉框只保留 primary/all 模式，避免把仅供委派的 subagent 直接传给 `opencode run`；模型先选 Provider 再选具体值，随后只显示该模型元数据声明的 variants。选“跟随 Agent / OpenCode 默认模型”时 Worker 不传 `-m`；variant 选默认值时不传 `--variant`。CLI 和插件仍允许 Provider 自定义 variant 字符串，最终由实际执行的 OpenCode 判定。读取失败会在表单中显示原因，不使用伪造的静态列表。
+新建任务或定时任务时，先用 Dashboard 的文件夹选择器确定项目。Gateway 会在该目录读取本机 OpenCode 能力目录（1.x：`agent list` / `models --verbose`；2.x：`api agent.list` / `api model.list`）：Agent 下拉框只保留 primary/all 模式，避免把仅供委派的 subagent 直接传给 `opencode run`；模型先选 Provider 再选具体值，随后只显示该模型元数据声明的 variants。选“跟随 Agent / OpenCode 默认模型”时 Worker 不传 `-m`；variant 选默认值时不传 variant。OpenCode 2.x 只能以 `-m provider/model#variant` 指定 variant，因此 2.x 下使用 variant 必须同时选择模型，否则 run 直接失败并进入 `dead_letter`。CLI 和插件仍允许 Provider 自定义 variant 字符串，最终由实际执行的 OpenCode 判定。读取失败会在表单中显示原因，不使用伪造的静态列表。
 
-任务页和执行记录页的“继续会话”会从服务端按 run ID 读取已捕获的 Session ID，校验格式后复制 `opencode --session <sessionId>`；完整 Session ID 不写入页面 HTML。界面中的“等待重试”对应内部 `failed`，仍会按退避策略自动执行；“已停止”对应内部 `dead_letter`，可能是重试用尽或依赖无法继续，系统不会再自动运行，需要查看失败原因后手动重试。
+任务页和执行记录页的“继续会话”会从服务端按 run ID 读取已捕获的 Session ID，校验格式后复制 `cd <执行目录> && <该 run 实际使用的 opencode> --session <sessionId>`（旧 run 没有命令元数据时回退到任务 `cwd` 和当前 `SUPERTASK_OPENCODE_BIN`），保证用执行时的 OpenCode 版本在原项目中继续；完整 Session ID 不写入页面 HTML。浏览器拒绝异步写剪贴板时会弹出已选中命令的手动复制框。界面中的“等待重试”对应内部 `failed`，仍会按退避策略自动执行；“已停止”对应内部 `dead_letter`，可能是重试用尽或依赖无法继续，系统不会再自动运行，需要查看失败原因后手动重试。
 
 定时任务的 `maxInstances` 只限制自动调度，统计它产生的 `pending`、`running` 和仍有自动重试预算的 `failed`。Dashboard 的“立即运行一次”始终按当前模板创建普通 `pending` 任务；若 Worker 全局并发已满，它会留在队列等待。手动创建的任务仍计入后续自动调度的活跃实例数。不会回放离线期间错过的每个周期。
 
@@ -228,8 +247,13 @@ curl -fsS http://127.0.0.1:4680/health
 
 ```bash
 cd <任务 cwd>
+# OpenCode 1.x
 opencode run --agent <agent> --format json [-m <model>] [--variant <variant>] '<prompt>'
+# OpenCode 2.x
+opencode run --standalone --agent <agent> --format json [-m <model>[#<variant>]] '<prompt>'
 ```
+
+执行记录页展开的“实际命令”就是 Worker 按当前 OpenCode 版本生成的参数，优先直接复制它。
 
 若完全相同的命令在终端成功、Gateway 仍以 `Unexpected server error` 或 Provider 认证错误退出，通常说明 PM2 保存的 OpenCode/XDG/Provider 环境已落后。在这个手动命令可工作的终端执行 `supertask install`；有新版本时执行 `supertask upgrade`，已经最新时执行 `supertask upgrade --force`。这些命令会刷新执行环境并安全替换 Gateway，无需先卸载。若仍失败，保留任务/run 的完整输出和 `pm2 logs supertask-gateway`，不要只用 `general` 验证：OpenCode 可能把非主 Agent 名称降级到默认 Agent。
 
@@ -267,7 +291,7 @@ sqlite3 ~/.local/share/opencode/tasks.db 'PRAGMA foreign_key_check;'
 
 - 确认 `dashboard.enabled=true`，端口没有被占用，并且访问 `http://127.0.0.1:<port>`。
 - Dashboard 不对局域网地址监听；这是安全边界，不是网络配置遗漏。
-- 浏览器写请求必须同源。经过反向代理、不同主机名或不同端口访问会被拒绝。
+- 浏览器发起的所有 API 请求必须同源（读取能力目录会在所选目录启动 OpenCode，也受此约束）。经过反向代理、不同主机名或不同端口访问会被拒绝。
 - 主题或语言显示异常时，可先切回“跟随系统”或重新选择语言；这两项是浏览器本地偏好，不影响任务与数据库。
 
 ## 数据库检查、备份、清空与恢复
@@ -293,7 +317,7 @@ supertask db clear --confirm CLEAR
 
 `db clear` 会先核对 PM2 进程 PID 与当前数据库的新鲜 ready 锁；匹配时自动优雅停止 Gateway，维护结束后按原状态重启并等待新的 ready 锁，数据库操作失败时也会尝试恢复运行。传入 `--keep-stopped` 会让原本运行的 PM2 Gateway 保持停止。前台 Gateway、陈旧锁或无法确认归属的进程不会被自动终止，命令会拒绝操作并要求人工停止。
 
-清空仍会拒绝任何 `running` 任务/执行记录，在一个 `BEGIN IMMEDIATE` 事务内先生成 `pre-clear` 备份，再动态删除全部业务表数据；这包括由兼容新版本引入、当前旧二进制并不认识的 expand-only 表，循环外键在提交时统一校验。任一步失败都会回滚事务。它保留数据库结构、`gateway_lock`、迁移记录、配置和自增序列。若数据库维护已完成但 PM2 重启失败，CLI 会明确报告“数据库维护已完成”，此时按错误提示检查 `pm2 logs supertask-gateway`，不要重复清空。Dashboard 的“清空数据库”复用同一服务，要求服务端确认并拒绝运行中任务；因为 Dashboard 本身位于当前 Gateway 内，它只豁免当前 Gateway PID，不豁免其他进程。
+清空仍会拒绝任何 `running` 任务/执行记录（在停止 PM2 Gateway 之前检查：Gateway 优雅停机会中断并重置运行中任务，停机后已看不到它们；若预检后到停机前有新 run 开始，维护会中止并恢复 Gateway），在一个 `BEGIN IMMEDIATE` 事务内先生成 `pre-clear` 备份，再动态删除全部业务表数据；这包括由兼容新版本引入、当前旧二进制并不认识的 expand-only 表，循环外键在提交时统一校验。任一步失败都会回滚事务。它保留数据库结构、`gateway_lock`、迁移记录、配置和自增序列。若数据库维护已完成但 PM2 重启失败，CLI 会明确报告“数据库维护已完成”，此时按错误提示检查 `pm2 logs supertask-gateway`，不要重复清空。Dashboard 的“清空数据库”复用同一服务，要求服务端确认并拒绝运行中任务；因为 Dashboard 本身位于当前 Gateway 内，它只豁免当前 Gateway PID，不豁免其他进程。
 
 从备份恢复：
 

@@ -220,32 +220,31 @@ function commandMatches(
 ): boolean {
     const expectedName = executableName(expectedExecutable);
     if (!expectedName) return false;
-    const tokens = commandTokens(command);
 
     if (launchProtocol === TOKEN_GUARDIAN_LAUNCH_PROTOCOL) {
         if (!isLaunchIdentity(expectedLaunchIdentity)) return false;
-        const expectedLauncher = guardianLauncherPath();
-        const launcherIndex = tokens.findIndex((token, index) => (
-            index > 0
-            && index <= 3
-            && token.replaceAll('\\', '/') === expectedLauncher
-        ));
-        if (launcherIndex < 0) return false;
+        // ps 以空格拼接 argv 且不加引号：安装路径或 OpenCode 路径含空格时逐 token 解析会失真。
+        // 以“launcher 路径 + 身份参数 + 每 run UUID”这一唯一序列定位，再分别校验其前的运行时和其后的 OpenCode 调用。
+        const normalized = command.trim().replaceAll('\\', '/');
+        const marker = ` ${guardianLauncherPath()} ${LAUNCH_IDENTITY_ARGUMENT} ${expectedLaunchIdentity} `;
+        const markerIndex = normalized.indexOf(marker);
+        if (markerIndex <= 0) return false;
 
+        const runtime = normalized.slice(0, markerIndex);
         const runtimeName = executableName(process.execPath);
-        const hasRuntime = tokens.slice(0, launcherIndex).some((token) => (
+        const hasRuntime = [runtime, ...runtime.split(/\s+/)].some((token) => (
             executableName(token) === runtimeName || executableName(token) === 'bun'
         ));
-        const identityArgumentIndex = launcherIndex + 1;
-        const launchIdentityIndex = launcherIndex + 2;
-        const executableIndex = launcherIndex + 3;
+        const invocation = normalized.slice(markerIndex + marker.length);
+        const runIndex = invocation.indexOf(' run ');
+        if (runIndex <= 0) return false;
         return hasRuntime
-            && tokens[identityArgumentIndex] === LAUNCH_IDENTITY_ARGUMENT
-            && tokens[launchIdentityIndex] === expectedLaunchIdentity
-            && executableName(tokens[executableIndex] ?? '') === expectedName
-            && openCodeArgsMatch(tokens.slice(executableIndex + 1));
+            && executableName(invocation.slice(0, runIndex)) === expectedName
+            && openCodeArgsMatch(commandTokens(invocation.slice(runIndex + 1)));
     }
     if (launchProtocol != null) return false;
+
+    const tokens = commandTokens(command);
 
     const executableIndex = tokens.findIndex((token, index) => (
         index <= 3 && executableName(token) === expectedName

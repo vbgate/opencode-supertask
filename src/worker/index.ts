@@ -27,6 +27,13 @@ import {
 } from '@core/launch-protocol';
 import { validateTaskWorkingDirectory } from '@core/task-working-directory';
 import { normalizeTaskBatchId } from '@core/task-batch';
+import { RunOutput } from './run-output';
+import {
+    buildOpenCodeRunArgs,
+    detectOpenCodeVersion,
+    OpenCodeInvocationError,
+    openCodeExecutable,
+} from '@core/opencode-cli';
 
 const DEFAULT_MAX_OUTPUT_CHARS = 64 * 1024;
 const FORBIDDEN_AGENT = 'supertask-runner';
@@ -49,8 +56,7 @@ interface RunningTask {
     launchIdentity: string;
     child: ChildProcess;
     commandContext: string;
-    output: string;
-    sessionId: string | null;
+    output: RunOutput;
     timeoutTimer: ReturnType<typeof setTimeout> | null;
     termination: TaskTermination | null;
     terminationPromise: Promise<boolean> | null;
@@ -101,7 +107,7 @@ export class WorkerEngine {
 
     constructor(cfg: GatewayConfig, options: WorkerEngineOptions = {}) {
         this.cfg = cfg.worker;
-        this.opencodeBin = options.opencodeBin ?? process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
+        this.opencodeBin = options.opencodeBin ?? openCodeExecutable();
         this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
         this.settlementRetryDelaysMs = options.settlementRetryDelaysMs ?? [250, 1_000, 4_000];
         this.settlementRetryIntervalMs = options.settlementRetryIntervalMs ?? 5_000;
@@ -197,14 +203,15 @@ export class WorkerEngine {
         await this.reconcileCancelledTasks();
         await this.reconcileQuarantinedTasks();
 
-        const quarantined = [...this.runningTasks.values()].filter((entry) => entry.quarantined);
-        if (quarantined.length > 0) {
-            return false;
-        }
-
+        // 隔离中的 run 继续占用并发名额、批次和数据库 running 状态，只阻止同批次重入；
+        // 其他批次照常调度，Worker 仍在返回值中报告不健康，避免单个遗留进程组冻结整个队列。
         while (!this.stopped && this.runningTasks.size < this.cfg.maxConcurrency) {
             const databaseRunningCount = await TaskService.countRunning();
             if (databaseRunningCount >= this.cfg.maxConcurrency) break;
+            // 先确认 OpenCode 可用且版本可识别再抢占任务：不可用时不消耗任务重试次数，
+            // 也不会在“数据库已 running、Worker 尚未登记”的窗口里等待外部命令。
+            const openCode = await detectOpenCodeVersion(this.opencodeBin);
+            if (this.stopped) break;
 
             let task: Task | null;
             try {
@@ -260,7 +267,22 @@ export class WorkerEngine {
                     continue;
                 }
 
-                await this.spawnTask(task, run.id, launchIdentity);
+                let args: string[];
+                try {
+                    args = buildOpenCodeRunArgs(openCode.major, {
+                        agent: task.agent,
+                        model: this.resolveModel(task.model),
+                        variant: this.resolveVariant(task.variant),
+                        prompt: task.prompt,
+                    });
+                } catch (error) {
+                    if (!(error instanceof OpenCodeInvocationError)) throw error;
+                    await TaskService.failRun(task.id, run.id, `${error.message}（OpenCode ${openCode.version}）`, { setDeadLetter: true });
+                    this.releaseBatch(task);
+                    continue;
+                }
+
+                await this.spawnTask(task, run.id, launchIdentity, args);
             } catch (err) {
                 this.releaseBatch(task);
                 const message = `Worker 启动任务失败：${err instanceof Error ? err.message : String(err)}`;
@@ -294,13 +316,7 @@ export class WorkerEngine {
         return entry;
     }
 
-    private async spawnTask(task: Task, runId: number, launchIdentity: string): Promise<void> {
-        const model = this.resolveModel(task.model);
-        const variant = this.resolveVariant(task.variant);
-        const args = ['run', '--agent', task.agent, '--format', 'json'];
-        if (model) args.push('-m', model);
-        if (variant) args.push('--variant', variant);
-        args.push(task.prompt);
+    private async spawnTask(task: Task, runId: number, launchIdentity: string, args: string[]): Promise<void> {
         const cwd = task.cwd || process.cwd();
 
         const child = spawn(process.execPath, [
@@ -325,8 +341,11 @@ export class WorkerEngine {
             launchIdentity,
             child,
             commandContext: runCommandContext(this.opencodeBin, args, cwd),
-            output: '',
-            sessionId: null,
+            output: new RunOutput(this.maxOutputChars, (sessionId) => {
+                TaskRunService.updateSessionId(runId, sessionId).catch((err) => {
+                    this.logError('sessionId update failed', err, task.id);
+                });
+            }),
             timeoutTimer: null,
             termination: null,
             terminationPromise: null,
@@ -337,20 +356,10 @@ export class WorkerEngine {
         };
         this.runningTasks.set(task.id, entry);
 
-        const handleData = (data: Buffer) => {
-            const text = data.toString();
-            entry.output = (entry.output + text).slice(-this.maxOutputChars);
-
-            const match = entry.output.match(/"sessionID"\s*:\s*"(ses_[^"]+)"/);
-            if (match?.[1] && match[1] !== entry.sessionId) {
-                entry.sessionId = match[1];
-                TaskRunService.updateSessionId(runId, match[1]).catch((err) => {
-                    this.logError('sessionId update failed', err, task.id);
-                });
-            }
-        };
-        child.stdout?.on('data', handleData);
-        child.stderr?.on('data', handleData);
+        child.stdout?.setEncoding('utf8');
+        child.stderr?.setEncoding('utf8');
+        child.stdout?.on('data', (chunk: string) => entry.output.push('stdout', chunk));
+        child.stderr?.on('data', (chunk: string) => entry.output.push('stderr', chunk));
         child.on('message', (message: unknown) => {
             if (isMatchingDrainProof(message, entry.launchIdentity)) {
                 entry.guardianDrained = true;
@@ -362,9 +371,19 @@ export class WorkerEngine {
             }
         });
         let spawnError: Error | null = null;
+        let started = false;
         const spawned = new Promise<void>((resolve, reject) => {
-            child.once('spawn', resolve);
-            child.once('error', (error) => {
+            child.once('spawn', () => {
+                started = true;
+                resolve();
+            });
+            // 常驻监听：Bun 在向已退出子进程 send() 时异步触发 'error'。启动后的错误只记录，
+            // 不能被当成“无法启动”，也不能因没有监听器而抛出未处理 'error' 终止 Gateway。
+            child.on('error', (error) => {
+                if (started) {
+                    this.logError('launcher process error', error, task.id);
+                    return;
+                }
                 spawnError = error;
                 reject(error);
             });
@@ -750,7 +769,8 @@ export class WorkerEngine {
     }
 
     private outputWithCommand(entry: RunningTask): string {
-        const output = entry.output.trim();
+        entry.output.flush();
+        const output = entry.output.text().trim();
         return `${entry.commandContext}${output ? `\n${output}` : ''}`;
     }
 

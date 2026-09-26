@@ -15,6 +15,7 @@ import { db, schema } from '@core/db';
 import type { NewTask, TaskStatus } from '@core/db/schema';
 import { parseDuration } from '@core/duration';
 import { loadOpenCodeCatalog } from '@core/opencode-catalog';
+import { openCodeExecutable } from '@core/opencode-cli';
 import { validateTaskWorkingDirectory } from '@core/task-working-directory';
 import {
     DatabaseMaintenanceConflictError,
@@ -30,7 +31,7 @@ import {
     TaskTemplateService,
     type TaskTemplateUpdate,
 } from '@core/services/task-template.service';
-import { getConfigPath, loadConfig, validateConfig, type GatewayConfig } from '@gateway/config';
+import { CONFIG_BOUNDS, getConfigPath, loadConfig, validateConfig, type GatewayConfig } from '@gateway/config';
 import { getGatewayHealth } from '@gateway/health';
 import { triggerTaskFromTemplate } from '@gateway/scheduler/job-templates';
 import type { GatewayDiagnostic } from '../daemon/pm2';
@@ -69,9 +70,13 @@ function maskSessionId(value: string | null | undefined): string {
     return isValidSessionId(value) ? `${value.slice(4, 7)}***${value.slice(-3)}` : '—';
 }
 
-function sessionCommand(value: string): string {
+export function sessionCommand(
+    value: string,
+    context: { executable: string; cwd: string | null },
+): string {
     if (!isValidSessionId(value)) throw new Error('session unavailable');
-    return `opencode --session ${value}`;
+    const resume = `${shellQuote(context.executable)} --session ${value}`;
+    return context.cwd ? `cd ${shellQuote(context.cwd)} && ${resume}` : resume;
 }
 
 function configsEqual(left: GatewayConfig, right: GatewayConfig): boolean {
@@ -320,12 +325,13 @@ app.use('*', async (c, next) => {
 });
 
 app.use('/api/*', async (c, next) => {
-    if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return next();
-
+    // GET 也有副作用：能力目录会在指定目录启动 OpenCode 并加载该项目的插件。
+    // 浏览器跨站/同站其他端口发起的任何 API 请求（含 <img> 等无 CORS 请求）一律拒绝。
     const fetchSite = c.req.header('Sec-Fetch-Site');
     if (fetchSite && !['same-origin', 'none'].includes(fetchSite)) {
         return c.json({ error: 'cross-site request rejected' }, 403);
     }
+    if (['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) return next();
 
     const origin = c.req.header('Origin');
     if (origin) {
@@ -412,6 +418,50 @@ function shellQuote(value: string): string {
     return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
+interface RunCommandMetadata {
+    executable: string;
+    args: string[];
+    cwd: string;
+}
+
+function parseRunCommandMetadata(parsed: Record<string, unknown>): RunCommandMetadata | null {
+    if (parsed.type !== 'supertask_command') return null;
+    const executable = typeof parsed.executable === 'string' ? parsed.executable : null;
+    const cwd = typeof parsed.cwd === 'string' ? parsed.cwd : null;
+    const args = Array.isArray(parsed.args) && parsed.args.every((item) => typeof item === 'string')
+        ? parsed.args as string[]
+        : null;
+    return executable && cwd && args ? { executable, args, cwd } : null;
+}
+
+/** 1.x: `{ name, data: { message } }`；2.x: `{ type, message }`；工具错误可能是字符串。 */
+function eventErrorMessage(value: unknown): string | null {
+    if (typeof value === 'string') return value || null;
+    const error = recordValue(value);
+    if (!error) return null;
+    const data = recordValue(error.data);
+    const message = typeof error.message === 'string' ? error.message
+        : typeof data?.message === 'string' ? data.message : null;
+    const kind = typeof error.name === 'string' ? error.name
+        : typeof error.type === 'string' ? error.type : null;
+    if (message && kind) return `${kind}: ${message}`;
+    return message ?? kind;
+}
+
+export function findRunCommandMetadata(log: string | null): RunCommandMetadata | null {
+    for (const line of log?.split('\n') ?? []) {
+        if (!line.includes('supertask_command')) continue;
+        try {
+            const parsed = recordValue(JSON.parse(line.trim()) as unknown);
+            const metadata = parsed ? parseRunCommandMetadata(parsed) : null;
+            if (metadata) return metadata;
+        } catch {
+            continue;
+        }
+    }
+    return null;
+}
+
 export function presentRunLog(log: string, includeErrors = true): RunLogPresentation {
     let command: RunCommandPresentation | null = null;
     const textParts: string[] = [];
@@ -431,15 +481,11 @@ export function presentRunLog(log: string, includeErrors = true): RunLogPresenta
         if (!parsed) continue;
 
         if (parsed.type === 'supertask_command') {
-            const executable = typeof parsed.executable === 'string' ? parsed.executable : null;
-            const cwd = typeof parsed.cwd === 'string' ? parsed.cwd : null;
-            const args = Array.isArray(parsed.args) && parsed.args.every((item) => typeof item === 'string')
-                ? parsed.args as string[]
-                : null;
-            if (executable && cwd && args) {
+            const metadata: RunCommandMetadata | null = command ? null : parseRunCommandMetadata(parsed);
+            if (metadata) {
                 command = {
-                    cwd,
-                    command: `cd ${shellQuote(cwd)} && ${[executable, ...args].map(shellQuote).join(' ')}`,
+                    cwd: metadata.cwd,
+                    command: `cd ${shellQuote(metadata.cwd)} && ${[metadata.executable, ...metadata.args].map(shellQuote).join(' ')}`,
                 };
             }
             continue;
@@ -458,9 +504,7 @@ export function presentRunLog(log: string, includeErrors = true): RunLogPresenta
             : typeof parsed.tool === 'string' ? parsed.tool : null;
         if (tool && (eventType === 'tool_use' || partType === 'tool')) tools.push(tool);
 
-        const error = typeof parsed.error === 'string'
-            ? parsed.error
-            : typeof part?.error === 'string' ? part.error : null;
+        const error = eventErrorMessage(parsed.error) ?? eventErrorMessage(part?.error);
         if (error && includeErrors) errors.push(error);
     }
 
@@ -554,7 +598,7 @@ function durationControl(
         { value: 'custom', label: t(locale, 'duration.custom') },
     ];
     const selected = value === null ? '' : String(value);
-    return `<div class="duration-picker"><select id="${id}-preset" onchange="updateDurationControl('${id}')">${presets.map((item) => `<option value="${item.value}" ${item.value === selected ? 'selected' : ''}>${item.label}</option>`).join('')}</select><div id="${id}-custom" class="duration-control" hidden><input id="${id}-value" type="number" min="${kind === 'retry' ? 0 : 0.1}" step="0.1" inputmode="decimal"><select id="${id}-unit" aria-label="${t(locale, 'duration.unit')}">${units.map((item) => `<option value="${item.value}">${item.label}</option>`).join('')}</select></div></div>`;
+    return `<div class="duration-picker"><select id="${id}-preset" onchange="updateDurationControl('${id}')">${presets.map((item) => `<option value="${item.value}" ${item.value === selected ? 'selected' : ''}>${item.label}</option>`).join('')}</select><div id="${id}-custom" class="duration-control" hidden><input id="${id}-value" type="number" min="0" step="any" inputmode="decimal"><select id="${id}-unit" aria-label="${t(locale, 'duration.unit')}">${units.map((item) => `<option value="${item.value}">${item.label}</option>`).join('')}</select></div></div>`;
 }
 
 function formatInterval(milliseconds: number, locale: Locale): string {
@@ -951,27 +995,28 @@ app.get('/system', async (c) => {
           <td data-label="${t(locale, 'table.duration')}" class="small">${formatDuration(run.startedAt, null)}</td></tr>`;
     }).join('');
 
-    const unitInput = (name: string, value: number, min: number, unit: string, max?: number) =>
-        `<div class="input-unit"><input id="${name}" type="number" name="${name}" value="${value}" min="${min}" ${max ? `max="${max}"` : ''}><span>${unit}</span></div>`;
+    // 范围直接取自 validateConfig 的 CONFIG_BOUNDS（按显示单位换算）；step=any 允许 1.5 分钟等合法值，最终以服务端整数毫秒校验为准。
+    const unitInput = (name: string, value: number, bounds: readonly [number, number], factor: number, unit: string) =>
+        `<div class="input-unit"><input id="${name}" type="number" name="${name}" value="${value}" min="${bounds[0] / factor}" max="${bounds[1] / factor}" step="${factor === 1 ? 1 : 'any'}"><span>${unit}</span></div>`;
     const body = `
       <form id="config-form" onsubmit="event.preventDefault();saveConfig()">
         <div class="settings-grid reveal">
           <section class="card settings-card"><h2 class="settings-title"><span>${icon('activity')}${t(locale, 'system.worker')}</span></h2>
-            <div class="field"><label for="mc">${t(locale, 'system.maxConcurrency')}</label>${unitInput('mc', config.worker.maxConcurrency, 1, '×', 20)}</div>
-            <div class="field"><label for="pi">${t(locale, 'system.pollInterval')}</label>${unitInput('pi', config.worker.pollIntervalMs, 100, t(locale, 'system.milliseconds'))}</div>
-            <div class="field"><label for="hi">${t(locale, 'system.heartbeatInterval')}</label>${unitInput('hi', config.worker.heartbeatIntervalMs / 1000, 5, t(locale, 'system.seconds'))}</div>
-            <div class="field"><label for="to">${t(locale, 'system.taskTimeout')}</label>${unitInput('to', config.worker.taskTimeoutMs / 60_000, 1, t(locale, 'system.minutes'))}</div>
+            <div class="field"><label for="mc">${t(locale, 'system.maxConcurrency')}</label>${unitInput('mc', config.worker.maxConcurrency, CONFIG_BOUNDS.maxConcurrency, 1, '×')}</div>
+            <div class="field"><label for="pi">${t(locale, 'system.pollInterval')}</label>${unitInput('pi', config.worker.pollIntervalMs, CONFIG_BOUNDS.pollIntervalMs, 1, t(locale, 'system.milliseconds'))}</div>
+            <div class="field"><label for="hi">${t(locale, 'system.heartbeatInterval')}</label>${unitInput('hi', config.worker.heartbeatIntervalMs / 1000, CONFIG_BOUNDS.heartbeatIntervalMs, 1000, t(locale, 'system.seconds'))}</div>
+            <div class="field"><label for="to">${t(locale, 'system.taskTimeout')}</label>${unitInput('to', config.worker.taskTimeoutMs / 60_000, CONFIG_BOUNDS.taskTimeoutMs, 60_000, t(locale, 'system.minutes'))}</div>
           </section>
           <section class="card settings-card reveal-delay-1"><h2 class="settings-title"><span>${icon('templates')}${t(locale, 'system.scheduler')}</span><span class="badge ${activeConfig.scheduler.enabled ? 'b-done' : 'b-cancelled'}">${t(locale, activeConfig.scheduler.enabled ? 'schedule.enabled' : 'schedule.disabled')}</span></h2>
             <div class="switch-field"><label for="se">${t(locale, 'system.schedulerEnabled')}</label><label class="switch"><input id="se" type="checkbox" name="se" ${config.scheduler.enabled ? 'checked' : ''}><span></span></label></div>
-            <div class="field"><label for="si">${t(locale, 'system.checkInterval')}</label>${unitInput('si', config.scheduler.checkIntervalMs, 100, t(locale, 'system.milliseconds'))}</div>
+            <div class="field"><label for="si">${t(locale, 'system.checkInterval')}</label>${unitInput('si', config.scheduler.checkIntervalMs, CONFIG_BOUNDS.schedulerCheckIntervalMs, 1, t(locale, 'system.milliseconds'))}</div>
             <div class="info-row"><span class="info-key">${t(locale, 'system.activeTemplates')}</span><span class="info-value">${templateStats.enabled} / ${templateStats.total}</span></div>
           </section>
           <section class="card settings-card reveal-delay-2"><h2 class="settings-title"><span>${icon('system')}${t(locale, 'system.watchdog')}</span></h2>
-            <div class="field"><label for="wt">${t(locale, 'system.heartbeatTimeout')}</label>${unitInput('wt', config.watchdog.heartbeatTimeoutMs / 1000, 10, t(locale, 'system.seconds'))}</div>
-            <div class="field"><label for="wci">${t(locale, 'system.checkInterval')}</label>${unitInput('wci', config.watchdog.checkIntervalMs / 1000, 1, t(locale, 'system.seconds'))}</div>
-            <div class="field"><label for="wcl">${t(locale, 'system.cleanupInterval')}</label>${unitInput('wcl', config.watchdog.cleanupIntervalMs / 3_600_000, 1, t(locale, 'system.hours'))}</div>
-            <div class="field"><label for="rd">${t(locale, 'system.retentionDays')}</label>${unitInput('rd', config.watchdog.retentionDays, 1, t(locale, 'system.days'))}</div>
+            <div class="field"><label for="wt">${t(locale, 'system.heartbeatTimeout')}</label>${unitInput('wt', config.watchdog.heartbeatTimeoutMs / 1000, CONFIG_BOUNDS.heartbeatTimeoutMs, 1000, t(locale, 'system.seconds'))}</div>
+            <div class="field"><label for="wci">${t(locale, 'system.checkInterval')}</label>${unitInput('wci', config.watchdog.checkIntervalMs / 1000, CONFIG_BOUNDS.watchdogCheckIntervalMs, 1000, t(locale, 'system.seconds'))}</div>
+            <div class="field"><label for="wcl">${t(locale, 'system.cleanupInterval')}</label>${unitInput('wcl', config.watchdog.cleanupIntervalMs / 3_600_000, CONFIG_BOUNDS.cleanupIntervalMs, 3_600_000, t(locale, 'system.hours'))}</div>
+            <div class="field"><label for="rd">${t(locale, 'system.retentionDays')}</label>${unitInput('rd', config.watchdog.retentionDays, CONFIG_BOUNDS.retentionDays, 1, t(locale, 'system.days'))}</div>
           </section>
         </div>
         <div class="save-row"><span class="muted small">${configStateText}</span><div class="actions"><button type="submit" class="btn">${t(locale, 'action.save')}</button>${managedRestart ? `<button type="button" class="btn btn-primary" onclick="saveConfig(true,${runningRuns.length})">${t(locale, 'action.saveAndRestart')}</button>` : ''}</div></div>
@@ -1051,7 +1096,14 @@ app.get('/api/runs/:id/session-command', async (c) => {
     const run = await TaskRunService.getById(id);
     if (!run) return c.json({ error: 'not found' }, 404);
     if (!isValidSessionId(run.sessionId)) return c.json({ error: 'session unavailable' }, 409);
-    return c.json({ command: sessionCommand(run.sessionId) });
+    const metadata = findRunCommandMetadata(run.log);
+    const task = metadata ? null : await TaskService.getById(run.taskId);
+    return c.json({
+        command: sessionCommand(run.sessionId, {
+            executable: metadata?.executable ?? openCodeExecutable(),
+            cwd: metadata?.cwd ?? task?.cwd ?? null,
+        }),
+    });
 });
 
 app.get('/api/gateway/status', async (c) => {

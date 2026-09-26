@@ -51,7 +51,10 @@ function runDestructiveDatabaseMaintenance<T extends object>(
     keepStopped: boolean,
     operation: () => T,
 ): T & { gateway: GatewayMaintenanceReport } {
-    const maintenance = withGatewayMaintenance(keepStopped, operation);
+    const maintenance = withGatewayMaintenance(keepStopped, operation, {
+        assertIdleBeforeStop: () => DatabaseMaintenanceService.assertIdleBeforeGatewayStop(),
+        assertNoRunsStartedSince: (baseline) => DatabaseMaintenanceService.assertNoRunsStartedSince(baseline),
+    });
 
     return {
         ...maintenance.result,
@@ -69,7 +72,7 @@ program
     .name('supertask')
     .description(t('面向 OpenCode Agent 的持久化任务队列与定时任务系统', 'Durable task queue and scheduler for OpenCode agents'))
     .addOption(new Option('--lang <language>', t('CLI 语言：auto / zh-CN / en', 'CLI language: auto / zh-CN / en'))
-        .choices(['auto', 'zh-CN', 'en'])
+        .choices(['auto', 'zh', 'zh-CN', 'en'])
         .default('auto'))
     .helpOption('-h, --help', t('显示帮助', 'display help for command'))
     .addHelpCommand('help [command]', t('显示命令帮助', 'display help for command'))
@@ -321,6 +324,7 @@ program
         const id = parsePositiveInteger(options.id, 'id');
         const deleted = await TaskService.delete(id, { cwd: process.cwd() });
         console.log(JSON.stringify({ deleted, id }));
+        if (!deleted) process.exitCode = 1;
     }));
 
 program
@@ -439,6 +443,7 @@ program
                 const id = parsePositiveInteger(options.id, 'id');
                 const deleted = await TaskTemplateService.delete(id);
                 console.log(JSON.stringify({ deleted, id }));
+                if (!deleted) process.exitCode = 1;
             })),
     );
 

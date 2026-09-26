@@ -1,12 +1,15 @@
 import { spawn } from 'child_process';
 import { validateTaskWorkingDirectory } from './task-working-directory';
+import { detectOpenCodeVersion, openCodeExecutable } from './opencode-cli';
 
 const CATALOG_CACHE_MS = 30_000;
 const COMMAND_TIMEOUT_MS = 20_000;
-const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
+const V2_EMPTY_RETRY_DELAYS_MS = [300, 700, 1_500];
 const ANSI_PATTERN = /\x1B(?:[@-_][0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 
 class OpenCodeCommandExitError extends Error {}
+class OpenCodeApiOutputError extends Error {}
 
 export type OpenCodeAgentMode = 'primary' | 'subagent' | 'all';
 
@@ -48,7 +51,8 @@ function runOpenCode(
     return new Promise((resolve, reject) => {
         const child = spawn(executable, args, {
             cwd,
-            env: process.env,
+            // OpenCode 以 PWD 优先解析项目目录（2.x run/api 与 1.x TUI 均如此），必须与 cwd 一致。
+            env: { ...process.env, PWD: cwd },
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: process.platform !== 'win32',
         });
@@ -196,6 +200,16 @@ export function parseOpenCodeModelMetadata(output: string): {
     };
 }
 
+/** OpenCode 1.x 的 `agent list` 不输出 hidden 标记；这些内置 Agent 在 1.x 中是 hidden，不能直接运行。 */
+const HIDDEN_BUILTIN_AGENTS = new Set(['compaction', 'title', 'summary']);
+const AGENT_MODES = new Set<string>(['primary', 'subagent', 'all']);
+
+function sortAgents(agents: Iterable<OpenCodeAgentOption>): OpenCodeAgentOption[] {
+    const rank: Record<OpenCodeAgentMode, number> = { primary: 0, all: 1, subagent: 2 };
+    return [...agents].sort((left, right) => rank[left.mode] - rank[right.mode]
+        || left.name.localeCompare(right.name));
+}
+
 export function parseOpenCodeAgents(output: string): OpenCodeAgentOption[] {
     const agents = new Map<string, OpenCodeAgentOption>();
     for (const line of cleanOutput(output).split('\n')) {
@@ -203,12 +217,114 @@ export function parseOpenCodeAgents(output: string): OpenCodeAgentOption[] {
         if (!match) continue;
         const name = match[1];
         const mode = match[2] as OpenCodeAgentMode;
-        if (name === 'supertask-runner') continue;
+        if (name === 'supertask-runner' || HIDDEN_BUILTIN_AGENTS.has(name)) continue;
         agents.set(name, { name, mode });
     }
-    const rank: Record<OpenCodeAgentMode, number> = { primary: 0, all: 1, subagent: 2 };
-    return [...agents.values()].sort((left, right) => rank[left.mode] - rank[right.mode]
-        || left.name.localeCompare(right.name));
+    return sortAgents(agents.values());
+}
+
+function apiData(output: string, operation: string): unknown[] {
+    let parsed: unknown;
+    try {
+        parsed = JSON.parse(cleanOutput(output));
+    } catch {
+        throw new OpenCodeApiOutputError(`OpenCode api ${operation} 没有返回完整 JSON`);
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.data)) {
+        throw new OpenCodeApiOutputError(`OpenCode api ${operation} 返回格式无法识别`);
+    }
+    return parsed.data;
+}
+
+/** 解析 OpenCode 2.x `api agent.list`：过滤 hidden 与 supertask-runner。 */
+export function parseOpenCodeV2Agents(output: string): OpenCodeAgentOption[] {
+    const agents = new Map<string, OpenCodeAgentOption>();
+    for (const item of apiData(output, 'agent.list')) {
+        if (!isRecord(item) || typeof item.id !== 'string' || typeof item.mode !== 'string') continue;
+        if (item.hidden === true || item.id === 'supertask-runner' || !AGENT_MODES.has(item.mode)) continue;
+        agents.set(item.id, { name: item.id, mode: item.mode as OpenCodeAgentMode });
+    }
+    return sortAgents(agents.values());
+}
+
+/** 解析 OpenCode 2.x `api model.list`：variants 是 `{ id }` 数组而非 1.x 的对象键。 */
+export function parseOpenCodeV2Models(output: string): {
+    models: string[];
+    variantsByModel: Record<string, string[]>;
+} {
+    const models = new Set<string>();
+    const variantsByModel: Record<string, string[]> = {};
+    for (const item of apiData(output, 'model.list')) {
+        if (!isRecord(item) || typeof item.providerID !== 'string' || typeof item.id !== 'string') continue;
+        const model = `${item.providerID}/${item.id}`;
+        models.add(model);
+        const variants = Array.isArray(item.variants)
+            ? item.variants
+                .map((variant) => (isRecord(variant) && typeof variant.id === 'string' ? variant.id.trim() : ''))
+                .filter((variant) => variant.length > 0)
+            : [];
+        if (variants.length > 0) variantsByModel[model] = [...new Set(variants)].sort((left, right) => left.localeCompare(right));
+    }
+    return { models: [...models].sort((left, right) => left.localeCompare(right)), variantsByModel };
+}
+
+type CatalogContent = Omit<OpenCodeCatalog, 'cwd'>;
+
+async function loadV1Catalog(executable: string, cwd: string, timeoutMs: number): Promise<CatalogContent> {
+    const [modelsOutput, agentsOutput] = await Promise.all([
+        runOpenCode(executable, ['models', '--verbose'], cwd, timeoutMs)
+            .catch((error: unknown) => {
+                if (!(error instanceof OpenCodeCommandExitError)) throw error;
+                return runOpenCode(executable, ['models'], cwd, timeoutMs);
+            }),
+        runOpenCode(executable, ['agent', 'list'], cwd, timeoutMs),
+    ]);
+    const metadata = parseOpenCodeModelMetadata(modelsOutput);
+    return {
+        models: metadata.models.length > 0 ? metadata.models : parseOpenCodeModels(modelsOutput),
+        variantsByModel: metadata.variantsByModel,
+        agents: parseOpenCodeAgents(agentsOutput),
+    };
+}
+
+/**
+ * 2.x 的目录只能经服务端 API 读取。`--standalone` 每次都是新服务端，而 2.x 按项目目录惰性加载，
+ * 首个请求会返回空列表；因此使用用户的后台服务，并在列表仍为空时有界重试。
+ * 2.x 向管道写大 JSON 后偶发未刷完即退出，输出被截断时同样重试。
+ */
+async function loadV2List<T>(
+    executable: string,
+    operation: string,
+    cwd: string,
+    timeoutMs: number,
+    parse: (output: string) => T,
+    isEmpty: (value: T) => boolean,
+): Promise<T> {
+    // 截断的输出与写到一半退出（非零退出码）都按瞬时故障有界重试；超时和无法启动直接失败。
+    const attempt = async (): Promise<T | Error> => {
+        try {
+            return parse(await runOpenCode(executable, ['api', operation], cwd, timeoutMs));
+        } catch (error) {
+            if (error instanceof OpenCodeApiOutputError || error instanceof OpenCodeCommandExitError) return error;
+            throw error;
+        }
+    };
+    let value = await attempt();
+    for (const delayMs of V2_EMPTY_RETRY_DELAYS_MS) {
+        if (!(value instanceof Error) && !isEmpty(value)) break;
+        await Bun.sleep(delayMs);
+        value = await attempt();
+    }
+    if (value instanceof Error) throw value;
+    return value;
+}
+
+async function loadV2Catalog(executable: string, cwd: string, timeoutMs: number): Promise<CatalogContent> {
+    const [metadata, agents] = await Promise.all([
+        loadV2List(executable, 'model.list', cwd, timeoutMs, parseOpenCodeV2Models, (value) => value.models.length === 0),
+        loadV2List(executable, 'agent.list', cwd, timeoutMs, parseOpenCodeV2Agents, (value) => value.length === 0),
+    ]);
+    return { ...metadata, agents };
 }
 
 export async function loadOpenCodeCatalog(
@@ -216,7 +332,7 @@ export async function loadOpenCodeCatalog(
     options: CatalogOptions = {},
 ): Promise<OpenCodeCatalog> {
     validateTaskWorkingDirectory(cwd);
-    const executable = options.executable ?? process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
+    const executable = options.executable ?? openCodeExecutable();
     const timeoutMs = options.timeoutMs ?? COMMAND_TIMEOUT_MS;
     const cacheKey = `${executable}\0${cwd}`;
     const cached = catalogCache.get(cacheKey);
@@ -224,24 +340,16 @@ export async function loadOpenCodeCatalog(
         return cached.result;
     }
 
-    const result = Promise.all([
-        runOpenCode(executable, ['models', '--verbose'], cwd, timeoutMs)
-            .catch((error: unknown) => {
-                if (!(error instanceof OpenCodeCommandExitError)) throw error;
-                return runOpenCode(executable, ['models'], cwd, timeoutMs);
-            }),
-        runOpenCode(executable, ['agent', 'list'], cwd, timeoutMs),
-    ]).then(([modelsOutput, agentsOutput]) => {
-        const metadata = parseOpenCodeModelMetadata(modelsOutput);
-        const models = metadata.models.length > 0
-            ? metadata.models
-            : parseOpenCodeModels(modelsOutput);
-        const agents = parseOpenCodeAgents(agentsOutput)
-            .filter((agent) => agent.mode !== 'subagent');
-        if (models.length === 0) throw new Error('OpenCode 没有返回可用模型');
-        if (agents.length === 0) throw new Error('OpenCode 没有返回可直接运行的主 Agent');
-        return { cwd, models, variantsByModel: metadata.variantsByModel, agents };
-    });
+    const result = detectOpenCodeVersion(executable, { cwd })
+        .then(({ major }) => (major === 2
+            ? loadV2Catalog(executable, cwd, timeoutMs)
+            : loadV1Catalog(executable, cwd, timeoutMs)))
+        .then(({ models, variantsByModel, agents: allAgents }) => {
+            const agents = allAgents.filter((agent) => agent.mode !== 'subagent');
+            if (models.length === 0) throw new Error('OpenCode 没有返回可用模型');
+            if (agents.length === 0) throw new Error('OpenCode 没有返回可直接运行的主 Agent');
+            return { cwd, models, variantsByModel, agents };
+        });
 
     if (options.useCache !== false) {
         catalogCache.set(cacheKey, { expiresAt: Date.now() + CATALOG_CACHE_MS, result });

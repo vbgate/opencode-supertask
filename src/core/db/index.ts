@@ -60,17 +60,46 @@ export function migrateSqliteDatabase(sqliteDb: Database): ReturnType<typeof dri
     return drizzleDb;
 }
 
+// 升级后 Gateway、插件和 CLI 可能同时首次打开数据库：drizzle 在事务外读取已应用迁移，
+// 落后的一方会在自己的事务里重复执行同一迁移并整体回滚。重读迁移表后即为空操作，因此只对这类冲突有界重试。
+const CONCURRENT_MIGRATION_PATTERN = /already exists|duplicate column name/i;
+
+function migrateWithConcurrentOpenRetry(sqliteDb: Database): ReturnType<typeof drizzle> {
+    for (let attempt = 1; ; attempt += 1) {
+        try {
+            return migrateSqliteDatabase(sqliteDb);
+        } catch (error) {
+            const message = error instanceof Error ? `${error.message} ${String(error.cause ?? '')}` : String(error);
+            if (attempt >= 5 || !CONCURRENT_MIGRATION_PATTERN.test(message)) throw error;
+            Bun.sleepSync(50 * attempt);
+        }
+    }
+}
+
+/** 新库切换 WAL 需要排他锁，且 SQLite 此时不走 busy handler；并发首次打开时有界重试。已是 WAL 时为空操作。 */
+function enableWal(sqliteDb: Database): void {
+    for (let attempt = 1; ; attempt += 1) {
+        try {
+            sqliteDb.exec('PRAGMA journal_mode = WAL;');
+            return;
+        } catch (error) {
+            if (attempt >= 20 || !/database is locked/i.test(error instanceof Error ? error.message : String(error))) throw error;
+            Bun.sleepSync(25 * attempt);
+        }
+    }
+}
+
 function initDb() {
     const dataDir = dirname(DB_FILE_PATH);
     if (!existsSync(dataDir)) {
         mkdirSync(dataDir, { recursive: true });
     }
     _sqlite = new Database(DB_FILE_PATH);
-    _sqlite.exec('PRAGMA journal_mode = WAL;');
     _sqlite.exec('PRAGMA busy_timeout = 5000;');
+    enableWal(_sqlite);
     if (!_migrationRan) {
         try {
-            _db = migrateSqliteDatabase(_sqlite);
+            _db = migrateWithConcurrentOpenRetry(_sqlite);
             _migrationRan = true;
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);

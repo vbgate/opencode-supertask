@@ -2,6 +2,42 @@
 
 All notable user-facing changes are recorded here. This project follows semantic versioning while it is in the `0.x` development series.
 
+## [Unreleased]
+
+### Added
+
+- OpenCode 2.x support alongside 1.x (1.2.20+). The plugin default export now carries both the 1.x `server` and the 2.x `setup` entry, so one package registers the same eight tools, project scoping, and system instruction in either runtime.
+- Workers detect the OpenCode major version before claiming work. On 2.x they run `opencode run --standalone` so the managed environment reaches the private server, and pass variants as `-m provider/model#variant`; `provider/model#variant` model strings also work on 1.x. Tasks that 2.x cannot express (a variant without a model) fail straight to `dead_letter` instead of silently dropping the variant.
+- The Dashboard catalog, `supertask doctor`, and `supertask upgrade` understand 2.x (`api agent.list`/`model.list`, `debug config` source arrays, `plugin add`, and the `npm/<spec>/<generation>` cache layout) and keep a single pinned plugin entry in both `plugin` and `plugins` config keys.
+- `scripts/opencode-compat-smoke.ts` verifies plugin registration, Gateway execution, session capture, and session resume against real OpenCode binaries with isolated XDG directories and a local fake model.
+
+### Fixed
+
+- "Continue session" now copies reliably: the clipboard write starts inside the click (Safari and embedded browsers rejected the old write-after-fetch), falls back to `execCommand`, then to a pre-selected manual-copy dialog. The command now enters the run's directory and uses the exact OpenCode executable that ran it.
+- The Worker takes the session ID from the first top-level stdout event only, instead of rescanning a sliding output tail where subagent session IDs could overwrite it; stderr chunks no longer splice into stdout JSON lines.
+- Run logs now show OpenCode error events from both versions (structured `error` objects were previously dropped), and the reproducible command always comes from the first recorded metadata line.
+- A missing or unrecognizable OpenCode no longer consumes task retries: the Worker reports itself unhealthy without claiming work.
+- The Dashboard catalog no longer offers 1.x hidden built-in agents (`compaction`, `title`, `summary`) and sets `PWD` to the selected project.
+- `@opencode-ai/plugin` is bundled, so the peer dependency is now optional and no longer pulls its runtime tree into every OpenCode plugin cache.
+- Guardian identity checks no longer fail when the install path or OpenCode path contains spaces; previously every cancel, timeout, and Watchdog recovery left such runs quarantined forever.
+- A quarantined run now blocks only its own batch and concurrency slot instead of stopping dispatch for the whole queue.
+- Legacy-project (no `cwd`) filters in the Dashboard respect status and batch conditions; an unparenthesized SQL `OR` previously ignored them.
+- Re-enabling a disabled cron or recurring template resumes the schedule instead of firing a missed slot immediately, and recurring templates advance from their scheduled slot so scheduler latency no longer accumulates.
+- Lowering `maxRetries` also dead-letters pending tasks that were re-queued by recovery with an exhausted budget.
+- `parseDuration` rejects empty ISO 8601 durations (`P`, `PT`, `P.D`) and rounds to whole milliseconds, so values like `12.345s` are accepted.
+- Dashboard task/template edits and system settings save values such as 12.345 s, 1.5 min, or 0.5 h instead of silently failing native form validation, form limits now come from the same bounds as `validateConfig`, and an invalid field inside a collapsed section opens it.
+- Editing a task keeps its saved Agent selected while the catalog loads or when the catalog fails.
+- All Dashboard API requests, including GETs, reject cross-site `Sec-Fetch-Site`; a cross-site `<img>` could previously make the Gateway start OpenCode (and its project plugins) in an arbitrary directory.
+- `supertask delete` and `supertask template delete` exit non-zero when nothing was deleted, and `--lang zh` is accepted.
+- Late `error` events from a launcher (for example an IPC send after exit) are logged instead of being misreported as a startup failure or crashing the Gateway.
+- An older plugin never replaces a Gateway whose lock records a newer version, even while that Gateway is restarting and not yet ready.
+- On Bun 1.1.x a launcher whose Gateway died before releasing it now exits instead of lingering forever (the IPC handle kept its event loop alive); OpenCode was never started in that window.
+- `supertask db clear` / `db restore` refuse running work **before** stopping a PM2 Gateway. Previously the Gateway's graceful stop interrupted running tasks and reset them to pending, so the refusal never fired and the interrupted work was deleted. A run started between the check and the stop also aborts the maintenance and restores the Gateway, and a failed `pm2 stop` no longer leaves the Gateway stopped.
+- Stopping or replacing a PM2 Gateway whose saved `kill_timeout` is shorter than shutdown grace + 15 s is refused while tasks are running, instead of letting PM2 SIGKILL it mid-shutdown.
+- A failed Gateway replacement always attempts to restore the previous Gateway and reports every cleanup error alongside the original one; a new Gateway that becomes ready with a different version than the target is rolled back.
+- Processes opening a new or not-yet-migrated database at the same time (Gateway, plugin, CLI after an upgrade) no longer fail with `database is locked` or duplicate-migration errors.
+- `bun run package:smoke` understands npm 12's `npm pack --json` output.
+
 ## [0.1.41] - 2026-07-19
 
 ### Added

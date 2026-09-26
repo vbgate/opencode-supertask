@@ -552,6 +552,26 @@ export class DatabaseMaintenanceService {
         );
     }
 
+    /**
+     * PM2 Gateway 停机时会优雅中断运行中任务并把它们改回 pending，停机后再检查就看不到“运行中”。
+     * 因此破坏性维护必须在停机前确认空闲并记下最大 run id，停机后确认期间没有新 run 被启动（随后被中断）。
+     */
+    static assertIdleBeforeGatewayStop(): number {
+        const sqlite = getSqlite();
+        this.assertNoRunningWork(sqlite);
+        return this.scalar(sqlite, 'SELECT COALESCE(MAX(id), 0) AS count FROM task_runs');
+    }
+
+    static assertNoRunsStartedSince(maxRunId: number): void {
+        const row = getSqlite().query('SELECT COUNT(*) AS count FROM task_runs WHERE id > ?').get(maxRunId) as CountRow | null;
+        const started = Number(row?.count ?? 0);
+        if (started > 0) {
+            throw new DatabaseMaintenanceConflictError(
+                `停止 Gateway 期间有 ${started} 个任务开始执行并被中断（已由 Gateway 恢复为待执行），已拒绝危险操作并恢复 Gateway；请稍后重试`,
+            );
+        }
+    }
+
     private static assertNoRunningWork(sqlite: Database): void {
         const runningTasks = this.scalar(sqlite, "SELECT COUNT(*) AS count FROM tasks WHERE status = 'running'");
         const runningRuns = this.scalar(sqlite, "SELECT COUNT(*) AS count FROM task_runs WHERE status = 'running'");

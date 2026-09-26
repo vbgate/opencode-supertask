@@ -67,8 +67,9 @@ TaskService.claimNext()（BEGIN IMMEDIATE 内选择并转为 running）
           ↓
 创建 task_run，启动等待握手的 launcher
           ↓
-持久化 launcher PID 后才放行：
-opencode run --agent <task.agent> --format json [-m <model>] [--variant <variant>] <task.prompt>
+持久化 launcher PID 后才放行（按 `opencode --version` 选择参数形态）：
+OpenCode 1.x: opencode run --agent <task.agent> --format json [-m <model>] [--variant <variant>] <task.prompt>
+OpenCode 2.x: opencode run --standalone --agent <task.agent> --format json [-m <model>[#<variant>]] <task.prompt>
           ↓
 退出码 0 → task/run done；其他退出或启动错误 → task/run failed 或 dead_letter
 ```
@@ -77,13 +78,24 @@ Worker 通过无 LLM 的 launcher 直接执行目标 Agent，不再嵌套 `super
 
 新执行记录会快照实际模型和 variant，并在 OpenCode JSONL 前附加一条 SuperTask 命令元数据，保存 Worker 真正传给 launcher 的可执行文件、参数数组和 `cwd`。Dashboard 从该结构生成可复制的终端命令，并分开展示 Agent 文本、错误、工具与原始日志；旧 run 没有元数据时仍可查看原始输出。variant 为空时不传 `--variant`，由 Agent/模型配置决定；非空时作为独立 argv 传递。
 
+### OpenCode 1.x / 2.x 兼容
+
+`src/core/opencode-cli.ts` 是版本差异的唯一入口。Worker 在抢占任务前探测 `opencode --version`（结果缓存 5 分钟），探测失败只标记 Worker 不健康，不抢占任务、不消耗重试次数：
+
+- 2.x 没有 `run --variant`，variant 写进 `-m provider/model#variant`；任务只有 variant 没有模型时 2.x 无法表达，run 直接失败并进入 `dead_letter`，不静默丢弃 variant。1.x 同样接受 `provider/model#variant` 写法并拆回 `--variant`。
+- 2.x 的 `run` 默认连接用户共享的后台服务，受管环境（`SUPERTASK_MANAGED_RUN`、XDG/OpenCode 配置）不会到达该服务，因此 Worker 固定使用 `--standalone` 私有服务端。该服务端由 2.x 以 detached 方式启动，位于独立进程组，不在 launcher 的可证明边界内；它以 stdin EOF 作为所有权租约，`opencode run` 被终止后自行退出（已用真实 2.0.16 验证）。
+- 2.x 在无人值守运行中拒绝权限请求后会中断会话并以非零退出码结束，任务按普通失败重试；1.x 拒绝后继续并可能以 0 退出。SuperTask 不自动追加 `--auto`，需要额外权限的 Agent 应在 OpenCode 权限配置中显式 `allow`。
+- OpenCode 以 `PWD` 优先解析项目目录，Worker 与目录读取都把 `PWD` 设为任务 `cwd`。
+- 插件默认导出 `{ id, server, setup }`：1.2.20+ 使用 `server`，2.x 使用 `setup`（经 `ctx.tool.transform` 注册同一组工具，JSON Schema 由同一份 zod 定义生成并在执行时再次校验；项目目录取自 `ctx.location.directory`，系统说明经 `session.hook("context")` 注入）。
+- `scripts/opencode-compat-smoke.ts` 用真实 OpenCode 可执行文件、隔离 XDG 目录和本地假模型，端到端验证插件建任务、Gateway 执行、Session 捕获与继续会话。
+
 排空证明使用双向确认：Worker 校验 launcher 发来的 UUID 后回送同 UUID，launcher 收件后才退出。该握手不依赖 Bun 旧版本不可靠的 `process.send` callback，同时保留“父进程确实收到证明”这一结算前提。
 
-这里的隔离与排空单位是 Unix 进程组，不是按父子关系追踪的任意后代集合。普通子进程会继承该组，受取消、超时和停机管理；主动调用 `setsid()`、使用 `detached: true` 或以 daemon 方式离组的进程不在 SuperTask 的可证明边界内，launcher 无法确认或终止它们。任务若需要长期后台服务，应使用外部服务管理器并自行管理生命周期，不应把这类进程视为受管 run 的一部分。
+这里的隔离与排空单位是 Unix 进程组，不是按父子关系追踪的任意后代集合。普通子进程会继承该组，受取消、超时和停机管理；主动调用 `setsid()`、使用 `detached: true` 或以 daemon 方式离组的进程不在 SuperTask 的可证明边界内，launcher 无法确认或终止它们。任务若需要长期后台服务，应使用外部服务管理器并自行管理生命周期，不应把这类进程视为受管 run 的一部分。注意 OpenCode 1.x 与 2.x 的 shell 工具在 Unix 上都以 `detached` 方式执行命令（各自独立进程组），由 OpenCode 在中止或退出时自行清理；排空证明覆盖的是 OpenCode 本身及其未离组的子进程（如本地 MCP/LSP 服务）。
 
 `cwd` 是任务的项目分组与隔离键，也是子进程工作目录。插件使用 OpenCode 工具上下文的 `directory`，不信任模型传入的 `cwd`；插件侧查询和状态变更按同一目录限定。Service 在普通任务和模板入库前要求非空 `cwd` 是已存在的绝对目录，Dashboard 复用该校验。为兼容旧数据，Schema 仍允许 NULL；Worker 若取到不存在、相对或文件型的遗留目录，会创建失败 run 并直接将任务收敛到 `dead_letter`，不启动 OpenCode、不给它自动重试刷日志。Dashboard 直接聚合现有 `tasks.cwd`，形成 `cwd → batchId → tasks` 的最小分组层次，没有额外的可漂移项目表。
 
-Dashboard 的文件夹浏览只作用于回环地址上的本机路径选择。选定 `cwd` 后，Gateway 以该目录为工作目录并行执行 `opencode agent list` 和 `opencode models --verbose`，结果短时缓存；新任务下拉框过滤 `subagent` 和历史 `supertask-runner`，只提供可直接传给 `opencode run --agent` 的 Agent，并按模型元数据列出其声明支持的 variants。编辑旧任务时保留数据库原值，即使该模型或 variant 当前不可发现也不会因不相关编辑被强制改写。
+Dashboard 的文件夹浏览只作用于回环地址上的本机路径选择。选定 `cwd` 后，Gateway 以该目录为工作目录读取能力目录并短时缓存：1.x 执行 `opencode agent list` 和 `opencode models --verbose`（并过滤 1.x 未标记的 hidden 内置 Agent）；2.x 经后台服务执行 `opencode api agent.list` / `model.list`，因 2.x 按目录惰性加载首个请求可能为空、大 JSON 经管道偶发截断，两者都有界重试；新任务下拉框过滤 `subagent` 和历史 `supertask-runner`，只提供可直接传给 `opencode run --agent` 的 Agent，并按模型元数据列出其声明支持的 variants。编辑旧任务时保留数据库原值，即使该模型或 variant 当前不可发现也不会因不相关编辑被强制改写。
 
 `running`、任务终态和 `task_runs` 执行终态只由 Gateway 写入。CLI 和插件不暴露 `start/done/fail`，避免外部调用制造没有 owner/PID 的运行记录或让任务与 run 状态分裂。Worker 的候选筛选与 `running` 转换由 `claimNext` 在同一即时事务完成，并使用事务返回的最新任务快照，外部编辑不能插入两阶段窗口破坏批次串行或让 Worker 执行旧配置。普通任务的可编辑配置由 `TaskService.update` 统一处理，只接受 `pending`、`failed` 和 `dead_letter`；不允许迁移 `cwd` 或改依赖，运行中与完成/取消终态拒绝修改，避免已执行 run 与任务配置失真。Dashboard 与 `supertask edit` 共用该边界。
 
@@ -149,7 +161,7 @@ pending / running / failed ──cancel──> cancelled
 
 ## 安全边界
 
-Dashboard 只绑定 `127.0.0.1`，所有请求的 Host 必须是 `localhost`、`127.0.0.1` 或 `[::1]`，浏览器写请求还检查 `Sec-Fetch-Site` 和同源 `Origin`，数据库字符串输出到 HTML 前转义。网页需要 PM2/systemd 状态时通过独立、总超时受限的 Bun runner 异步探测，并在 Gateway 内短时缓存，不阻塞 Worker、Watchdog 或锁心跳。这是本机可信用户边界，不是完整鉴权系统；不要通过反向代理或端口转发直接暴露到不可信网络。
+Dashboard 只绑定 `127.0.0.1`，所有请求的 Host 必须是 `localhost`、`127.0.0.1` 或 `[::1]`，浏览器发起的所有 `/api/*` 请求都检查 `Sec-Fetch-Site`（能力目录 GET 会启动 OpenCode 并加载项目插件，不能被跨站 `<img>` 触发），写请求再检查同源 `Origin`，数据库字符串输出到 HTML 前转义。网页需要 PM2/systemd 状态时通过独立、总超时受限的 Bun runner 异步探测，并在 Gateway 内短时缓存，不阻塞 Worker、Watchdog 或锁心跳。这是本机可信用户边界，不是完整鉴权系统；不要通过反向代理或端口转发直接暴露到不可信网络。
 
 数据库危险操作集中在 `DatabaseMaintenanceService`：备份通过 SQLite 序列化得到一致快照，并转换成无需 WAL sidecar 的独立文件；清空在 `BEGIN IMMEDIATE` 内完成备份并动态删除全部业务表数据（包括新版本 expand-only 表），同时保留 `gateway_lock` 和 migration 元数据，循环外键通过事务级延迟检查收敛；恢复从已打开的 SQLite 源连接序列化包含已提交 WAL 页的一致快照，拒绝当前库的符号链接/硬链接别名，执行缺失 migration 和复检，再动态比较 source/live 业务表与可写列。source-only 表/列会在任何删除前失败关闭；双方共有的未来列完整复制；live-only 列仅在可空或带默认值时允许，live-only 新表按旧时间点的空状态清理，避免旧二进制恢复新快照或新二进制恢复旧快照时形成混合数据。最终在当前连接的 `BEGIN EXCLUSIVE` 事务中原位替换业务数据。恢复期间并发写入只能在事务前完成或在提交后成功，不存在“写入已返回成功却被文件换位静默丢失”的窗口。CLI 层只对“PM2 PID 与当前数据库新鲜 ready 锁一致”的 Gateway 自动停启，并在操作失败时恢复原运行状态；其他活跃 Gateway 仍由 Service 拒绝，避免误杀另一套实例。Dashboard 清空只允许当前 Gateway 且仍拒绝运行中任务。恢复会清理运行时锁，并把快照中的遗留运行状态收敛为可重新调度的状态。Watchdog 历史清理使用防重入、有索引的有界事务批次；不可恢复的依赖通过递归事件更新一次收敛整条下游链，不再在每个 Worker poll 全局扫描。
 

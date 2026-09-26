@@ -29,11 +29,14 @@ describe('Dashboard Gateway 诊断', () => {
         const executable = join(directory, 'pm2');
         const calls = join(directory, 'calls');
         writeFileSync(executable, `#!/bin/sh
+[ "$1" = "--warmup" ] && exit 0
 printf x >> ${JSON.stringify(calls)}
 sleep 1
 exit 1
 `);
         chmodSync(executable, 0o755);
+        // macOS scans a new executable on first exec; keep that cost out of the 100ms budget.
+        Bun.spawnSync([executable, '--warmup']);
         process.env.SUPERTASK_PM2_BIN = executable;
         process.env.SUPERTASK_PM2_COMMAND_TIMEOUT_MS = '100';
 

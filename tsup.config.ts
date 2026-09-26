@@ -18,6 +18,7 @@ const shared: Options & { alias: Record<string, string> } = {
     'drizzle-orm',
     'glob',
     'hono',
+    'jsonc-parser',
   ],
   alias: {
     '@core': './src/core',

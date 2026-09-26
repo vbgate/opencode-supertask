@@ -15,6 +15,7 @@ import { setupTestDb } from './helpers/mock-db';
 import { TaskService } from '../src/core/services/task.service';
 import { TaskRunService } from '../src/core/services/task-run.service';
 import { WorkerEngine, assertWorkerProcessIsolationSupported } from '../src/worker';
+import { getGatewayHealth, initializeGatewayHealth, resetGatewayHealth } from '../src/gateway/health';
 import { waitForProcessGroupDrain } from '../src/worker/launcher';
 import type { GatewayConfig } from '../src/gateway/config';
 import type { TaskStatus } from '../src/core/db/schema';
@@ -47,6 +48,7 @@ function createFakeOpencode(options: {
     const argsFile = join(dir, 'args.json');
     const envFile = join(dir, 'env.json');
     const source = `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 const args = Bun.argv.slice(2);
 await Bun.write(${JSON.stringify(argsFile)}, JSON.stringify(args));
 await Bun.write(${JSON.stringify(envFile)}, JSON.stringify({
@@ -73,12 +75,14 @@ function createOrphaningFakeOpencode() {
     const childReadyFile = join(dir, 'child.ready');
     const firstRunMarker = join(dir, 'first-run');
     const source = `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 import { existsSync, writeFileSync } from 'fs';
 import { spawn } from 'child_process';
 const args = Bun.argv.slice(2);
 await Bun.write(${JSON.stringify(argsFile)}, JSON.stringify(args));
 console.log(JSON.stringify({ sessionID: "ses_worker_orphan_test", message: "launcher 即将退出" }));
-if (!existsSync(${JSON.stringify(firstRunMarker)})) {
+// 只有提示词要求保留后代的首次执行才制造遗留进程，避免并发执行时由谁先写标记决定。
+if (args.at(-1)?.includes('后代') && !existsSync(${JSON.stringify(firstRunMarker)})) {
     writeFileSync(${JSON.stringify(firstRunMarker)}, '1');
     const child = spawn(process.execPath, ['-e', ${JSON.stringify(`process.on('SIGTERM', () => {}); await Bun.write(${JSON.stringify(childReadyFile)}, 'ready'); setInterval(() => {}, 1000);`)}], {
         stdio: 'ignore',
@@ -128,6 +132,14 @@ async function waitForStatus(taskId: number, statuses: TaskStatus[], timeoutMs =
     throw new Error(`等待任务 #${taskId} 状态超时`);
 }
 
+async function waitUntil(condition: () => boolean, label: string, timeoutMs = 8_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (!condition()) {
+        if (Date.now() >= deadline) throw new Error(`${label}超时`);
+        await Bun.sleep(20);
+    }
+}
+
 async function waitForWorkerCount(worker: WorkerEngine, count: number, timeoutMs = 3_000) {
     const deadline = Date.now() + timeoutMs;
     while (worker.getRunningCount() !== count && Date.now() < deadline) {
@@ -169,6 +181,71 @@ describe('WorkerEngine', () => {
         await Promise.all(workers.splice(0).map((worker) => worker.stop()));
         for (const dir of tempDirs.splice(0)) {
             rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    test('启动后的 launcher error 事件只记录，不误报启动失败也不终止 Gateway', async () => {
+        const fake = createFakeOpencode({ delayMs: 300 });
+        const task = await TaskService.add({ name: '启动后错误', agent: 'build', prompt: 'p', maxRetries: 0, cwd: fake.dir });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+        workers.push(worker);
+        worker.start();
+        await waitForStatus(task.id, ['running']);
+        const internals = worker as unknown as { runningTasks: Map<number, { child: { emit(event: string, error: Error): boolean } }> };
+        await waitUntil(() => internals.runningTasks.has(task.id), '等待 Worker 登记子进程');
+        const child = internals.runningTasks.get(task.id)!.child;
+        expect(() => {
+            child.emit('error', new Error('Subprocess.send() cannot be used after the process has exited.'));
+            child.emit('error', new Error('second late error'));
+        }).not.toThrow();
+        const done = await waitForStatus(task.id, ['done', 'dead_letter']);
+        expect(done.status).toBe('done');
+        expect(done.resultLog ?? '').not.toContain('无法启动 opencode');
+    });
+
+    test('OpenCode 2.x 使用私有服务端并把 variant 写入模型引用', async () => {
+        const fake = createFakeOpencode({});
+        const previousVersion = process.env.FAKE_OPENCODE_VERSION;
+        process.env.FAKE_OPENCODE_VERSION = 'opencode v2.0.16';
+        try {
+            const task = await TaskService.add({
+                name: '2.x 参数', agent: 'build', model: 'openai/gpt-5', variant: 'high',
+                prompt: 'v2 prompt', maxRetries: 0, cwd: fake.dir,
+            });
+            const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+            workers.push(worker);
+            worker.start();
+            await waitForStatus(task.id, ['done']);
+            const args = JSON.parse(readFileSync(fake.argsFile, 'utf-8')) as string[];
+            const childEnv = JSON.parse(readFileSync(fake.envFile, 'utf-8')) as { managedRun?: string };
+            expect(args).toEqual([
+                'run', '--standalone', '--agent', 'build', '--format', 'json', '-m', 'openai/gpt-5#high', 'v2 prompt',
+            ]);
+            expect(childEnv.managedRun).toBe(MANAGED_RUN_ENV_VALUE);
+        } finally {
+            if (previousVersion === undefined) delete process.env.FAKE_OPENCODE_VERSION;
+            else process.env.FAKE_OPENCODE_VERSION = previousVersion;
+        }
+    });
+
+    test('OpenCode 2.x 无法表达只有 variant 的任务时直接进入 dead_letter 且不启动进程', async () => {
+        const fake = createFakeOpencode({});
+        const previousVersion = process.env.FAKE_OPENCODE_VERSION;
+        process.env.FAKE_OPENCODE_VERSION = 'opencode v2.0.16';
+        try {
+            const task = await TaskService.add({
+                name: '只有 variant', agent: 'build', variant: 'high', prompt: 'p', maxRetries: 3, cwd: fake.dir,
+            });
+            const worker = new WorkerEngine(createConfig(), { opencodeBin: fake.executable });
+            workers.push(worker);
+            worker.start();
+            const failed = await waitForStatus(task.id, ['dead_letter']);
+            expect(failed.resultLog).toContain('provider/model#variant');
+            expect(failed.resultLog).toContain('OpenCode 2.0.16');
+            expect(existsSync(fake.argsFile)).toBe(false);
+        } finally {
+            if (previousVersion === undefined) delete process.env.FAKE_OPENCODE_VERSION;
+            else process.env.FAKE_OPENCODE_VERSION = previousVersion;
         }
     });
 
@@ -223,6 +300,22 @@ describe('WorkerEngine', () => {
         expect(runs[0].log).toContain(JSON.stringify(prompt).slice(1, -1));
     });
 
+    test('OpenCode 不可用时不抢占任务，也不消耗重试次数', async () => {
+        const task = await TaskService.add({ name: '缺少 OpenCode', agent: 'build', prompt: 'p', maxRetries: 0 });
+        initializeGatewayHealth({
+            workerPollIntervalMs: 50, schedulerEnabled: false, schedulerCheckIntervalMs: 1_000,
+            watchdogCheckIntervalMs: 1_000, watchdogCleanupIntervalMs: 60_000,
+        });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: '/definitely/not/opencode' });
+        workers.push(worker);
+        worker.start();
+        await waitUntil(() => getGatewayHealth().components.worker.consecutiveFailures > 0, '等待 Worker 报告失败');
+        expect(getGatewayHealth().components.worker.lastError?.message).toContain('/definitely/not/opencode');
+        expect(await TaskService.getById(task.id)).toMatchObject({ status: 'pending', retryCount: 0 });
+        expect(await TaskRunService.listByTaskId(task.id)).toEqual([]);
+        resetGatewayHealth();
+    });
+
     test('停机发生在 claim 期间时把无 run 的任务恢复为 pending', async () => {
         const task = await TaskService.add({
             name: 'claim 停机竞态', agent: 'test-agent', prompt: '不得启动',
@@ -241,7 +334,7 @@ describe('WorkerEngine', () => {
             await claimGate;
             return originalClaimNext.apply(TaskService, args);
         };
-        const worker = new WorkerEngine(createConfig(), { opencodeBin: '/definitely/not/opencode' });
+        const worker = new WorkerEngine(createConfig(), { opencodeBin: createFakeOpencode({}).executable });
         workers.push(worker);
 
         try {
@@ -526,6 +619,13 @@ describe('WorkerEngine', () => {
             batchId: 'guardian-crash-batch',
             maxRetries: 0,
         });
+        const otherBatch = await TaskService.add({
+            name: '其他批次不受隔离影响',
+            agent: 'test-agent',
+            prompt: '隔离期间仍可执行',
+            batchId: 'unrelated-batch',
+            maxRetries: 0,
+        });
         const config = createConfig(10_000);
         config.worker.maxConcurrency = 2;
         const worker = new WorkerEngine(config, { opencodeBin: fake.executable });
@@ -553,6 +653,10 @@ describe('WorkerEngine', () => {
         expect((await TaskService.getById(first.id))?.status).toBe('running');
         expect((await TaskRunService.getById(activeRun!.id))?.status).toBe('running');
         expect((await TaskService.getById(second.id))?.status).toBe('pending');
+        const unaffected = await waitForStatus(otherBatch.id, ['done'], 8_000);
+        expect(unaffected.status).toBe('done');
+        expect((await TaskService.getById(second.id))?.status).toBe('pending');
+        expect((await TaskService.getById(first.id))?.status).toBe('running');
         expect(worker.getRunningCount()).toBe(1);
 
         process.kill(descendantPid, 'SIGKILL');
@@ -565,7 +669,7 @@ describe('WorkerEngine', () => {
         const completed = await waitForStatus(second.id, ['done'], 3_000);
         expect(failed.resultLog).toContain('guardian 未提供受管进程组排空证明');
         expect(completed.status).toBe('done');
-    });
+    }, 20_000);
 
     test('取消终止已经开始时 stop 不夺取终态所有权', async () => {
         const fake = createFakeOpencode({ delayMs: 10_000, ignoreSigterm: true });
@@ -653,14 +757,16 @@ describe('WorkerEngine', () => {
         const unhandled: unknown[] = [];
         const onUnhandled = (reason: unknown) => unhandled.push(reason);
         process.on('unhandledRejection', onUnhandled);
+        let settlementAttempts = 0;
         TaskService.completeRun = async () => {
+            settlementAttempts += 1;
             throw new Error('模拟结算写入失败');
         };
 
         try {
             worker.start();
             await waitForStatus(task.id, ['running']);
-            await Bun.sleep(100);
+            await waitUntil(() => settlementAttempts >= 2, '等待结算重试');
             expect(unhandled).toEqual([]);
             expect(worker.getRunningCount()).toBe(1);
             expect((await TaskRunService.getRunningRunByTaskId(task.id))?.status).toBe('running');
@@ -873,6 +979,7 @@ describe('WorkerEngine', () => {
         const executable = join(dir, 'ignore-sigterm-opencode');
         const childPidFile = join(dir, 'child.pid');
         writeFileSync(executable, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 import { writeFileSync } from 'fs';
 writeFileSync(${JSON.stringify(childPidFile)}, String(process.pid));
 process.on('SIGTERM', () => {});
@@ -912,6 +1019,7 @@ setInterval(() => {}, 1000);
         tempDirs.push(dir);
         const executable = join(dir, 'signal-opencode');
         writeFileSync(executable, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 process.kill(process.pid, 'SIGTERM');
 `);
         chmodSync(executable, 0o755);

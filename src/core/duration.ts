@@ -1,8 +1,14 @@
 const DURATION_REGEX = /^(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds?|min|minutes?|m|h|hours?|d|days?|w|weeks?)$/i;
-const ISO8601_REGEX = /^P(?:([.\d]+)D)?(?:T(?:([.\d]+)H)?(?:([.\d]+)M)?(?:([.\d]+)S)?)?$/i;
+const ISO_NUMBER = String.raw`(\d+(?:\.\d+)?)`;
+const ISO8601_REGEX = new RegExp(`^P(?:${ISO_NUMBER}D)?(?:T(?:${ISO_NUMBER}H)?(?:${ISO_NUMBER}M)?(?:${ISO_NUMBER}S)?)?$`, 'i');
 
 export function parseDuration(input: string): number | null {
-    const trimmed = input.trim();
+    const milliseconds = parseRawDuration(input.trim());
+    // 小数单位换算会产生 12345.000000000002 这类浮点误差；时长按整数毫秒存储。
+    return milliseconds === null ? null : Math.round(milliseconds);
+}
+
+function parseRawDuration(trimmed: string): number | null {
 
     const simple = DURATION_REGEX.exec(trimmed);
     if (simple) {
@@ -17,7 +23,8 @@ export function parseDuration(input: string): number | null {
     }
 
     const iso = ISO8601_REGEX.exec(trimmed);
-    if (iso) {
+    // 至少包含一个分量，且 T 后必须有时间分量：`P`、`PT` 不是有效时长。
+    if (iso && iso.slice(1).some((part) => part !== undefined) && !/T$/i.test(trimmed)) {
         const days = parseFloat(iso[1] ?? "0");
         const hours = parseFloat(iso[2] ?? "0");
         const minutes = parseFloat(iso[3] ?? "0");

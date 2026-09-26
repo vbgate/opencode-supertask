@@ -147,10 +147,14 @@ export class TaskTemplateService {
                 .get();
             if (!template) return null;
 
-            const nextRunAt = template.nextRunAt ?? this.calculateNextRunAt(
-                template.scheduleType as ScheduleType,
-                template,
-            );
+            // 禁用期间错过的 cron/recurring 触发点不补跑：否则重新启用会在任意时刻立即执行一次。
+            // delayed 是一次性计划，保留原定时间（已过期则按用户重新启用的意图立即执行）。
+            const stale = template.nextRunAt != null
+                && template.nextRunAt <= Date.now()
+                && template.scheduleType !== 'delayed';
+            const nextRunAt = template.nextRunAt != null && !stale
+                ? template.nextRunAt
+                : this.calculateNextRunAt(template.scheduleType as ScheduleType, template);
             if (nextRunAt == null) {
                 throw new Error(`模板 #${id} 无法计算下一次执行时间，已保持禁用`);
             }
@@ -228,6 +232,21 @@ export class TaskTemplateService {
         }
 
         return deletedTotal;
+    }
+
+    /**
+     * Scheduler 触发或跳过一次后的下一个触发点。recurring 以原计划时间为锚点前进整数个间隔，
+     * 调度延迟不会逐次累积漂移；离线期间错过的多个周期直接跳过而不是逐个补跑。
+     */
+    static nextRunAfterScheduledSlot(
+        template: Pick<TaskTemplate, 'scheduleType' | 'cronExpr' | 'intervalMs' | 'runAt' | 'nextRunAt'>,
+        nowMs: number,
+    ): number | null {
+        const slot = template.nextRunAt;
+        if (template.scheduleType !== 'recurring' || !template.intervalMs || slot == null || slot > nowMs) {
+            return this.calculateNextRunAt(template.scheduleType as ScheduleType, template, nowMs);
+        }
+        return slot + (Math.floor((nowMs - slot) / template.intervalMs) + 1) * template.intervalMs;
     }
 
     static calculateNextRunAt(

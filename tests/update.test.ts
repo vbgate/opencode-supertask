@@ -18,6 +18,8 @@ import {
     installLatestPlugin,
     installPluginVersion,
     isVersionConverged,
+    mergeOpenCodeV2PluginConfig,
+    pinPluginInGlobalConfig,
     resolveConfiguredPluginSpec,
     resolveInstalledPlugin,
     updateGlobalCli,
@@ -32,6 +34,8 @@ const originalEnv = {
     cache: process.env.SUPERTASK_OPENCODE_CACHE_DIR,
     packageDir: process.env.SUPERTASK_PLUGIN_PACKAGE_DIR,
     tmpDir: process.env.TMPDIR,
+    fakeVersion: process.env.FAKE_OPENCODE_VERSION,
+    configDir: process.env.OPENCODE_CONFIG_DIR,
 };
 
 function restoreEnv(name: string, value: string | undefined): void {
@@ -48,6 +52,8 @@ afterEach(() => {
     restoreEnv('SUPERTASK_OPENCODE_CACHE_DIR', originalEnv.cache);
     restoreEnv('SUPERTASK_PLUGIN_PACKAGE_DIR', originalEnv.packageDir);
     restoreEnv('TMPDIR', originalEnv.tmpDir);
+    restoreEnv('FAKE_OPENCODE_VERSION', originalEnv.fakeVersion);
+    restoreEnv('OPENCODE_CONFIG_DIR', originalEnv.configDir);
 });
 
 function writePlugin(packageDir: string, version: string): void {
@@ -110,6 +116,7 @@ describe('OpenCode 插件升级', () => {
         const fakeOpencode = join(dir, 'opencode');
         writePlugin(packageDir, '0.1.31');
         writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 if (Bun.argv.slice(2).join(' ') === 'debug config --pure') {
   console.log(JSON.stringify({ plugin: ['opencode-supertask@0.1.31'] }));
   process.exit(0);
@@ -140,6 +147,7 @@ process.exit(1);
         writePlugin(packageDir, '0.1.31');
         mkdirSync(temporaryRoot);
         writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 import { fstatSync, writeFileSync } from 'fs';
 const config = JSON.stringify({
   plugin: ['opencode-supertask@0.1.31'],
@@ -175,7 +183,7 @@ process.stdout.write(stdout.isFile() ? config : config.slice(0, 64 * 1024));
         const packageDir = join(dir, 'package');
         const fakeOpencode = join(dir, 'opencode');
         writePlugin(packageDir, '0.1.5');
-        writeFileSync(fakeOpencode, '#!/usr/bin/env bun\nconsole.log(JSON.stringify({ plugin: ["opencode-supertask@latest"] }));\n');
+        writeFileSync(fakeOpencode, '#!/usr/bin/env bun\nif (Bun.argv[2] === "--version") { console.log(process.env.FAKE_OPENCODE_VERSION ?? "1.18.32"); process.exit(0); }\nconsole.log(JSON.stringify({ plugin: ["opencode-supertask@latest"] }));\n');
         chmodSync(fakeOpencode, 0o755);
         process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
         process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
@@ -229,6 +237,7 @@ process.stdout.write(stdout.isFile() ? config : config.slice(0, 64 * 1024));
         const fakeNpm = join(dir, 'npm');
         writePlugin(packageDir, '0.1.23');
         writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 await Bun.write(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
 `);
         // npm 12 在部分 registry 响应中会把单个 dist-tag 包成数组。
@@ -252,7 +261,7 @@ await Bun.write(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
         const fakeOpencode = join(dir, 'opencode');
         const fakeNpm = join(dir, 'npm');
         writePlugin(packageDir, '0.1.22');
-        writeFileSync(fakeOpencode, '#!/usr/bin/env bun\nprocess.exit(0);\n');
+        writeFileSync(fakeOpencode, '#!/usr/bin/env bun\nif (Bun.argv[2] === "--version") { console.log(process.env.FAKE_OPENCODE_VERSION ?? "1.18.32"); process.exit(0); }\nprocess.exit(0);\n');
         writeFileSync(fakeNpm, '#!/usr/bin/env bun\nconsole.log(JSON.stringify("0.1.23"));\n');
         chmodSync(fakeOpencode, 0o755);
         chmodSync(fakeNpm, 0o755);
@@ -271,6 +280,7 @@ await Bun.write(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
         const fakeOpencode = join(dir, 'opencode');
         writePlugin(packageDir, '0.1.20');
         writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log(process.env.FAKE_OPENCODE_VERSION ?? '1.18.32'); process.exit(0); }
 await Bun.write(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
 `);
         chmodSync(fakeOpencode, 0o755);
@@ -388,5 +398,103 @@ await Bun.write(${JSON.stringify(packageJson)}, JSON.stringify({ name: 'opencode
         expect(getGlobalCliDiagnostic().packageManager).toBeNull();
         expect(() => updateGlobalCli('0.1.34')).toThrow('npm install -g opencode-supertask@0.1.34');
         expect(() => updateGlobalCli('0.1.34')).toThrow('bun add -g opencode-supertask@0.1.34');
+    });
+
+    test('OpenCode 2.x 按来源顺序合并 plugins，支持对象声明和 -spec 移除', () => {
+        expect(mergeOpenCodeV2PluginConfig([
+            { type: 'document', path: '/g/opencode.json', info: { plugins: ['opencode-supertask@0.1.30', 'other'] } },
+            { type: 'directory', path: '/g' },
+            { type: 'document', info: { plugins: ['-opencode-supertask@0.1.30', { package: 'opencode-supertask@0.1.31' }] } },
+        ])).toEqual({ plugin: ['other', 'opencode-supertask@0.1.31'] });
+        expect(() => mergeOpenCodeV2PluginConfig({ plugin: [] })).toThrow('不是数组');
+    });
+
+    test('OpenCode 2.x 诊断读取 debug config 来源数组且不传 --pure', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-doctor-v2-'));
+        dirs.push(dir);
+        const packageDir = join(dir, 'package');
+        const fakeOpencode = join(dir, 'opencode');
+        writePlugin(packageDir, '0.1.31');
+        writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+if (Bun.argv[2] === '--version') { console.log('opencode v2.0.16'); process.exit(0); }
+if (Bun.argv.slice(2).join(' ') === 'debug config') {
+  console.log(JSON.stringify([{ type: 'document', path: '/g/opencode.json', info: { plugins: ['opencode-supertask@0.1.31'] } }]));
+  process.exit(0);
+}
+process.exit(1);
+`);
+        chmodSync(fakeOpencode, 0o755);
+        process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
+
+        expect(getOpenCodePluginDiagnostic()).toMatchObject({
+            ok: true, spec: 'opencode-supertask@0.1.31', cachedVersion: '0.1.31', error: null,
+        });
+    });
+
+    test('同时识别 1.x packages 与 2.x npm/generation 两种插件缓存布局', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-cache-layouts-'));
+        dirs.push(dir);
+        writePlugin(join(dir, 'opencode-supertask@0.1.30/node_modules/opencode-supertask'), '0.1.30');
+        writePlugin(join(dir, 'opencode-supertask@0.1.31/1790063377764/node_modules/opencode-supertask'), '0.1.31');
+        writePlugin(join(dir, 'unrelated@1.0.0/node_modules/unrelated'), '9.9.9');
+        process.env.SUPERTASK_OPENCODE_CACHE_DIR = dir;
+        delete process.env.SUPERTASK_PLUGIN_PACKAGE_DIR;
+
+        expect(resolveInstalledPlugin().version).toBe('0.1.31');
+    });
+
+    test('固定全局配置中的唯一 SuperTask 声明，保留注释、旧键和插件选项', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-pin-config-'));
+        dirs.push(dir);
+        const configPath = join(dir, 'opencode.jsonc');
+        writeFileSync(configPath, `{
+  // 用户注释
+  "plugin": ["@warp-dot-dev/opencode-warp", ["opencode-supertask@0.1.36", { "quiet": true }]],
+  "plugins": ["opencode-supertask@0.1.42"],
+}
+`);
+        pinPluginInGlobalConfig(configPath, 'opencode-supertask@0.1.42');
+        const text = readFileSync(configPath, 'utf8');
+        expect(text).toContain('// 用户注释');
+        const parsed = JSON.parse(text.replace(/\/\/.*$/gm, '').replace(/,(\s*[}\]])/g, '$1')) as Record<string, unknown>;
+        expect(parsed.plugin).toEqual(['@warp-dot-dev/opencode-warp', ['opencode-supertask@0.1.42', { quiet: true }]]);
+        expect(parsed.plugins).toEqual([]);
+
+        const fresh = join(dir, 'fresh', 'opencode.json');
+        pinPluginInGlobalConfig(fresh, 'opencode-supertask@0.1.42');
+        expect(JSON.parse(readFileSync(fresh, 'utf8'))).toEqual({ plugins: ['opencode-supertask@0.1.42'] });
+    });
+
+    test('OpenCode 2.x 用 plugin add 安装并把重复声明收敛为一条', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-update-v2-'));
+        dirs.push(dir);
+        const configDir = join(dir, 'config');
+        const packageDir = join(dir, 'package');
+        const argsLog = join(dir, 'args.json');
+        const fakeOpencode = join(dir, 'opencode');
+        mkdirSync(configDir);
+        writeFileSync(join(configDir, 'opencode.json'), JSON.stringify({ plugin: ['opencode-supertask@0.1.36'] }));
+        writePlugin(packageDir, '0.1.42');
+        writeFileSync(fakeOpencode, `#!/usr/bin/env bun
+import { readFileSync, writeFileSync } from 'fs';
+if (Bun.argv[2] === '--version') { console.log('opencode v2.0.16'); process.exit(0); }
+writeFileSync(${JSON.stringify(argsLog)}, JSON.stringify(Bun.argv.slice(2)));
+const path = ${JSON.stringify(join(configDir, 'opencode.json'))};
+const config = JSON.parse(readFileSync(path, 'utf8'));
+config.plugins = [...(config.plugins ?? []), Bun.argv[4]];
+writeFileSync(path, JSON.stringify(config, null, 2));
+`);
+        chmodSync(fakeOpencode, 0o755);
+        process.env.SUPERTASK_OPENCODE_BIN = fakeOpencode;
+        process.env.SUPERTASK_PLUGIN_PACKAGE_DIR = packageDir;
+        process.env.OPENCODE_CONFIG_DIR = configDir;
+
+        expect(installPluginVersion('0.1.42').version).toBe('0.1.42');
+        expect(JSON.parse(readFileSync(argsLog, 'utf8'))).toEqual(['plugin', 'add', 'opencode-supertask@0.1.42']);
+        expect(JSON.parse(readFileSync(join(configDir, 'opencode.json'), 'utf8'))).toEqual({
+            plugin: ['opencode-supertask@0.1.42'],
+            plugins: [],
+        });
     });
 });

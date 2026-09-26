@@ -18,6 +18,8 @@ let pm2StatePath: string;
 let pm2LogPath: string;
 let pm2StartFailurePath: string;
 let gatewayEntryPath: string;
+let claimDuringStopPath: string;
+let stopFailurePath: string;
 
 function cliEnv(): NodeJS.ProcessEnv {
     return {
@@ -87,6 +89,8 @@ beforeAll(() => {
     pm2LogPath = join(tempDir, 'pm2-calls.jsonl');
     pm2StartFailurePath = join(tempDir, 'pm2-start-failure');
     gatewayEntryPath = join(tempDir, 'gateway.js');
+    claimDuringStopPath = join(tempDir, 'claim-during-stop');
+    stopFailurePath = join(tempDir, 'stop-failure');
     writeFileSync(pm2LogPath, '');
     writeFileSync(gatewayEntryPath, '');
     writeFileSync(fakePm2Path, `#!/usr/bin/env bun
@@ -116,8 +120,20 @@ if (args[0] === 'start' && existsSync(${JSON.stringify(pm2StartFailurePath)})) {
 if (args[0] === 'stop') {
     writeFileSync(${JSON.stringify(pm2StatePath)}, 'stopped');
     const db = new Database(${JSON.stringify(testDbPath)});
+    if (existsSync(${JSON.stringify(claimDuringStopPath)})) {
+        // 模拟 Worker 在维护预检与停机之间抢占了一个任务。
+        const task = db.query("INSERT INTO tasks (name, agent, prompt, status) VALUES ('停机窗口任务', 'a', 'p', 'running') RETURNING id").get() as { id: number };
+        db.query("INSERT INTO task_runs (task_id, status) VALUES (?, 'running')").run(task.id);
+    }
+    // 与真实 Gateway 的优雅停机一致：中断运行中任务并恢复为 pending。
+    db.exec("UPDATE task_runs SET status = 'failed' WHERE status = 'running'");
+    db.exec("UPDATE tasks SET status = 'pending' WHERE status = 'running'");
     db.exec('DELETE FROM gateway_lock');
     db.close();
+    if (existsSync(${JSON.stringify(stopFailurePath)})) {
+        console.error('模拟 pm2 stop 在停止后超时退出');
+        process.exit(1);
+    }
 }
 if (args[0] === 'start') {
     writeFileSync(${JSON.stringify(pm2StatePath)}, 'online');
@@ -186,10 +202,28 @@ describe('数据库维护 CLI 的 PM2 生命周期编排', () => {
         setPm2Online();
         expect(runFailure(['db', 'clear', '--confirm', 'CLEAR'])).toContain('运行中');
         expect(readFileSync(pm2StatePath, 'utf8')).toBe('online');
+        // 运行中任务在停机前就被拒绝：Gateway 不会被停止，任务不会被中断或删除。
+        expect(runJson<{ counts: { tasks: number } }>(['db', 'check']).counts.tasks).toBeGreaterThan(0);
 
         const calls = pm2Calls();
-        expect(calls.filter((call) => call[0] === 'stop')).toHaveLength(4);
-        expect(calls.filter((call) => call[0] === 'start')).toHaveLength(3);
+        expect(calls.filter((call) => call[0] === 'stop')).toHaveLength(3);
+        expect(calls.filter((call) => call[0] === 'start')).toHaveLength(2);
+
+        setTaskStatus(runningTask.id, 'done');
+        writeFileSync(claimDuringStopPath, 'claim');
+        setPm2Online();
+        const before = runJson<{ counts: { tasks: number } }>(['db', 'check']).counts.tasks;
+        expect(runFailure(['db', 'clear', '--confirm', 'CLEAR', '--keep-stopped'])).toContain('停止 Gateway 期间');
+        expect(readFileSync(pm2StatePath, 'utf8')).toBe('online');
+        expect(runJson<{ counts: { tasks: number } }>(['db', 'check']).counts.tasks).toBe(before + 1);
+        rmSync(claimDuringStopPath);
+
+        writeFileSync(stopFailurePath, 'fail');
+        setPm2Online();
+        expect(runFailure(['db', 'clear', '--confirm', 'CLEAR'])).toContain('模拟 pm2 stop');
+        expect(readFileSync(pm2StatePath, 'utf8')).toBe('online');
+        expect(runJson<{ counts: { tasks: number } }>(['db', 'check']).counts.tasks).toBeGreaterThan(0);
+        rmSync(stopFailurePath);
 
         setTaskStatus(runningTask.id, 'done');
         runJson<{ id: number }>([
@@ -200,5 +234,5 @@ describe('数据库维护 CLI 的 PM2 生命周期编排', () => {
         expect(runFailure(['db', 'clear', '--confirm', 'CLEAR'])).toContain('数据库维护已完成');
         expect(readFileSync(pm2StatePath, 'utf8')).toBe('stopped');
         expect(runJson<{ counts: { tasks: number } }>(['db', 'check']).counts.tasks).toBe(0);
-    });
+    }, 60_000);
 });

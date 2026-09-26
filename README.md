@@ -50,6 +50,8 @@ npm install -g "opencode-supertask@$VERSION"
 opencode plugin "opencode-supertask@$VERSION" --global --force
 ```
 
+OpenCode 2.x uses `opencode plugin add "opencode-supertask@$VERSION"` instead of the last line. SuperTask detects the OpenCode major version at runtime and supports both 1.x (1.2.20+) and 2.x; `supertask upgrade` keeps a single pinned plugin entry in either config format.
+
 Pinning the exact version keeps the OpenCode plugin, global CLI, and Gateway on the same build. Do not replace it with a bare package name or `@latest` in `opencode.json`.
 
 ### 2. Restart OpenCode and start the Gateway
@@ -157,7 +159,7 @@ The responsive Dashboard supports English and Chinese, light and dark themes, an
 | Execution Logs | Read structured output, tools, errors, sessions, and the exact historical command |
 | System Status | Inspect active configuration, health, concurrency, and backup-first database maintenance |
 
-The project picker reads the selected directory's real `opencode agent list` and `opencode models --verbose` output, so forms offer only locally available models, each model's declared variants, and directly runnable Agents. Leaving variant at its default omits `--variant` and follows the Agent/model configuration.
+The project picker reads the selected directory's real OpenCode catalog (`agent list` / `models --verbose` on 1.x, `api agent.list` / `api model.list` on 2.x), so forms offer only locally available models, each model's declared variants, and directly runnable Agents. Leaving variant at its default omits `--variant` and follows the Agent/model configuration.
 
 ## Reliability Without Hand-Waving
 

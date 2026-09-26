@@ -359,3 +359,34 @@ if (result !== 'inspect-failed' || !exited) process.exit(1);
         expect(JSON.parse(output.trim())).toEqual({ result: 'inspect-failed', exited: true });
     });
 });
+
+describe('受管命令身份与路径空格', () => {
+    test('安装路径和 OpenCode 路径含空格时仍可按 UUID 识别并终止 guardian', () => {
+        const root = mkdtempSync(join(tmpdir(), 'supertask with space-'));
+        dirs.push(root);
+        const repository = join(root, 'install dir');
+        const opencode = join(root, 'bin dir', 'opencode');
+        execFileSync('mkdir', ['-p', repository, join(root, 'bin dir')]);
+        execFileSync('cp', ['-R', 'src', 'package.json', 'tsconfig.json', repository]);
+        execFileSync('ln', ['-s', join(process.cwd(), 'node_modules'), join(repository, 'node_modules')]);
+        writeFileSync(opencode, '#!/bin/sh\nsleep 30\n');
+        chmodSync(opencode, 0o755);
+        writeFileSync(join(repository, 'probe.ts'), `
+import { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
+import { fileURLToPath } from 'url';
+import { signalRecordedProcessTreeWithResult } from './src/core/process-control';
+import { LAUNCH_IDENTITY_ARGUMENT, TOKEN_GUARDIAN_LAUNCH_PROTOCOL } from './src/core/launch-protocol';
+const identity = \`gateway-\${process.pid}:launch:\${randomUUID()}\`;
+const launcher = fileURLToPath(new URL('./src/worker/launcher.ts', import.meta.url));
+const child = spawn(process.execPath, [launcher, LAUNCH_IDENTITY_ARGUMENT, identity, ${JSON.stringify(opencode)}, 'run', '--agent', 'build', '--format', 'json', 'hello world'], { stdio: ['pipe', 'ignore', 'ignore', 'ipc'], detached: true });
+await Bun.sleep(400);
+const wrong = signalRecordedProcessTreeWithResult(child.pid!, 'SIGTERM', ${JSON.stringify(opencode)}, TOKEN_GUARDIAN_LAUNCH_PROTOCOL, \`gateway-\${process.pid}:launch:\${randomUUID()}\`);
+const right = signalRecordedProcessTreeWithResult(child.pid!, 'SIGKILL', ${JSON.stringify(opencode)}, TOKEN_GUARDIAN_LAUNCH_PROTOCOL, identity);
+console.log(JSON.stringify({ wrong, right }));
+process.exit(0);
+`);
+        const output = execFileSync(process.execPath, ['probe.ts'], { cwd: repository, encoding: 'utf8', timeout: 30_000 });
+        expect(JSON.parse(output.trim().split('\n').at(-1) ?? '{}')).toEqual({ wrong: 'identity-mismatch', right: 'signalled' });
+    });
+});

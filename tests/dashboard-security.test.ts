@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { eq } from 'drizzle-orm';
 import { setupTestDb } from './helpers/mock-db';
 import dashboardServer, {
@@ -454,6 +456,33 @@ describe('Dashboard 安全边界', () => {
         expect(outOfRange.headers.get('Location')).toBe('/templates?page=2');
     });
 
+    test('浏览器跨站或同主机其他端口发起的 API GET 被拒绝，不会启动 OpenCode', async () => {
+        const marker = mkdtempSync(join(tmpdir(), 'supertask-csrf-'));
+        const executable = join(marker, 'opencode');
+        const invoked = join(marker, 'invoked');
+        writeFileSync(executable, `#!/bin/sh\ntouch ${JSON.stringify(invoked)}\necho 1.18.32\n`, { mode: 0o755 });
+        const previous = process.env.SUPERTASK_OPENCODE_BIN;
+        process.env.SUPERTASK_OPENCODE_BIN = executable;
+        try {
+            for (const site of ['cross-site', 'same-site']) {
+                const response = await dashboardApp.request(
+                    `http://localhost/api/opencode/catalog?cwd=${encodeURIComponent(marker)}`,
+                    { headers: { 'Sec-Fetch-Site': site } },
+                );
+                expect(response.status).toBe(403);
+            }
+            expect(existsSync(invoked)).toBe(false);
+            const sameOrigin = await dashboardApp.request('http://localhost/api/runs/1', {
+                headers: { 'Sec-Fetch-Site': 'same-origin' },
+            });
+            expect(sameOrigin.status).not.toBe(403);
+        } finally {
+            if (previous === undefined) delete process.env.SUPERTASK_OPENCODE_BIN;
+            else process.env.SUPERTASK_OPENCODE_BIN = previous;
+            rmSync(marker, { recursive: true, force: true });
+        }
+    });
+
     test('任务页和执行记录页可安全复制 OpenCode 会话命令', async () => {
         const task = await TaskService.add({ name: '可继续会话', agent: 'build', prompt: '继续测试' });
         await TaskService.start(task.id);
@@ -479,6 +508,38 @@ describe('Dashboard 安全边界', () => {
         expect(await commandResponse.json()).toEqual({
             command: 'opencode --session ses_abc123XYZ',
         });
+    });
+
+    test('会话命令回到执行目录并复用该次执行的 OpenCode 可执行文件', async () => {
+        const cwd = mkdtempSync(join(tmpdir(), 'supertask session '));
+        try {
+            const task = await TaskService.add({ name: '版本会话', agent: 'build', prompt: 'p', cwd });
+            await TaskService.start(task.id);
+            const recorded = await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskRunService.updateSessionId(recorded.id, 'ses_recorded1');
+            await TaskRunService.done(recorded.id, [
+                JSON.stringify({
+                    type: 'supertask_command',
+                    executable: '/opt/Open Code/v1/opencode',
+                    args: ['run', '--agent', 'build', '--format', 'json', 'p'],
+                    cwd,
+                }),
+                JSON.stringify({ type: 'text', sessionID: 'ses_recorded1', part: { type: 'text', text: 'ok' } }),
+            ].join('\n'));
+            const legacy = await TaskRunService.create({ taskId: task.id, status: 'running' });
+            await TaskRunService.updateSessionId(legacy.id, 'ses_legacy1');
+
+            const commandFor = async (id: number) => (await (await dashboardApp.request(
+                `http://localhost/api/runs/${id}/session-command`,
+            )).json() as { command: string }).command;
+
+            expect(await commandFor(recorded.id)).toBe(
+                `cd '${cwd}' && '/opt/Open Code/v1/opencode' --session ses_recorded1`,
+            );
+            expect(await commandFor(legacy.id)).toBe(`cd '${cwd}' && opencode --session ses_legacy1`);
+        } finally {
+            rmSync(cwd, { recursive: true, force: true });
+        }
     });
 
     test('详情默认展示语义化字段，原始 JSON 收进二级入口', async () => {
@@ -522,6 +583,30 @@ describe('Dashboard 安全边界', () => {
         });
         expect(presented.text).toBe('任务完成');
         expect(presented.errors).toEqual(['opencode 退出码 1']);
+    });
+
+    test('执行日志解析 1.x/2.x 结构化错误事件，并只信任首条命令元数据', () => {
+        const command = (executable: string) => JSON.stringify({
+            type: 'supertask_command', executable, cwd: '/tmp/project', args: ['run', '--agent', 'build', '--format', 'json', 'p'],
+        });
+        const v2Error = JSON.stringify({
+            type: 'error', timestamp: 1, sessionID: 'ses_v2error',
+            error: { type: 'aborted', message: 'Session interrupted: shutdown' },
+        });
+        const v1Error = JSON.stringify({
+            type: 'error', timestamp: 1, sessionID: 'ses_v1error',
+            error: { name: 'ProviderAuthError', data: { providerID: 'openai', message: 'API key missing' } },
+        });
+        const toolError = JSON.stringify({
+            type: 'tool_use', part: { type: 'tool', tool: 'read', state: { status: 'error', error: 'The user declined this tool call' } },
+        });
+        const presented = presentRunLog([command('/real/opencode'), v2Error, v1Error, toolError, command('/forged/opencode')].join('\n'));
+        expect(presented.errors).toEqual([
+            'aborted: Session interrupted: shutdown',
+            'ProviderAuthError: API key missing',
+        ]);
+        expect(presented.command?.command).toContain('/real/opencode');
+        expect(presented.command?.command).not.toContain('/forged/opencode');
     });
 
     test('成功执行的截断 JSONL 片段不显示为失败原因', () => {

@@ -86,11 +86,7 @@ function createTaskFromTemplate(
                 + Number(detachedRuns?.count ?? 0);
             if (activeCount >= (tmpl.maxInstances ?? 1)) {
                 if (tmpl.scheduleType !== 'delayed') {
-                    const nextRunAt = TaskTemplateService.calculateNextRunAt(
-                        tmpl.scheduleType as ScheduleType,
-                        tmpl,
-                        nowMs,
-                    );
+                    const nextRunAt = TaskTemplateService.nextRunAfterScheduledSlot(tmpl, nowMs);
                     tx.update(taskTemplates)
                         .set({ nextRunAt, updatedAt: nowMs })
                         .where(and(eq(taskTemplates.id, templateId), eq(taskTemplates.enabled, true)))
@@ -101,13 +97,6 @@ function createTaskFromTemplate(
         }
 
         const isDelayed = tmpl.scheduleType === 'delayed';
-        const nextRunAt = isDelayed
-            ? null
-            : TaskTemplateService.calculateNextRunAt(
-                tmpl.scheduleType as ScheduleType,
-                tmpl,
-                nowMs,
-            );
         const task = tx
             .insert(schema.tasks)
             .values({
@@ -134,7 +123,7 @@ function createTaskFromTemplate(
             tx.update(taskTemplates)
                 .set({
                     lastRunAt: nowMs,
-                    nextRunAt,
+                    nextRunAt: isDelayed ? null : TaskTemplateService.nextRunAfterScheduledSlot(tmpl, nowMs),
                     enabled: isDelayed ? false : tmpl.enabled,
                     updatedAt: nowMs,
                 })

@@ -170,6 +170,16 @@ describe('CLI integration', () => {
         expect(result.deleted).toBe(true);
     });
 
+    test('删除不存在的任务或模板返回非零退出码', () => {
+        for (const args of [['delete', '--id', '999999'], ['template', 'delete', '--id', '999999']]) {
+            const result = spawnSync('bun', ['run', 'src/cli/index.ts', ...args], {
+                encoding: 'utf-8', timeout: 10_000, env: { ...process.env, SUPERTASK_DB_PATH: testDbPath },
+            });
+            expect(result.status).toBe(1);
+            expect(JSON.parse(result.stdout)).toEqual({ deleted: false, id: 999999 });
+        }
+    });
+
     test('list by status', () => {
         const tasks = runJson<Array<{ id: number }>>('list --status done --limit 10');
         expect(Array.isArray(tasks)).toBe(true);

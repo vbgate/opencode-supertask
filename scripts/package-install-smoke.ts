@@ -18,8 +18,9 @@ try {
         ], {
             cwd: process.cwd(),
             encoding: 'utf8',
-        })) as Array<{ filename: string }>;
-        const artifact = packed[0];
+        })) as Array<{ filename: string }> | Record<string, { filename: string }>;
+        // npm ≤11 输出数组；npm 12 改为以包名为键的对象。
+        const artifact = Array.isArray(packed) ? packed[0] : Object.values(packed)[0];
         if (!artifact) throw new Error('npm pack did not produce an artifact');
         archive = join(directory, artifact.filename);
     }

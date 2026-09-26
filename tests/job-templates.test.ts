@@ -618,7 +618,53 @@ describe('job-templates', () => {
         });
     });
 
+    describe('recurring 锚点', () => {
+        test('调度延迟不会累积：下一次触发点按原计划时间前进整数个间隔', async () => {
+            const intervalMs = 60_000;
+            const tmpl = await TaskTemplateService.create({
+                name: '每分钟', agent: 'a', prompt: 'p', scheduleType: 'recurring', intervalMs,
+            });
+            const slot = Date.now() - 900;
+            await testDb.db.update(testDb.schema.taskTemplates).set({ nextRunAt: slot })
+                .where(eq(testDb.schema.taskTemplates.id, tmpl.id));
+            expect(await cloneTaskFromTemplate(tmpl.id, slot)).not.toBeNull();
+            expect((await TaskTemplateService.getById(tmpl.id))?.nextRunAt).toBe(slot + intervalMs);
+        });
+
+        test('离线错过多个周期时跳到下一个未来锚点而不是逐个补跑', async () => {
+            const intervalMs = 60_000;
+            const tmpl = await TaskTemplateService.create({
+                name: '离线', agent: 'a', prompt: 'p', scheduleType: 'recurring', intervalMs,
+            });
+            const slot = Date.now() - 5 * intervalMs - 10_000;
+            await testDb.db.update(testDb.schema.taskTemplates).set({ nextRunAt: slot })
+                .where(eq(testDb.schema.taskTemplates.id, tmpl.id));
+            expect(await cloneTaskFromTemplate(tmpl.id, slot)).not.toBeNull();
+            const next = (await TaskTemplateService.getById(tmpl.id))?.nextRunAt ?? 0;
+            expect(next).toBe(slot + 6 * intervalMs);
+            expect(next).toBeGreaterThan(Date.now());
+        });
+    });
+
     describe('enable', () => {
+        test('重新启用 cron/recurring 模板不会补跑禁用期间错过的触发点', async () => {
+            const cron = await TaskTemplateService.create({
+                name: '每周一', agent: 'a', prompt: 'p', scheduleType: 'cron', cronExpr: '0 9 * * 1',
+            });
+            const recurring = await TaskTemplateService.create({
+                name: '每 6 小时', agent: 'a', prompt: 'p', scheduleType: 'recurring', intervalMs: 6 * 3_600_000,
+            });
+            for (const template of [cron, recurring]) {
+                await TaskTemplateService.disable(template.id);
+                await testDb.db.update(testDb.schema.taskTemplates)
+                    .set({ nextRunAt: Date.now() - 14 * 86_400_000 })
+                    .where(eq(testDb.schema.taskTemplates.id, template.id));
+                const enabled = await TaskTemplateService.enable(template.id);
+                expect(enabled?.nextRunAt).toBeGreaterThan(Date.now());
+            }
+            expect(await getDueTemplates()).toEqual([]);
+        });
+
         test('重新启用已触发 delayed 模板时立即恢复原到期点，触发后再次禁用', async () => {
             const runAt = Date.now() - 1_000;
             const tmpl = await TaskTemplateService.create({

@@ -1,5 +1,9 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
-import { shouldAttemptGatewayReplacement, SuperTaskPlugin } from '../plugin/supertask';
+import { spawnSync } from 'child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import SuperTaskDefault, { setupSuperTaskV2, shouldAttemptGatewayReplacement, SuperTaskPlugin, type V2PluginContext } from '../plugin/supertask';
 import { setupTestDb } from './helpers/mock-db';
 import { TaskService } from '../src/core/services/task.service';
 import { MANAGED_RUN_ENV, MANAGED_RUN_ENV_VALUE } from '../src/core/launch-protocol';
@@ -69,6 +73,55 @@ describe('OpenCode 插件注册', () => {
         expect(scheduleArgs.batchId.safeParse('   ').success).toBe(false);
     });
 
+    test('默认导出同时满足 1.x server 与 2.x setup 加载器', () => {
+        expect(SuperTaskDefault.id).toBe('opencode-supertask');
+        expect(SuperTaskDefault.server).toBe(SuperTaskPlugin);
+        expect(SuperTaskDefault.setup).toBe(setupSuperTaskV2);
+    });
+
+    test('OpenCode 2.x 每个项目位置各自注册工具并按该位置限定 cwd、注入系统说明', async () => {
+        const locations = [process.cwd(), tmpdir()];
+        const registered: Array<{ directory: string; tools: Map<string, (input: unknown) => Promise<{ content: string }>> }> = [];
+        const systems: string[][] = [];
+        for (const directory of locations) {
+            const tools = new Map<string, (input: unknown) => Promise<{ content: string }>>();
+            const context: V2PluginContext = {
+                location: { directory },
+                tool: {
+                    transform: async (callback) => {
+                        callback({ add: (tool) => {
+                            expect(tool.input).toMatchObject({ type: 'object' });
+                            expect(tool.input).not.toHaveProperty('$schema');
+                            tools.set(tool.name, tool.execute);
+                        } });
+                    },
+                },
+                session: {
+                    hook: async (_name, callback) => {
+                        const event = { system: [] as Array<{ type: 'text'; text: string }> };
+                        callback(event);
+                        systems.push(event.system.map((part) => part.text));
+                    },
+                },
+            };
+            await setupSuperTaskV2(context);
+            registered.push({ directory, tools });
+        }
+
+        for (const { directory, tools } of registered) {
+            expect([...tools.keys()].sort()).toEqual([
+                'supertask_add', 'supertask_get', 'supertask_list', 'supertask_next',
+                'supertask_retry', 'supertask_schedule', 'supertask_status', 'supertask_upgrade',
+            ]);
+            const added = JSON.parse((await tools.get('supertask_add')!({ name: '  v2  ', agent: 'build', prompt: 'p' })).content) as { id: number };
+            expect(await TaskService.getById(added.id)).toMatchObject({ name: 'v2', cwd: directory });
+            const invalid = JSON.parse((await tools.get('supertask_add')!({ name: '', agent: 'build', prompt: 'p' })).content) as { error?: string };
+            expect(invalid.error).toBeTruthy();
+        }
+        expect(systems).toHaveLength(2);
+        expect(systems[0][0]).toContain('supertask_schedule');
+    });
+
     test('按 batchId 查询时同时返回当前项目和跨项目占用状态', async () => {
         const otherProjectTask = await TaskService.add({
             name: '其他项目批次任务',
@@ -107,6 +160,34 @@ describe('OpenCode 插件注册', () => {
         expect(shouldAttemptGatewayReplacement('0.2.0-beta.1', '0.2.0-beta.2')).toBe(false);
         expect(shouldAttemptGatewayReplacement('0.1.28', null)).toBe(true);
         expect(shouldAttemptGatewayReplacement('invalid', '0.1.27')).toBe(false);
+    });
+
+    test('锁中记录更新版本的 Gateway 即使暂未就绪，旧插件也不会调用 PM2 替换它', () => {
+        const dir = mkdtempSync(join(tmpdir(), 'supertask-plugin-downgrade-'));
+        try {
+            const pm2Log = join(dir, 'pm2.log');
+            const fakePm2 = join(dir, 'pm2');
+            writeFileSync(fakePm2, `#!/bin/sh\necho "$@" >> ${JSON.stringify(pm2Log)}\necho '[]'\n`, { mode: 0o755 });
+            const script = `
+const { sqlite } = await import(${JSON.stringify(join(process.cwd(), 'src/core/db/index.ts'))});
+sqlite.query('INSERT OR REPLACE INTO gateway_lock (id, pid, acquired_at, heartbeat_at, ready_at, version) VALUES (1, 999999, 1, 1, 1, ?)').run('999.0.0');
+const { SuperTaskPlugin } = await import(${JSON.stringify(join(process.cwd(), 'plugin/supertask.ts'))});
+const hooks = await SuperTaskPlugin({});
+const output = await hooks.tool.supertask_add.execute({ name: 'n', agent: 'build', prompt: 'p' }, { directory: process.cwd() });
+console.log(output);
+`;
+            const result = spawnSync(process.execPath, ['-e', script], {
+                cwd: process.cwd(),
+                encoding: 'utf8',
+                timeout: 30_000,
+                env: { ...process.env, SUPERTASK_DB_PATH: join(dir, 'tasks.db'), SUPERTASK_PM2_BIN: fakePm2 },
+            });
+            expect(result.status).toBe(0);
+            expect(JSON.parse(result.stdout.trim().split('\n').at(-1) ?? '{}').error).toContain('999.0.0');
+            expect(existsSync(pm2Log)).toBe(false);
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
     });
 
     test('任务作用域使用 OpenCode 工具上下文目录，忽略调用者伪造的 cwd', async () => {

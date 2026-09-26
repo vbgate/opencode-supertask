@@ -3,16 +3,26 @@ import {
     chmodSync,
     closeSync,
     existsSync,
+    mkdirSync,
     mkdtempSync,
     openSync,
     readFileSync,
     readdirSync,
     realpathSync,
+    renameSync,
     rmSync,
+    writeFileSync,
 } from 'fs';
+import {
+    applyEdits as applyJsoncEdits,
+    modify as modifyJsonc,
+    parse as parseJsonc,
+    type ParseError,
+} from 'jsonc-parser';
 import { homedir, tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { compareSemanticVersions, isSemanticVersion } from '@core/semver';
+import { detectOpenCodeVersionSync, openCodeExecutable } from '@core/opencode-cli';
 
 const PACKAGE_NAME = 'opencode-supertask';
 
@@ -100,18 +110,38 @@ function compareVersions(left: string, right: string): number {
     return compareSemanticVersions(left, right) ?? left.localeCompare(right);
 }
 
-function cacheRoot(): string {
-    return process.env.SUPERTASK_OPENCODE_CACHE_DIR
-        ?? join(homedir(), '.cache/opencode/packages');
+/**
+ * OpenCode 1.x 缓存：`<cache>/opencode/packages/<spec>/node_modules/<name>`；
+ * OpenCode 2.x 缓存：`<cache>/opencode/npm/<spec>/<generation>/node_modules/<name>`。
+ * 显式覆盖目录时只扫描该目录（两种布局都识别），避免读到真实缓存。
+ */
+function cacheRoots(): string[] {
+    const override = process.env.SUPERTASK_OPENCODE_CACHE_DIR;
+    if (override) return [override];
+    const opencodeCache = join(process.env.XDG_CACHE_HOME || join(homedir(), '.cache'), 'opencode');
+    return [join(opencodeCache, 'packages'), join(opencodeCache, 'npm')];
+}
+
+function subdirectories(directory: string): string[] {
+    try {
+        return readdirSync(directory, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => join(directory, entry.name));
+    } catch {
+        return [];
+    }
 }
 
 function installedPlugins(): InstalledPlugin[] {
-    const root = cacheRoot();
-    const packageDirs = existsSync(root)
-        ? readdirSync(root, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory() && (entry.name === PACKAGE_NAME || entry.name.startsWith(`${PACKAGE_NAME}@`)))
-            .map((entry) => join(root, entry.name, 'node_modules', PACKAGE_NAME))
-        : [];
+    const packageDirs = cacheRoots().flatMap((root) => subdirectories(root)
+        .filter((directory) => {
+            const name = directory.slice(root.length + 1);
+            return name === PACKAGE_NAME || name.startsWith(`${PACKAGE_NAME}@`);
+        })
+        .flatMap((specDirectory) => [
+            join(specDirectory, 'node_modules', PACKAGE_NAME),
+            ...subdirectories(specDirectory).map((generation) => join(generation, 'node_modules', PACKAGE_NAME)),
+        ]));
     return packageDirs
         .map(pluginAt)
         .filter((plugin): plugin is InstalledPlugin => plugin !== null);
@@ -134,7 +164,7 @@ export function resolveInstalledPlugin(): InstalledPlugin {
 }
 
 function opencodeBin(): string {
-    return process.env.SUPERTASK_OPENCODE_BIN ?? 'opencode';
+    return openCodeExecutable();
 }
 
 function npmBin(): string {
@@ -334,6 +364,47 @@ export function resolveInstalledPluginVersion(expectedVersion: string): Installe
     throw new Error(`[supertask] OpenCode 插件缓存版本不匹配：期望 ${expectedVersion}，实际 ${actual}`);
 }
 
+/** 插件声明可为 `"spec"`、1.x 的 `["spec", options]` 或 2.x 的 `{ package, options }`。 */
+function pluginEntrySpec(entry: unknown): string | null {
+    if (typeof entry === 'string') return entry;
+    if (Array.isArray(entry) && typeof entry[0] === 'string') return entry[0];
+    if (entry !== null && typeof entry === 'object' && typeof (entry as { package?: unknown }).package === 'string') {
+        return (entry as { package: string }).package;
+    }
+    return null;
+}
+
+/**
+ * OpenCode 2.x 的 `debug config` 返回按优先级从低到高排列的配置来源数组；
+ * 按顺序合并各文档的 plugins（兼容旧键 plugin），`-spec` 表示移除之前的同名声明。
+ */
+export function mergeOpenCodeV2PluginConfig(value: unknown): { plugin: string[] } {
+    if (!Array.isArray(value)) throw new Error('[supertask] OpenCode 2.x 配置来源不是数组');
+    const merged: string[] = [];
+    for (const entry of value) {
+        if (entry === null || typeof entry !== 'object' || (entry as { type?: unknown }).type !== 'document') continue;
+        const info = (entry as { info?: unknown }).info;
+        if (info === null || typeof info !== 'object') continue;
+        const record = info as Record<string, unknown>;
+        for (const key of ['plugin', 'plugins']) {
+            const list = record[key];
+            if (!Array.isArray(list)) continue;
+            for (const spec of list.map(pluginEntrySpec)) {
+                if (spec === null) continue;
+                if (spec.startsWith('-')) {
+                    const target = spec.slice(1);
+                    for (let index = merged.length - 1; index >= 0; index -= 1) {
+                        if (merged[index] === target) merged.splice(index, 1);
+                    }
+                    continue;
+                }
+                if (!merged.includes(spec)) merged.push(spec);
+            }
+        }
+    }
+    return { plugin: merged };
+}
+
 export function resolveConfiguredPluginSpec(value: unknown): ConfiguredPluginSpec {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
         throw new Error('[supertask] OpenCode 最终配置不是对象');
@@ -342,11 +413,9 @@ export function resolveConfiguredPluginSpec(value: unknown): ConfiguredPluginSpe
     if (!Array.isArray(plugins)) {
         throw new Error(`[supertask] OpenCode 最终配置未启用 ${PACKAGE_NAME}`);
     }
-    const matches = plugins.flatMap((entry) => {
-        if (typeof entry === 'string') return [entry];
-        if (Array.isArray(entry) && typeof entry[0] === 'string') return [entry[0]];
-        return [];
-    }).filter((spec) => spec === PACKAGE_NAME || spec.startsWith(`${PACKAGE_NAME}@`));
+    const matches = plugins.map(pluginEntrySpec)
+        .filter((spec): spec is string => spec !== null)
+        .filter((spec) => spec === PACKAGE_NAME || spec.startsWith(`${PACKAGE_NAME}@`));
     if (matches.length === 0) {
         throw new Error(`[supertask] OpenCode 最终配置未启用 ${PACKAGE_NAME}`);
     }
@@ -378,11 +447,14 @@ export function getOpenCodePluginDiagnostic(): OpenCodePluginDiagnostic {
     let outputFd: number | null = null;
 
     try {
+        // 2.x 没有 --pure，且输出为配置来源数组；1.x 用 --pure 避免诊断时加载外部插件。
+        const openCode = detectOpenCodeVersionSync(opencodeBin());
         outputDirectory = mkdtempSync(join(tmpdir(), 'opencode-supertask-config-'));
         chmodSync(outputDirectory, 0o700);
         const outputPath = join(outputDirectory, 'resolved-config.json');
         outputFd = openSync(outputPath, 'w', 0o600);
-        const result = spawnSync(opencodeBin(), ['debug', 'config', '--pure'], {
+        const args = openCode.major === 2 ? ['debug', 'config'] : ['debug', 'config', '--pure'];
+        const result = spawnSync(opencodeBin(), args, {
             encoding: 'utf8',
             env: process.env,
             timeout: 30_000,
@@ -407,7 +479,9 @@ export function getOpenCodePluginDiagnostic(): OpenCodePluginDiagnostic {
 
         let configured: ConfiguredPluginSpec;
         try {
-            configured = resolveConfiguredPluginSpec(config);
+            configured = resolveConfiguredPluginSpec(
+                openCode.major === 2 ? mergeOpenCodeV2PluginConfig(config) : config,
+            );
         } catch (error) {
             return failed(error instanceof Error ? error.message : String(error));
         }
@@ -452,16 +526,75 @@ export function getOpenCodePluginDiagnostic(): OpenCodePluginDiagnostic {
     }
 }
 
+function isSuperTaskPluginEntry(entry: unknown): boolean {
+    const spec = pluginEntrySpec(entry);
+    return spec === PACKAGE_NAME || (spec?.startsWith(`${PACKAGE_NAME}@`) ?? false);
+}
+
+/** 与 OpenCode 2.x `plugin add` 相同的全局配置文件定位规则。 */
+export function openCodeGlobalConfigPath(): string {
+    const directory = process.env.OPENCODE_CONFIG_DIR
+        ?? join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'opencode');
+    const candidates = ['opencode.json', 'opencode.jsonc', '.opencode/opencode.json', '.opencode/opencode.jsonc']
+        .map((name) => join(directory, name));
+    return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+}
+
+/**
+ * 让全局配置只保留一条 SuperTask 声明并固定到精确版本。
+ * 旧键 `plugin` 同时被 1.x 与 2.x 读取，存在时优先保留在该键；2.x `plugin add`
+ * 只检查新键 `plugins`，会在旧键已有声明时追加重复项，这里一并收敛。保留注释与格式。
+ */
+export function pinPluginInGlobalConfig(configPath: string, spec: string): void {
+    const original = existsSync(configPath) ? readFileSync(configPath, 'utf8') : '{}';
+    const errors: ParseError[] = [];
+    const config: unknown = parseJsonc(original, errors, { allowTrailingComma: true });
+    if (errors.length > 0 || config === null || typeof config !== 'object' || Array.isArray(config)) {
+        throw new Error(`[supertask] OpenCode 全局配置不是有效 JSON 对象: ${configPath}`);
+    }
+    const record = config as Record<string, unknown>;
+    const targetKey = Array.isArray(record.plugin) ? 'plugin' : 'plugins';
+    let replacement: unknown = spec;
+    for (const key of ['plugin', 'plugins']) {
+        const list = record[key];
+        const existing = Array.isArray(list) ? list.find(isSuperTaskPluginEntry) : undefined;
+        if (existing === undefined) continue;
+        if (Array.isArray(existing)) replacement = [spec, ...existing.slice(1)];
+        else if (existing !== null && typeof existing === 'object') replacement = { ...existing, package: spec };
+        break;
+    }
+
+    let text = original;
+    for (const key of ['plugin', 'plugins'] as const) {
+        const list = Array.isArray(record[key]) ? record[key] as unknown[] : undefined;
+        if (key !== targetKey && (list === undefined || !list.some(isSuperTaskPluginEntry))) continue;
+        const current = list ?? [];
+        let next = current.filter((entry) => !isSuperTaskPluginEntry(entry));
+        if (key === targetKey) {
+            const position = current.findIndex(isSuperTaskPluginEntry);
+            next = [...next];
+            next.splice(position < 0 ? next.length : Math.min(position, next.length), 0, replacement);
+        }
+        text = applyJsoncEdits(text, modifyJsonc(text, [key], next, {
+            formattingOptions: { tabSize: 2, insertSpaces: true },
+        }));
+    }
+    if (text === original) return;
+    mkdirSync(dirname(configPath), { recursive: true });
+    const temporary = `${configPath}.supertask-${process.pid}.tmp`;
+    writeFileSync(temporary, text.endsWith('\n') ? text : `${text}\n`, { mode: 0o600 });
+    renameSync(temporary, configPath);
+}
+
 export function installPluginVersion(version: string): InstalledPlugin {
     if (!isSemanticVersion(version)) {
         throw new Error(`[supertask] OpenCode 插件版本无效: ${version}`);
     }
-    const result = spawnSync(opencodeBin(), [
-        'plugin',
-        `${PACKAGE_NAME}@${version}`,
-        '--global',
-        '--force',
-    ], {
+    const spec = `${PACKAGE_NAME}@${version}`;
+    const major = detectOpenCodeVersionSync(opencodeBin()).major;
+    const result = spawnSync(opencodeBin(), major === 2
+        ? ['plugin', 'add', spec]
+        : ['plugin', spec, '--global', '--force'], {
         encoding: 'utf8',
         env: process.env,
         timeout: 120_000,
@@ -473,6 +606,7 @@ export function installPluginVersion(version: string): InstalledPlugin {
     if (result.status !== 0) {
         throw new Error(`[supertask] OpenCode 插件更新失败: ${output || `退出码 ${result.status}`}`);
     }
+    if (major === 2) pinPluginInGlobalConfig(openCodeGlobalConfigPath(), spec);
     return resolveInstalledPluginVersion(version);
 }
 

@@ -24,6 +24,9 @@
 | `core/cron-parser.ts` | cron 表达式校验与下一次运行时间 |
 | `core/duration.ts` | CLI 友好时长与 ISO 8601 解析 |
 | `core/process-control.ts` | 校验并终止 Worker/Watchdog 记录的受管进程组 |
+| `core/opencode-cli.ts` | OpenCode 1.x/2.x 差异的唯一入口：可执行文件、版本探测、按版本生成 `run` 参数 |
+| `core/opencode-catalog.ts` | 按版本读取项目可用的 Agent、模型与 variants |
+| `worker/run-output.ts` | 按行收集 OpenCode 输出尾部，锁定首个顶层 Session ID |
 | `core/services/task-template.service.ts` | 调度模板 CRUD + 计算下次运行时间 |
 | `cli/database-output.ts` | 数据库维护命令的人类可读/JSON 双格式输出 |
 | `cli/validation.ts` | CLI ID、整数范围与任务状态的严格解析 |

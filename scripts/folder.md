@@ -12,3 +12,6 @@
 |------|------|
 | `batch-translate.ts` | 针对硬编码 `opencodedocs` 路径扫描中文 Markdown，为 9 种语言创建 `localize-gen` 任务 |
 | `reset-status.ts` | 离线手工将全部 running/failed 重置为 pending；不得与 Gateway 同时运行 |
+| `opencode-compat-smoke.ts` | 先 `bun run build`；用真实 OpenCode 1.x/2.x 可执行文件、隔离 XDG 目录与本地假模型验证插件建任务、Gateway 执行、Session 捕获与继续会话（不调用真实模型） |
+| `package-install-smoke.ts` | `npm pack` 后隔离安装，验证 CLI、migration 与插件入口 |
+| `launcher-ipc-smoke.ts` | 在指定 Bun 版本上验证 launcher 排空证明 IPC |

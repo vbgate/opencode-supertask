@@ -50,6 +50,8 @@ npm install -g "opencode-supertask@$VERSION"
 opencode plugin "opencode-supertask@$VERSION" --global --force
 ```
 
+OpenCode 2.x 请把最后一行换成 `opencode plugin add "opencode-supertask@$VERSION"`。SuperTask 在运行时识别 OpenCode 主版本，同时支持 1.x（1.2.20+）与 2.x；`supertask upgrade` 在两种配置格式下都只保留一条固定版本的插件声明。
+
 固定精确版本可以保证 OpenCode 插件、全局 CLI 和 Gateway 使用同一份构建。不要在 `opencode.json` 中改成裸包名或 `@latest`。
 
 ### 2. 重启 OpenCode，再启动 Gateway
@@ -157,7 +159,7 @@ supertask cancel --id 42
 | 执行记录 | 查看结构化输出、工具、错误、Session 和历史真实命令 |
 | 系统状态 | 检查生效配置、健康状态、并发，以及先备份后维护数据库 |
 
-项目选择器会读取目标目录真实的 `opencode agent list` 和 `opencode models --verbose`，表单只展示本机可用模型、各模型声明的 variants 和可以直接运行的 Agent。variant 留在默认值时不会传 `--variant`，继续跟随 Agent/模型配置。
+项目选择器会读取目标目录真实的 OpenCode 能力目录（1.x：`agent list` / `models --verbose`；2.x：`api agent.list` / `api model.list`），表单只展示本机可用模型、各模型声明的 variants 和可以直接运行的 Agent。variant 留在默认值时不会传 `--variant`，继续跟随 Agent/模型配置。
 
 ## 可靠不是一句口号
 
