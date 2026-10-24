@@ -19,7 +19,7 @@ Gateway ─ Worker + Scheduler + Watchdog + Dashboard
 - 插件在 `plugin/supertask.ts` 注册 8 个 `supertask_*` 工具：`add/next/status/retry/list/get/schedule/upgrade`；运行态与执行终态只允许 Gateway 写入，不得恢复外部 `start/done/fail`。
 - OpenCode 1.x 与 2.x 的命令、插件和配置差异只能在 `src/core/opencode-cli.ts`（版本探测、run 参数）及其调用点按 `opencode --version` 分支处理；2.x 受管执行必须带 `--standalone`，variant 只能写成 `-m provider/model#variant`，无法表达时直接 `dead_letter`，不得静默丢弃；插件默认导出必须同时保留 1.x 的 `server` 与 2.x 的 `setup`。`scripts/opencode-compat-smoke.ts` 用真实可执行文件和本地假模型验证两代兼容，不得调用真实模型。
 - Worker 先启动等待握手的 launcher，持久化 launcher PID 后才通过参数数组执行 `opencode run [--standalone] --agent <task.agent> --format json [-m <model>] [--variant <variant>] <task.prompt>`（版本形态见上条）；新 run 使用 `gated-v3-token-guardian`，每 run UUID 必须同时写入 `task_runs.locked_by` 和 launcher argv。launcher 只能在整个受管进程组排空后通过不传递给 OpenCode 的 IPC 发回绑定 UUID 的证明；无证明退出必须隔离，不得结算或释放批次。退出码决定成功或失败，Gateway 统一写任务状态和执行记录。Unix 独立进程组只能证明仍属于该组的进程排空，不得描述为任意后代的整树退出证明；主动调用 `setsid()` 或以 detached/daemon 方式离组的进程必须自行管理。Windows 在引入 Job Object 前必须拒绝启动 Worker，不得退回不完整的父子 PID 扫描。
-- Worker 校验 drain proof 后必须通过同一 IPC 回送绑定 UUID 的确认，launcher 收件后才退出；不得依赖旧 Bun 不可靠的 `process.send` callback。最低支持 Bun 1.1.45，CI 必须用该版本真实执行构建后的 launcher IPC smoke test。
+- Worker 校验 drain proof 后必须通过同一 IPC 回送绑定 UUID 的确认，launcher 收件后才退出；不得依赖旧 Bun 不可靠的 `process.send` callback。最低支持 Bun 1.1.45，发布前必须在本地或已授权的受控环境用该版本真实执行构建后的 launcher IPC smoke test。
 - 进程组排空后的结算失败不得立即释放内存所有权或丢失已知退出结果；Gateway 存活时必须保持任务、批次和心跳并重试，停机时也必须用完整 shutdown grace 继续结算，只有宽限期耗尽后才可停止持有并交给 Watchdog。
 - Worker 启动的受管 OpenCode 进程设置 `SUPERTASK_MANAGED_RUN=1`；该上下文必须拒绝 `supertask_upgrade`，避免升级流程删除并等待承载自己的 Gateway。升级只能从外部 CLI 或非队列 OpenCode 会话发起。
 - pm2 是可选守护层：仅显式运行 `supertask install` 时允许安装；插件加载不得静默安装全局依赖。前台运行使用 `supertask gateway`。
@@ -118,12 +118,12 @@ bun run dev -- db check  # 检查数据库完整性与业务统计
 - `db check/backup/clear/restore` 的交互式 stdout 必须人类可读；非 TTY 或显式 `--json` 必须保持可解析 JSON，成功与错误都要覆盖这三种模式
 - `db check` 报告 `ok=false` 时必须返回非零退出码；CLI 数字参数必须完整匹配整数，不得用 `parseInt` 接受尾随字符或截断小数
 - Gateway 构建产物 E2E 必须使用隔离数据库和假 OpenCode 可执行文件覆盖普通任务、失败重试、`delayed`、`recurring` 和 `cron`，不得为测试调用真实模型
-- CI 必须运行源码与测试类型检查、lint、覆盖率、真实 Chromium smoke、Linux/macOS 测试、最低 Bun 代表性测试，以及 npm tarball 隔离安装后的 CLI/migration smoke
+- 发布前在本地或已授权的受控环境运行源码与测试类型检查、lint、覆盖率、真实 Chromium smoke、Linux/macOS 测试、最低 Bun 代表性测试，以及 npm tarball 隔离安装后的 CLI/migration smoke。禁止使用 GitHub Actions 跑 CI，不得恢复已禁用的 CI 工作流；`publish.yml` 仅负责构建、打包和发布。
 
 ## 发布流程
 
 - 修改代码 → 测试通过 → `bun run build` → git commit/push
-- 创建 GitHub Release 自动触发 CI 发布到 npm；稳定版进入 `latest`，预发布版进入 `next`；工作流通过 npm Trusted Publisher/OIDC 获取短期发布凭据
+- 创建 GitHub Release 自动触发纯制品发布工作流发布到 npm；稳定版进入 `latest`，预发布版进入 `next`；工作流通过 npm Trusted Publisher/OIDC 获取短期发布凭据
 - npm 包设置必须信任仓库 `vbgate/opencode-supertask` 的 `publish.yml`，Allowed actions 仅启用 `npm publish`
 - **不要手动 npm publish**，通过 `gh release create v<x.y.z>` 触发
 - 升级版本号在 `package.json` 的 `version` 字段
